@@ -30,6 +30,7 @@ export class BlobCreator {
     const blobName = randomUUID().toString();
     const blockBlobClient = BlobCreator.client.getBlockBlobClient(blobName);
     await blockBlobClient.upload(content, content.length, options);
+    console.log('uploaded');
     return blockBlobClient.url;
   }
 
