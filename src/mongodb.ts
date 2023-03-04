@@ -88,6 +88,7 @@ export async function connectWithMate(params: MatchParams): Promise<Res<void>> {
 
 export async function send(params: SendParams): Promise<Res<InboxItem>> {
   try {
+    console.log('si');
     const [blobUrl, imgUrl] = await Promise.all([
       blobCreator.upload(params.drawing),
       blobCreator.uploadImg(params.img),
@@ -95,7 +96,6 @@ export async function send(params: SendParams): Promise<Res<InboxItem>> {
     const date = new Date();
     const inboxItem: InboxItem = { drawing: blobUrl, date: date, sender: params._id, img: imgUrl };
 
-    console.log(params.mate, params._id);
     await Promise.all([
       userModel.updateOne({ _id: params.mate }, { $push: { inbox: inboxItem } }),
       userModel.updateOne({ _id: params._id }, { $push: { inbox: inboxItem } }),
