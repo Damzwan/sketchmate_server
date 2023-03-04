@@ -33,7 +33,7 @@ const app = new Koa();
 const server = createServer(app.callback());
 const io = new Server(server, {
   cors: {
-    origin: '*',
+    origin: ['https://sketchmate-frontend.herokuapp.com', 'http://localhost:3000'],
     methods: ['GET', 'POST', 'PUT'],
     credentials: true,
   },
