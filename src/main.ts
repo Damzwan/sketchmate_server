@@ -69,6 +69,7 @@ const socketToUserId: Map<string> = {};
 const userIdToSocket: Map<string> = {};
 
 io.on('connection', (socket) => {
+  console.log('connect', socket.id);
   socket.on(SOCKET_ENDPONTS.login, (params: GetUserParams) => {
     socketToUserId[socket.id] = params._id;
     userIdToSocket[params._id] = socket.id;
@@ -109,6 +110,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on(SOCKET_ENDPONTS.disconnect, () => {
+    console.log('disconnect', socket.id);
     delete userIdToSocket[socketToUserId[socket.id]];
     delete socketToUserId[socket.id];
   });
