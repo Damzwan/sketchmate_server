@@ -88,7 +88,6 @@ export async function connectWithMate(params: MatchParams): Promise<Res<void>> {
 
 export async function send(params: SendParams): Promise<Res<InboxItem>> {
   try {
-    console.log('si');
     const [blobUrl, imgUrl] = await Promise.all([
       blobCreator.upload(params.drawing),
       blobCreator.uploadImg(params.img),

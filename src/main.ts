@@ -70,7 +70,6 @@ const socketToUserId: Map<string> = {};
 const userIdToSocket: Map<string> = {};
 
 io.on('connection', (socket) => {
-  console.log('connect', socket.id);
   socket.on(SOCKET_ENDPONTS.login, (params: GetUserParams) => {
     socketToUserId[socket.id] = params._id;
     userIdToSocket[params._id] = socket.id;
@@ -104,14 +103,13 @@ io.on('connection', (socket) => {
       const inboxItem = await send(params);
       socket.emit(SOCKET_ENDPONTS.send, inboxItem);
       if (userIdToSocket[params.mate]) io.to(userIdToSocket[params.mate]).emit(SOCKET_ENDPONTS.send, inboxItem);
-      await sendNotification(params.mate, Notifications.message);
+      await sendNotification(params.mate, inboxItem ? inboxItem.img : undefined);
     } catch (e) {
       console.log(e);
     }
   });
 
   socket.on(SOCKET_ENDPONTS.disconnect, () => {
-    console.log('disconnect', socket.id);
     delete userIdToSocket[socketToUserId[socket.id]];
     delete socketToUserId[socket.id];
   });
