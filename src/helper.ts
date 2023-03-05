@@ -17,7 +17,7 @@ export function parseParams<T>(params: ParsedUrlQuery | string): T {
   return newParams as T;
 }
 
-export async function sendNotification(_id: string, notification: Notifications) {
+export async function sendNotification(_id: string, notification: string | undefined) {
   const user = await getUser({ _id });
   if (!user || !user.subscription) return;
   await webpush.sendNotification(user.subscription, notification, {
