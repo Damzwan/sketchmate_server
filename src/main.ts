@@ -4,7 +4,9 @@ import 'dotenv/config';
 import { koaBody } from 'koa-body';
 import logger from 'koa-logger';
 import {
+  ChangeNameParams,
   ENDPOINTS,
+  GetMateInfoParams,
   GetUserParams,
   MatchParams,
   Notifications,
@@ -18,10 +20,12 @@ import cors from '@koa/cors';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import {
+  changeName,
   connectDb,
   connectWithMate,
   createUser,
   getDrawings,
+  getMateInfo,
   getUser,
   send,
   subscribe,
@@ -50,6 +54,10 @@ router.get(ENDPOINTS.get_drawings, async (ctx) => {
   ctx.body = await getDrawings(parseParams<GetUserParams>(ctx.query));
 });
 
+router.get(ENDPOINTS.mate, async (ctx) => {
+  ctx.body = await getMateInfo(parseParams<GetMateInfoParams>(ctx.query));
+});
+
 router.post(ENDPOINTS.create_user, async (ctx) => {
   ctx.body = await createUser();
 });
@@ -60,6 +68,10 @@ router.put(ENDPOINTS.subscribe, async (ctx) => {
 
 router.put(ENDPOINTS.unsubscribe, async (ctx) => {
   ctx.body = await unsubscribe(parseParams<GetUserParams>(ctx.request.body));
+});
+
+router.put(ENDPOINTS.change_name, async (ctx) => {
+  ctx.body = await changeName(parseParams<ChangeNameParams>(ctx.request.body));
 });
 
 interface Map<T> {

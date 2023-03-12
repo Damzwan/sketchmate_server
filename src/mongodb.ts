@@ -1,5 +1,8 @@
 import {
+  ChangeNameParams,
   CreateUserRes,
+  GetMateInfoParams,
+  GetMateInfoRes,
   GetUserParams,
   InboxItem,
   MatchParams,
@@ -11,7 +14,7 @@ import {
 } from './types';
 import { BlobCreator } from './blob';
 import mongoose, { Model } from 'mongoose';
-import { user_model } from './models/user';
+import { user_model } from './models/user.model';
 import { PushSubscription } from 'web-push';
 
 let userModel: Model<User>;
@@ -129,5 +132,21 @@ export async function unsubscribe(params: GetUserParams): Promise<Res<void>> {
     await userModel.updateOne({ _id: params._id }, { $unset: { subscription: 1 } });
   } catch (e) {
     throw new Error('Failed to unsubscribe');
+  }
+}
+
+export async function getMateInfo(params: GetMateInfoParams): Promise<Res<GetMateInfoRes>> {
+  try {
+    return await userModel.findOne({ _id: params.mate }, { name: 1 });
+  } catch (e) {
+    throw new Error('Failed to get mate info');
+  }
+}
+
+export async function changeName(params: ChangeNameParams): Promise<Res<void>> {
+  try {
+    await userModel.updateOne({ _id: params._id }, { $set: { name: params.name } });
+  } catch (e) {
+    throw new Error('Failed to change name');
   }
 }

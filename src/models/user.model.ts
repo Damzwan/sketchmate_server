@@ -28,6 +28,7 @@ const user_schema = new Schema({
   mate: { type: ObjectId, required: false },
   inbox: { type: [inbox_schema], required: true },
   subscription: { type: push_subscription },
+  name: { type: String, required: false },
 }) as mongoose.Schema<User>;
 
 export const user_model = mongoose.model('users', user_schema);
