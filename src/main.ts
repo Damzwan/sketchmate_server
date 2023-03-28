@@ -13,6 +13,7 @@ import { connectDb } from './mongodb';
 import { router } from './api/router';
 import { registerSocketHandlers } from './api/socket';
 import { errorHandler } from './middleware/error_handler';
+import * as fs from 'fs';
 
 const app = new Koa();
 const server = createServer(app.callback());
@@ -28,13 +29,18 @@ const port = process.env.PORT || 4000;
 
 registerSocketHandlers(io);
 
+const uploadDir = './uploads';
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
 app
   .use(errorHandler())
   .use(cors())
   .use(
     koaBody({
       multipart: true,
-      formidable: { uploadDir: './uploads' }, //This is where the files would come
+      formidable: { uploadDir: uploadDir }, //This is where the files would come
       parsedMethods: [HttpMethodEnum.PUT, HttpMethodEnum.POST],
     })
   )
