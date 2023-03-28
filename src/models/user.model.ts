@@ -1,17 +1,6 @@
 import mongoose, { Schema } from 'mongoose';
-import { InboxItem, User } from '../types';
-import { ObjectId } from 'mongodb';
+import { Mate, User } from '../types';
 import { PushSubscription } from 'web-push';
-
-const inbox_schema = new Schema<InboxItem>(
-  {
-    drawing: { type: String, required: true },
-    date: { type: Date, required: true },
-    sender: { type: ObjectId, required: true },
-    img: { type: String, required: true },
-  },
-  { _id: false }
-);
 
 const push_subscription = new Schema<PushSubscription>(
   {
@@ -24,10 +13,17 @@ const push_subscription = new Schema<PushSubscription>(
   { _id: false }
 );
 
+const mateSchema = new Schema<Mate>({
+  name: { type: String, required: true },
+  img: { type: String, required: true },
+});
+
 const user_schema = new Schema({
-  mate: { type: ObjectId, required: false },
-  inbox: { type: [inbox_schema], required: true },
+  mate: mateSchema,
+  inbox: { type: [String], required: true },
   subscription: { type: push_subscription },
+  name: { type: String, required: true },
+  img: { type: String, required: true },
 }) as mongoose.Schema<User>;
 
 export const user_model = mongoose.model('users', user_schema);
