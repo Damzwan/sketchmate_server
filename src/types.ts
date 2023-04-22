@@ -4,6 +4,7 @@ export enum NotificationType {
   match = 'match',
   unmatched = 'unmatched',
   message = 'message',
+  comment = 'comment',
 }
 
 export interface InboxItem {

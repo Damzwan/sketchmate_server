@@ -5,6 +5,7 @@ import {
   ENDPOINTS,
   GetInboxItemsParams,
   GetUserParams,
+  NotificationType,
   RemoveFromInboxParams,
   SubscribeParams,
   UploadProfileImgParams,
@@ -20,7 +21,7 @@ import {
   unsubscribe,
   uploadProfileImg,
 } from '../mongodb';
-import { parseParams } from '../helper';
+import { parseParams, sendNotificationToMate, sendNotificationToUser } from '../helper';
 
 export const router = new Router();
 
@@ -63,7 +64,12 @@ router.put(ENDPOINTS.unsubscribe, async (ctx) => {
 });
 
 router.put(ENDPOINTS.inbox, async (ctx) => {
-  ctx.body = await comment(parseParams<CommentParams>(ctx.request.body));
+  const params = parseParams<CommentParams>(ctx.request.body);
+  const createdComment = await comment(params);
+  await sendNotificationToMate(params.sender, NotificationType.comment, {
+    item: params.inbox_id,
+  });
+  ctx.body = createdComment;
 });
 
 router.delete(`${ENDPOINTS.inbox}/:userId/:inboxItemId`, async (ctx) => {

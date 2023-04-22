@@ -10,28 +10,25 @@ export function parseParams<T>(params: ParsedUrlQuery | string): T {
 }
 
 function createNotificationTitle(type: NotificationType, user: User) {
-  if (type === NotificationType.match)
-    return user.mate?.name ? `Matched to ${user.mate.name}` : 'You are matched!';
-  else if (type === NotificationType.message)
-    return `New drawing ${user.mate?.name ? `from ${user.mate.name}` : ''}`;
-  else if (type === NotificationType.unmatched)
-    return user.mate?.name ? `${user.mate.name} Unmatched you` : `You got unmatched`;
+  if (type === NotificationType.match) return `Matched to ${user.mate!.name}`;
+  else if (type === NotificationType.message) return `New drawing from ${user.mate!.name}`;
+  else if (type === NotificationType.unmatched) return `${user.mate!.name} Unmatched you`;
+  else if (type === NotificationType.comment) return `${user.mate!.name} commented on a drawing`;
 }
 
-export async function sendNotificationNoUser(
-  _id: string,
-  type: NotificationType,
-  payload = {}
-) {
+export async function sendNotificationToUser(_id: string, type: NotificationType, payload = {}) {
   const user = await getUserSubscription({ _id });
   await sendNotification(user, type, payload);
 }
 
-export async function sendNotification(
-  user: Res<User>,
-  type: NotificationType,
-  payload = {}
-) {
+export async function sendNotificationToMate(_id: string, type: NotificationType, payload: any = {}) {
+  const user = await getUserSubscription({ _id });
+  const mate = await getUserSubscription({ _id: user!.mate!._id });
+  payload.icon = user?.img;
+  await sendNotification(mate, type, payload);
+}
+
+export async function sendNotification(user: Res<User>, type: NotificationType, payload = {}) {
   if (!user || !user.subscription) return;
 
   const body = JSON.stringify({

@@ -1,14 +1,7 @@
 import { Server } from 'socket.io';
-import {
-  GetUserParams,
-  MatchParams,
-  NotificationType,
-  SendParams,
-  SOCKET_ENDPONTS,
-  UnMatchParams,
-} from '../types';
+import { GetUserParams, MatchParams, NotificationType, SendParams, SOCKET_ENDPONTS, UnMatchParams } from '../types';
 import { match, storeMessage, unMatch } from '../mongodb';
-import { sendNotification, sendNotificationNoUser } from '../helper';
+import { sendNotification, sendNotificationToMate, sendNotificationToUser } from '../helper';
 
 const socketToUserId: Record<string, string> = {};
 const userIdToSocket: Record<string, string> = {};
@@ -24,16 +17,14 @@ export function registerSocketHandlers(io: Server) {
       try {
         const res = await match(params);
         socket.emit(SOCKET_ENDPONTS.match, res.user);
-        if (userIdToSocket[params.mate_id])
-          io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.match, res.mate);
+        if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.match, res.mate);
         await Promise.all([
           sendNotification(res.user, NotificationType.match, 'Matched!'),
           sendNotification(res.mate, NotificationType.match, 'Matched!'),
         ]);
       } catch (e) {
         socket.emit(SOCKET_ENDPONTS.match);
-        if (userIdToSocket[params.mate_id])
-          io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.match);
+        if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.match);
       }
     });
 
@@ -41,16 +32,14 @@ export function registerSocketHandlers(io: Server) {
       try {
         await unMatch(params);
         socket.emit(SOCKET_ENDPONTS.unmatch, true);
-        if (userIdToSocket[params.mate_id])
-          io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.unmatch, true);
+        if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.unmatch, true);
         await Promise.all([
-          sendNotificationNoUser(params._id, NotificationType.unmatched),
-          sendNotificationNoUser(params.mate_id, NotificationType.unmatched),
+          sendNotificationToUser(params._id, NotificationType.unmatched),
+          sendNotificationToUser(params.mate_id, NotificationType.unmatched),
         ]);
       } catch (e) {
         socket.emit(SOCKET_ENDPONTS.unmatch, false);
-        if (userIdToSocket[params.mate_id])
-          io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.unmatch, false);
+        if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.unmatch, false);
       }
     });
 
@@ -58,10 +47,9 @@ export function registerSocketHandlers(io: Server) {
       try {
         const inboxItem = await storeMessage(params);
         socket.emit(SOCKET_ENDPONTS.send, inboxItem);
-        if (userIdToSocket[params.mate_id])
-          io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.send, inboxItem);
-        await sendNotificationNoUser(params.mate_id, NotificationType.message, {
-          img: inboxItem ? inboxItem.thumbnail : undefined,
+        if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.send, inboxItem);
+        await sendNotificationToMate(params._id, NotificationType.message, {
+          img: inboxItem,
           item: inboxItem?._id,
         });
       } catch (e) {
