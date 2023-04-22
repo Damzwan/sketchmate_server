@@ -11,7 +11,7 @@ export function parseParams<T>(params: ParsedUrlQuery | string): T {
 
 function createNotificationTitle(type: NotificationType, user: User) {
   if (type === NotificationType.match) return `Matched to ${user.mate!.name}`;
-  else if (type === NotificationType.message) return `New drawing from ${user.mate!.name}`;
+  else if (type === NotificationType.message) return `${user.mate!.name} sent you a drawing`;
   else if (type === NotificationType.unmatched) return `${user.mate!.name} Unmatched you`;
   else if (type === NotificationType.comment) return `${user.mate!.name} commented on a drawing`;
 }

@@ -54,9 +54,7 @@ export async function getUser(params: GetUserParams): Promise<Res<User>> {
   }
 }
 
-export async function getInboxItems(
-  params: GetInboxItemsParams
-): Promise<Res<InboxItem>> {
+export async function getInboxItems(params: GetInboxItemsParams): Promise<Res<InboxItem>> {
   try {
     return await inbox_model
       .find({
@@ -96,11 +94,7 @@ export async function comment(params: CommentParams) {
 export async function removeFromInbox(params: RemoveFromInboxParams) {
   try {
     const [inboxItem] = await Promise.all([
-      inbox_model.findByIdAndUpdate(
-        params.inbox_id,
-        { $pull: { followers: params.user_id } },
-        { new: true }
-      ),
+      inbox_model.findByIdAndUpdate(params.inbox_id, { $pull: { followers: params.user_id } }, { new: true }),
       user_model.findByIdAndUpdate(params.user_id, {
         $pull: {
           inbox: params.inbox_id,
@@ -108,8 +102,7 @@ export async function removeFromInbox(params: RemoveFromInboxParams) {
       }),
     ]);
 
-    if (inboxItem?.followers.length === 0)
-      await inbox_model.deleteOne({ _id: params.inbox_id });
+    if (inboxItem?.followers.length === 0) await inbox_model.deleteOne({ _id: params.inbox_id });
   } catch (e) {
     throw new Error('Cannot remove');
   }
@@ -117,9 +110,7 @@ export async function removeFromInbox(params: RemoveFromInboxParams) {
 
 export async function getUserSubscription(params: GetUserParams): Promise<Res<User>> {
   try {
-    return await user_model
-      .findById(params._id, { subscription: 1, mate: 1, _id: 1 })
-      .lean();
+    return await user_model.findById(params._id, { subscription: 1, mate: 1, _id: 1, img: 1 }).lean();
   } catch (e) {
     throw new Error('User not found');
   }
@@ -205,14 +196,8 @@ export async function storeMessage(params: SendParams): Promise<Res<InboxItem>> 
 export async function unMatch(params: UnMatchParams): Promise<Res<void>> {
   try {
     await Promise.all([
-      user_model.updateOne(
-        { _id: params._id },
-        { $unset: { mate: 1 }, $set: { inbox: [] } }
-      ),
-      user_model.updateOne(
-        { _id: params.mate_id },
-        { $unset: { mate: 1 }, $set: { inbox: [] } }
-      ),
+      user_model.updateOne({ _id: params._id }, { $unset: { mate: 1 }, $set: { inbox: [] } }),
+      user_model.updateOne({ _id: params.mate_id }, { $unset: { mate: 1 }, $set: { inbox: [] } }),
     ]);
   } catch (e) {
     throw new Error('Failed to unmatch');
@@ -221,10 +206,7 @@ export async function unMatch(params: UnMatchParams): Promise<Res<void>> {
 
 export async function subscribe(params: SubscribeParams): Promise<Res<void>> {
   try {
-    await user_model.updateOne(
-      { _id: params._id },
-      { $set: { subscription: params.subscription } }
-    );
+    await user_model.updateOne({ _id: params._id }, { $set: { subscription: params.subscription } });
   } catch (e) {
     throw new Error('Failed to subscribe');
   }
@@ -252,9 +234,7 @@ export async function changeUserName(params: ChangeUserNameParams): Promise<Res<
   }
 }
 
-export async function uploadProfileImg(
-  params: UploadProfileImgParams
-): Promise<Res<string>> {
+export async function uploadProfileImg(params: UploadProfileImgParams): Promise<Res<string>> {
   try {
     const url = await blobCreator.uploadFile(params.img.filepath, params.img.mimetype);
     const userUpdate = { $set: { img: url } };
@@ -265,8 +245,7 @@ export async function uploadProfileImg(
       params.mate_id ? user_model.updateOne({ _id: params.mate_id }, mateUpdate) : null,
     ]);
 
-    if (params.previousImage)
-      blobCreator.deleteBlob(params.previousImage, CONTAINERS.account);
+    if (params.previousImage) blobCreator.deleteBlob(params.previousImage, CONTAINERS.account);
     fs.promises.unlink(params.img.filepath);
     return url;
   } catch (e) {
