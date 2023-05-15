@@ -6,7 +6,7 @@
   "scripts": {
     "lint": "eslint . --fix",
     "start": "nodemon",
-    "start:heroku": "node dist/main.js",
+    "start:heroku": "node dist/src/main.js",
     "build": "tsc",
     "postinstall": "npm run build"
   },
