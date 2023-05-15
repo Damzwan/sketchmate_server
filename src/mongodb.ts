@@ -2,6 +2,9 @@ import {
   ChangeUserNameParams,
   Comment,
   CommentParams,
+  CreateStickerParams,
+  DeleteEmblemParams,
+  DeleteStickerParams,
   GetInboxItemsParams,
   GetUserParams,
   InboxItem,
@@ -13,15 +16,23 @@ import {
   UnMatchParams,
   UploadProfileImgParams,
   User,
-} from './types';
+} from './types/types';
 import { BlobCreator, CONTAINERS } from './blob';
 import mongoose from 'mongoose';
 import { user_model } from './models/user.model';
-import { PushSubscription } from 'web-push';
-import { createThumbnail, dataUrlToBuffer } from './helper';
+import {
+  compressImg,
+  createThumbnail,
+  dataUrlToBuffer,
+  imgToEmblem,
+  removeBackground,
+  STICKER_SIZE,
+  trimTransparentBackground,
+} from './helper';
 import { ObjectId } from 'mongodb';
 import { inbox_model } from './models/inbox.model';
 import * as fs from 'fs';
+import axios from 'axios';
 
 let blobCreator: BlobCreator;
 const stock_img = 'https://sketchmate.blob.core.windows.net/account/aku.jpg';
@@ -40,7 +51,7 @@ export async function connectDb(): Promise<void> {
 
 export async function createUser(): Promise<Res<User>> {
   try {
-    return await user_model.create({ inbox: [], name: 'anonymous', img: stock_img });
+    return await user_model.create({ inbox: [], stickers: [], emblems: [], name: 'anonymous', img: stock_img });
   } catch (e) {
     throw new Error('Something went wrong creating a user');
   }
@@ -236,7 +247,7 @@ export async function changeUserName(params: ChangeUserNameParams): Promise<Res<
 
 export async function uploadProfileImg(params: UploadProfileImgParams): Promise<Res<string>> {
   try {
-    const url = await blobCreator.uploadFile(params.img.filepath, params.img.mimetype);
+    const url = await blobCreator.uploadFile(params.img.filepath, params.img.mimetype, CONTAINERS.account);
     const userUpdate = { $set: { img: url } };
     const mateUpdate = { $set: { 'mate.img': url } };
 
@@ -250,5 +261,66 @@ export async function uploadProfileImg(params: UploadProfileImgParams): Promise<
     return url;
   } catch (e) {
     throw new Error('Failed to change name');
+  }
+}
+
+export async function createSticker(params: CreateStickerParams): Promise<Res<string>> {
+  try {
+    const img = await compressImg(params.img.filepath, STICKER_SIZE);
+    const url = await blobCreator.uploadImg(img, CONTAINERS.stickers);
+    const new_url: string = await removeBackground(url!);
+
+    const response = await axios({
+      method: 'GET',
+      url: new_url,
+      responseType: 'arraybuffer',
+    });
+    blobCreator.deleteBlob(new_url, CONTAINERS.stickers);
+
+    const buffer = Buffer.from(response.data, 'binary');
+
+    const new_img = await trimTransparentBackground(buffer);
+    const new_new_url = await blobCreator.uploadImg(new_img, CONTAINERS.stickers);
+    await user_model.updateOne({ _id: params._id }, { $push: { stickers: new_new_url } });
+    return new_new_url;
+  } catch (e) {
+    throw new Error('Failed to create sticker');
+  }
+}
+
+export async function createEmblem(params: CreateStickerParams): Promise<Res<string>> {
+  try {
+    const img = await imgToEmblem(params.img.filepath);
+    const url = await blobCreator.uploadImg(img, CONTAINERS.stickers);
+    await user_model.updateOne({ _id: params._id }, { $push: { emblems: url } });
+    return url;
+  } catch (e) {
+    throw new Error('Failed to create sticker');
+  }
+}
+
+export async function deleteSticker(params: DeleteStickerParams): Promise<void> {
+  try {
+    await blobCreator.deleteBlob(params.sticker_url, CONTAINERS.stickers);
+    await user_model.findByIdAndUpdate(params.user_id, {
+      $pull: {
+        stickers: params.sticker_url,
+      },
+    });
+  } catch (e) {
+    throw new Error('Failed to delete sticker');
+  }
+}
+
+export async function deleteEmblem(params: DeleteEmblemParams): Promise<void> {
+  try {
+    await blobCreator.deleteBlob(params.emblem_url, CONTAINERS.stickers);
+    await user_model.findByIdAndUpdate(params.user_id, {
+      $pull: {
+        emblems: params.emblem_url,
+      },
+    });
+  } catch (e) {
+    throw new Error('Failed to delete sticker');
   }
 }

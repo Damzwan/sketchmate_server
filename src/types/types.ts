@@ -1,8 +1,6 @@
-import { PushSubscription } from 'web-push';
-
 export enum NotificationType {
   match = 'match',
-  unmatched = 'unmatched',
+  unmatch = 'unmatch',
   message = 'message',
   comment = 'comment',
 }
@@ -14,13 +12,13 @@ export interface InboxItem {
   thumbnail: string;
   image: string;
   date: Date;
-  sender: string | undefined;
+  sender: string;
   reply?: InboxItem;
   comments: Comment[];
 }
 
 export interface Comment {
-  sender?: string;
+  sender: string;
   message: string;
   _id: string;
   date: Date;
@@ -29,16 +27,18 @@ export interface Comment {
 export interface User {
   _id: string;
   name: string;
-  img?: string;
+  img: string;
   mate?: Mate;
   inbox: string[];
-  subscription?: PushSubscription;
+  stickers: string[];
+  emblems: string[];
+  subscription?: string;
 }
 
 export interface Mate {
   _id: string;
   name: string;
-  img?: string;
+  img: string;
 }
 
 export interface SocketLoginParams {
@@ -52,6 +52,7 @@ export interface MatchParams {
 
 export interface SendParams {
   _id: string;
+  name: string;
   mate_id: string;
   drawing: string;
   img: string;
@@ -65,6 +66,13 @@ export interface CommentParams {
   inbox_id: string;
   sender: string;
   message: string;
+  mate_id: string;
+  name: string;
+}
+
+export interface CommentRes {
+  comment: Comment;
+  inbox_item_id: string;
 }
 
 export interface GetInboxItemsParams {
@@ -78,6 +86,7 @@ export interface RemoveFromInboxParams {
 
 export interface UnMatchParams {
   mate_id: string;
+  name: string;
   _id: string;
 }
 
@@ -90,8 +99,18 @@ export interface MatchRes {
 }
 
 export interface SubscribeParams {
-  subscription: PushSubscription;
+  subscription: string;
   _id: string;
+}
+
+export interface DeleteStickerParams {
+  user_id: string;
+  sticker_url: string;
+}
+
+export interface DeleteEmblemParams {
+  user_id: string;
+  emblem_url: string;
 }
 
 export interface ChangeUserNameParams {
@@ -105,6 +124,16 @@ export interface UploadProfileImgParams {
   mate_id?: string;
   img: any;
   previousImage?: string;
+}
+
+export interface CreateStickerParams {
+  _id: string;
+  img: any;
+}
+
+export interface CreateEmblemParams {
+  _id: string;
+  img: any;
 }
 
 export interface ChangeNameRes {
@@ -124,13 +153,17 @@ export interface API {
 
   getInbox(params: GetInboxItemsParams): Promise<Res<InboxItem[]>>;
 
-  comment(params: CommentParams): Promise<Res<Comment>>;
-
   removeFromInbox(params: RemoveFromInboxParams): Promise<Res<void>>;
 
   changeUserName(params: ChangeUserNameParams): Promise<Res<void>>;
 
   uploadProfileImg(params: UploadProfileImgParams): Promise<Res<string>>;
+
+  createSticker(params: CreateStickerParams): Promise<Res<string>>;
+
+  createEmblem(params: CreateEmblemParams): Promise<Res<string>>;
+  deleteSticker(params: DeleteStickerParams): Promise<void>;
+  deleteEmblem(params: DeleteEmblemParams): Promise<void>;
 }
 
 export interface SocketAPI {
@@ -141,6 +174,8 @@ export interface SocketAPI {
 
   unMatch(params: UnMatchParams): Promise<void>;
 
+  comment(params: CommentParams): Promise<void>;
+
   login(params: SocketLoginParams): Promise<void>;
 }
 
@@ -149,6 +184,8 @@ export enum ENDPOINTS {
   subscribe = '/subscribe',
   unsubscribe = '/unsubscribe',
   inbox = '/inbox',
+  sticker = '/sticker',
+  emblem = '/emblem',
 }
 
 export enum SOCKET_ENDPONTS {
@@ -157,4 +194,5 @@ export enum SOCKET_ENDPONTS {
   login = 'login',
   send = 'send',
   disconnect = 'disconnect',
+  comment = 'comment',
 }
