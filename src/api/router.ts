@@ -2,6 +2,10 @@ import Router from 'koa-router';
 import {
   ChangeUserNameParams,
   CommentParams,
+  CreateEmblemParams,
+  CreateStickerParams,
+  DeleteEmblemParams,
+  DeleteStickerParams,
   ENDPOINTS,
   GetInboxItemsParams,
   GetUserParams,
@@ -9,11 +13,15 @@ import {
   RemoveFromInboxParams,
   SubscribeParams,
   UploadProfileImgParams,
-} from '../types';
+} from '../types/types';
 import {
   changeUserName,
   comment,
+  createEmblem,
+  createSticker,
   createUser,
+  deleteEmblem,
+  deleteSticker,
   getInboxItems,
   getUser,
   removeFromInbox,
@@ -21,7 +29,7 @@ import {
   unsubscribe,
   uploadProfileImg,
 } from '../mongodb';
-import { parseParams, sendNotificationToMate, sendNotificationToUser } from '../helper';
+import { parseParams } from '../helper';
 
 export const router = new Router();
 
@@ -55,6 +63,24 @@ router.put(`${ENDPOINTS.user}/img/:id`, async (ctx) => {
   ctx.body = await uploadProfileImg(params);
 });
 
+router.post(`${ENDPOINTS.sticker}/:id`, async (ctx) => {
+  if (!ctx.request.files) throw new Error();
+  const params: CreateStickerParams = {
+    _id: ctx.params.id,
+    img: ctx.request.files.file,
+  };
+  ctx.body = await createSticker(params);
+});
+
+router.post(`${ENDPOINTS.emblem}/:id`, async (ctx) => {
+  if (!ctx.request.files) throw new Error();
+  const params: CreateEmblemParams = {
+    _id: ctx.params.id,
+    img: ctx.request.files.file,
+  };
+  ctx.body = await createEmblem(params);
+});
+
 router.put(ENDPOINTS.subscribe, async (ctx) => {
   ctx.body = await subscribe(parseParams<SubscribeParams>(ctx.request.body));
 });
@@ -63,13 +89,12 @@ router.put(ENDPOINTS.unsubscribe, async (ctx) => {
   ctx.body = await unsubscribe(parseParams<GetUserParams>(ctx.request.body));
 });
 
-router.put(ENDPOINTS.inbox, async (ctx) => {
-  const params = parseParams<CommentParams>(ctx.request.body);
-  const createdComment = await comment(params);
-  await sendNotificationToMate(params.sender, NotificationType.comment, {
-    item: params.inbox_id,
-  });
-  ctx.body = createdComment;
+router.delete(ENDPOINTS.sticker, async (ctx) => {
+  ctx.body = await deleteSticker(parseParams<DeleteStickerParams>(ctx.query));
+});
+
+router.delete(ENDPOINTS.emblem, async (ctx) => {
+  ctx.body = await deleteEmblem(parseParams<DeleteEmblemParams>(ctx.query));
 });
 
 router.delete(`${ENDPOINTS.inbox}/:userId/:inboxItemId`, async (ctx) => {

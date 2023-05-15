@@ -1,0 +1,12 @@
+{
+  "type": "service_account",
+  "project_id": "sketchmate-b5977",
+  "private_key_id": "d2daea47e72c52d053889149e7c2dc432c7993b6",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDMZWyYUGP/SbGe\nYOroAEi3EaFsj+9n2w3fWNOjTCiYdPi9m+/i6RJR2ggAkNJcvCvR6BGOCf6v96NS\n0LFL3594CjgHtoUbaaeJnYGehxS2SsSziOCY98w1xKvIWcWLWZ1fRt9bsppKkrQT\nns8xkxYpPDNOocCVuKnQJfStu9n1Q4+oK1/p/Tx73qpebl84hXpp6iLP+NCTX1Lh\n5ZVAWQ7Yw58TghmCFR6a5wAKkTNLe7G888hVWsuRkGXA594JW9QuBgZ+spdnWTbG\nxGT5W3Ee2ANucxPsS945YGKRkbSklhnxS2LWlsxPF0Ony7rcFWFalR2K/p/v61lO\nOKhhoK+FAgMBAAECggEAGvJEHtB6Xm2YvQiJ74waCgiI/4b6SPbYHVnYjO69a1wA\nbv7f4UpY3/GenHR7Rz6HiGTP66nlqc07+u8IcLhKjcjLGjk10ydarwnUzNGCKYYx\n6HljIseIZI5JF2C+amCmHql5SN2C+dHda7jEGAUMJuOI4BTzDsoJmSdn2n+pfGvv\nbl3x4AUZamJq1wiHvOWsQMqOBauT7ya+r/bxhtcXNVieErn2EhKNcmdXGSdO07IH\njAqRIJ32Odtjs6F+HkIdIMT9ozmKi7yCgdBEVlc3iUhb9A1PmWqS8qAQK9J5XnLP\nuO9KGF+e6trmXBmI2ixkCLviNel6CpYWJ/R9iHdQAQKBgQDrBsVjOe6EbU+zw6Xn\n/7sIM7C/l5BBGe2Kfoy5JPo8M83EbD0VnGuon4KL5t8BAEwTS8N7iNrMHjV7lcnP\na4XLpDaU5vUwFDIRRkpaRW58l6uzDqWtB2yzZlyoz4Tu5wc3+m4uSd6M0rUwN/RP\nb6wtKCZpGfklQNyiTTyxoLCCVQKBgQDeouX62gse8jzLLxGCcFWNhD6jNrOnVZKO\n04kr0SjWEYdLJZv79JOq7nNXrixFZ5rmjv4hzQBE6GdQH5XyLfKdT+kXRnXibX30\nP3JGPYnvxcEEoPM4PEYmKqEJDOAOPxfxvBuxemrCBRmBsFGVgZbEo0O2wjdCJgvZ\nMfj08pKIcQKBgQCXtJwu65MRefnLgIuT0Feq+KqrUSr1SsYw8nTlgX/g4lN86Z0Y\nWQqJIsVChvkFjWqNvgbls7X/sbQ2HL7Sm4YWp93viZFUwoR68BNIZ67kz4YuI1M/\n+B3rQzSmZqVZDFl1gbojON1lqxD3mfaiW+QYleUNTI2sxUxlm1OFGMM2rQKBgQCK\nvAoCCrPZYeweVUNc/DFj0V/TBzhmcv20AP++jUUcOKoNWu9bz2nhn1vC7KdrzIcL\nW1njqEKdrhELLdObqaRBAVXoCiFVqxNNC+hi+uAkyR9higZmKbExAWl+IUbRueFq\n4uSC8RzrsI/XcA820h0ohfChR1912g2SGADiavKDEQKBgBgtxR4i8HBpBUlCJP/Z\nr+vGR7JUMikFf4J925aEKLfu/uR4OZejLMgvo16FoaNrumY0bcSbd2apD2YktwYG\nwUBwei87yeBvj5/bKESAjouyptaqqsFDrD3vVlanhHNMPFJvDT0e8K67nzLVt9B3\nw+eO5N1fxhIGg1kWPoUBOth1\n-----END PRIVATE KEY-----\n",
+  "client_email": "firebase-adminsdk-ijjwk@sketchmate-b5977.iam.gserviceaccount.com",
+  "client_id": "115518073637217601391",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-ijjwk%40sketchmate-b5977.iam.gserviceaccount.com"
+}

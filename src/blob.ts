@@ -9,55 +9,53 @@ import { randomUUID } from 'crypto';
 export enum CONTAINERS {
   drawings = 'drawings',
   account = 'account',
+  stickers = 'stickers',
+}
+
+interface ContainerDictionary {
+  [key: string]: ContainerClient;
 }
 
 export class BlobCreator {
-  private static drawings: ContainerClient;
-  private static account: ContainerClient;
+  private containerClients: ContainerDictionary = {};
 
   constructor() {
     const account = process.env.blob_account;
     const accountKey = process.env.blob_key;
     if (account && accountKey) {
       const sharedKeyCredential = new StorageSharedKeyCredential(account, accountKey);
-      BlobCreator.drawings = new BlobServiceClient(
-        `https://${account}.blob.core.windows.net`,
-        sharedKeyCredential
-      ).getContainerClient(CONTAINERS.drawings);
-
-      BlobCreator.account = new BlobServiceClient(
-        `https://${account}.blob.core.windows.net`,
-        sharedKeyCredential
-      ).getContainerClient(CONTAINERS.account);
+      Object.values(CONTAINERS).forEach((container) => {
+        this.containerClients[container] = new BlobServiceClient(
+          `https://${account}.blob.core.windows.net`,
+          sharedKeyCredential
+        ).getContainerClient(container);
+      });
       console.log('Connected to storage 🗑️');
     }
   }
 
-  async upload(
-    content: string | Buffer,
-    options?: BlockBlobUploadOptions,
-    client = CONTAINERS.drawings
-  ) {
-    const blobClient =
-      client === CONTAINERS.drawings ? BlobCreator.drawings : BlobCreator.account;
-    const blobName = randomUUID().toString();
-    const blockBlobClient = blobClient.getBlockBlobClient(blobName);
+  async upload(content: string | Buffer, options?: BlockBlobUploadOptions, container = CONTAINERS.drawings) {
+    const blockBlobClient = this.containerClients[container].getBlockBlobClient(randomUUID().toString());
     await blockBlobClient.upload(content, content.length, options);
     return blockBlobClient.url;
   }
 
-  async uploadImg(buffer: Buffer, client = CONTAINERS.drawings) {
-    return await this.upload(buffer, {
-      blobHTTPHeaders: {
-        blobContentType: 'image/png',
+  async uploadImg(buffer: Buffer, container = CONTAINERS.drawings) {
+    return await this.upload(
+      buffer,
+      {
+        blobHTTPHeaders: {
+          blobContentType: 'image/png',
+        },
       },
-    });
+      container
+    );
   }
 
-  async uploadFile(filePath: string, fileType: string) {
+  async uploadFile(filePath: string, fileType: string, container: CONTAINERS) {
     try {
       const fileName = randomUUID().toString();
-      const blobClient = BlobCreator.account.getBlockBlobClient(fileName);
+      const blobClient = this.containerClients[container].getBlockBlobClient(fileName);
       await blobClient.uploadFile(filePath, {
         blobHTTPHeaders: {
           blobContentType: fileType,
@@ -71,9 +69,7 @@ export class BlobCreator {
 
   async deleteBlob(blobUrl: string, container: CONTAINERS) {
     const blobName = blobUrl.substring(blobUrl.lastIndexOf('/') + 1);
-    const client =
-      container === CONTAINERS.drawings ? BlobCreator.drawings : BlobCreator.account;
-    const blobClient = client.getBlobClient(blobName);
+    const blobClient = this.containerClients[container].getBlobClient(blobName);
     await blobClient.deleteIfExists();
   }
 }

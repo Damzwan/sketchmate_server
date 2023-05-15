@@ -1,17 +1,5 @@
 import mongoose, { Schema } from 'mongoose';
-import { Mate, User } from '../types';
-import { PushSubscription } from 'web-push';
-
-const push_subscription = new Schema<PushSubscription>(
-  {
-    endpoint: { type: String, required: true },
-    keys: {
-      auth: { type: String, required: true },
-      p256dh: { type: String, required: true },
-    },
-  },
-  { _id: false }
-);
+import { Mate, User } from '../types/types';
 
 const mateSchema = new Schema<Mate>({
   name: { type: String, required: true },
@@ -21,7 +9,9 @@ const mateSchema = new Schema<Mate>({
 const user_schema = new Schema({
   mate: mateSchema,
   inbox: { type: [String], required: true },
-  subscription: { type: push_subscription },
+  stickers: { type: [String], required: true },
+  emblems: { type: [String], required: true },
+  subscription: { type: String },
   name: { type: String, required: true },
   img: { type: String, required: true },
 }) as mongoose.Schema<User>;
