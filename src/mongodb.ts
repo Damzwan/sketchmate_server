@@ -266,8 +266,7 @@ export async function uploadProfileImg(params: UploadProfileImgParams): Promise<
 
 export async function createSticker(params: CreateStickerParams): Promise<Res<string>> {
   try {
-    const img = await compressImg(params.img.filepath, STICKER_SIZE);
-    const url = await blobCreator.uploadImg(img, CONTAINERS.stickers);
+    const url = await blobCreator.uploadFile(params.img.filepath, 'image/png', CONTAINERS.stickers);
     const new_url: string = await removeBackground(url!);
 
     const response = await axios({
