@@ -33,7 +33,7 @@ export function registerSocketHandlers(io: Server) {
         const res = await match(params);
         socket.emit(SOCKET_ENDPONTS.match, res.user);
         if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.match, res.mate);
-        else if (res.mate.subscription) await sendNotification(res.mate.subscription, matchNotification(res.user.name));
+        if (res.mate.subscription) await sendNotification(res.mate.subscription, matchNotification(res.user.name));
       } catch (e) {
         socket.emit(SOCKET_ENDPONTS.match);
         if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.match);
@@ -45,10 +45,8 @@ export function registerSocketHandlers(io: Server) {
         await unMatch(params);
         socket.emit(SOCKET_ENDPONTS.unmatch, true);
         if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.unmatch, true);
-        else {
-          const mate = await getUserSubscription({ _id: params.mate_id });
-          if (mate && mate.subscription) await sendNotification(mate.subscription, unmatchNotification(params.name));
-        }
+        const mate = await getUserSubscription({ _id: params.mate_id });
+        if (mate && mate.subscription) await sendNotification(mate.subscription, unmatchNotification(params.name));
       } catch (e) {
         socket.emit(SOCKET_ENDPONTS.unmatch, false);
         if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.unmatch, false);
@@ -74,14 +72,12 @@ export function registerSocketHandlers(io: Server) {
       const inboxItem = await storeMessage(params);
       socket.emit(SOCKET_ENDPONTS.send, inboxItem);
       if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.send, inboxItem);
-      else {
-        const mate = await getUserSubscription({ _id: params.mate_id });
-        if (mate && mate.subscription)
-          await sendNotification(
-            mate.subscription,
-            drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id)
-          );
-      }
+      const mate = await getUserSubscription({ _id: params.mate_id });
+      if (mate && mate.subscription)
+        await sendNotification(
+          mate.subscription,
+          drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id)
+        );
     });
 
     socket.on(SOCKET_ENDPONTS.comment, async (params: CommentParams) => {
@@ -93,11 +89,9 @@ export function registerSocketHandlers(io: Server) {
       socket.emit(SOCKET_ENDPONTS.comment, commentRes);
       if (userIdToSocket[params.mate_id])
         io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.comment, commentRes);
-      else {
-        const mate = await getUserSubscription({ _id: params.mate_id });
-        if (mate && mate.subscription)
-          await sendNotification(mate.subscription, commentReceivedNotification(params.name, params.inbox_id));
-      }
+      const mate = await getUserSubscription({ _id: params.mate_id });
+      if (mate && mate.subscription)
+        await sendNotification(mate.subscription, commentReceivedNotification(params.name, params.inbox_id));
     });
 
     socket.on(SOCKET_ENDPONTS.disconnect, () => {
