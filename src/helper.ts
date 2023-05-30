@@ -17,8 +17,10 @@ export async function createThumbnail(buffer: Buffer | string) {
   return await sharp(buffer).resize(THUMBNAIL_WIDTH).jpeg({ mozjpeg: true }).toBuffer();
 }
 
-export async function compressImg(buffer: Buffer | string, size: number) {
-  return await sharp(buffer).resize(size).jpeg({ mozjpeg: true }).toBuffer();
+export async function compressImg(buffer: Buffer | string, size?: number) {
+  let sharpInstance = sharp(buffer);
+  if (size) sharpInstance = sharpInstance.resize(size);
+  return await sharpInstance.jpeg({ mozjpeg: true }).toBuffer();
 }
 
 export async function trimTransparentBackground(buffer: Buffer | string) {

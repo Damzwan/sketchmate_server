@@ -2,8 +2,10 @@ import {
   ChangeUserNameParams,
   Comment,
   CommentParams,
+  CreateSavedParams,
   CreateStickerParams,
   DeleteEmblemParams,
+  DeleteSavedParams,
   DeleteStickerParams,
   GetInboxItemsParams,
   GetUserParams,
@@ -11,13 +13,14 @@ import {
   MatchParams,
   RemoveFromInboxParams,
   Res,
+  Saved,
   SendParams,
   SubscribeParams,
   UnMatchParams,
   UploadProfileImgParams,
   User,
 } from './types/types';
-import { BlobCreator, CONTAINERS } from './blob';
+import { BlobCreator, CONTAINER } from './blob';
 import mongoose from 'mongoose';
 import { user_model } from './models/user.model';
 import {
@@ -51,7 +54,14 @@ export async function connectDb(): Promise<void> {
 
 export async function createUser(): Promise<Res<User>> {
   try {
-    return await user_model.create({ inbox: [], stickers: [], emblems: [], name: 'anonymous', img: stock_img });
+    return await user_model.create({
+      inbox: [],
+      stickers: [],
+      emblems: [],
+      saved: [],
+      name: 'anonymous',
+      img: stock_img,
+    });
   } catch (e) {
     throw new Error('Something went wrong creating a user');
   }
@@ -176,7 +186,7 @@ export async function storeMessage(params: SendParams): Promise<Res<InboxItem>> 
 
     const [blobUrl, imgUrl, thumbnailUrl] = await Promise.all([
       blobCreator.upload(params.drawing),
-      blobCreator.uploadImg(imgBuffer),
+      blobCreator.uploadImg(await compressImg(imgBuffer)),
       blobCreator.uploadImg(await createThumbnail(imgBuffer)),
     ]);
 
@@ -247,7 +257,7 @@ export async function changeUserName(params: ChangeUserNameParams): Promise<Res<
 
 export async function uploadProfileImg(params: UploadProfileImgParams): Promise<Res<string>> {
   try {
-    const url = await blobCreator.uploadFile(params.img.filepath, params.img.mimetype, CONTAINERS.account);
+    const url = await blobCreator.uploadFile(params.img.filepath, params.img.mimetype, CONTAINER.account);
     const userUpdate = { $set: { img: url } };
     const mateUpdate = { $set: { 'mate.img': url } };
 
@@ -256,7 +266,7 @@ export async function uploadProfileImg(params: UploadProfileImgParams): Promise<
       params.mate_id ? user_model.updateOne({ _id: params.mate_id }, mateUpdate) : null,
     ]);
 
-    if (params.previousImage) blobCreator.deleteBlob(params.previousImage, CONTAINERS.account);
+    if (params.previousImage) blobCreator.deleteBlob(params.previousImage, CONTAINER.account);
     fs.promises.unlink(params.img.filepath);
     return url;
   } catch (e) {
@@ -266,7 +276,7 @@ export async function uploadProfileImg(params: UploadProfileImgParams): Promise<
 
 export async function createSticker(params: CreateStickerParams): Promise<Res<string>> {
   try {
-    const url = await blobCreator.uploadFile(params.img.filepath, 'image/png', CONTAINERS.stickers);
+    const url = await blobCreator.uploadFile(params.img.filepath, 'image/png', CONTAINER.stickers);
     const new_url: string = await removeBackground(url!);
 
     const response = await axios({
@@ -274,12 +284,12 @@ export async function createSticker(params: CreateStickerParams): Promise<Res<st
       url: new_url,
       responseType: 'arraybuffer',
     });
-    blobCreator.deleteBlob(new_url, CONTAINERS.stickers);
+    blobCreator.deleteBlob(new_url, CONTAINER.stickers);
 
     const buffer = Buffer.from(response.data, 'binary');
 
     const new_img = await trimTransparentBackground(buffer);
-    const new_new_url = await blobCreator.uploadImg(new_img, CONTAINERS.stickers);
+    const new_new_url = await blobCreator.uploadImg(new_img, CONTAINER.stickers);
     await user_model.updateOne({ _id: params._id }, { $push: { stickers: new_new_url } });
     return new_new_url;
   } catch (e) {
@@ -290,7 +300,7 @@ export async function createSticker(params: CreateStickerParams): Promise<Res<st
 export async function createEmblem(params: CreateStickerParams): Promise<Res<string>> {
   try {
     const img = await imgToEmblem(params.img.filepath);
-    const url = await blobCreator.uploadImg(img, CONTAINERS.stickers);
+    const url = await blobCreator.uploadImg(img, CONTAINER.stickers);
     await user_model.updateOne({ _id: params._id }, { $push: { emblems: url } });
     return url;
   } catch (e) {
@@ -298,9 +308,26 @@ export async function createEmblem(params: CreateStickerParams): Promise<Res<str
   }
 }
 
+export async function createSaved(params: CreateSavedParams): Promise<Res<Saved>> {
+  try {
+    const [drawing_url, img_url] = await Promise.all([
+      blobCreator.uploadFile(params.drawing.filepath, 'application/json', CONTAINER.stickers),
+      blobCreator.uploadFile(params.img.filepath, 'image/png', CONTAINER.stickers),
+    ]);
+    const saved: Saved = {
+      img: img_url!,
+      drawing: drawing_url!,
+    };
+    await user_model.updateOne({ _id: params._id }, { $push: { saved: saved } });
+    return saved;
+  } catch (e) {
+    throw new Error('Failed to create sticker');
+  }
+}
+
 export async function deleteSticker(params: DeleteStickerParams): Promise<void> {
   try {
-    await blobCreator.deleteBlob(params.sticker_url, CONTAINERS.stickers);
+    await blobCreator.deleteBlob(params.sticker_url, CONTAINER.stickers);
     await user_model.findByIdAndUpdate(params.user_id, {
       $pull: {
         stickers: params.sticker_url,
@@ -313,12 +340,32 @@ export async function deleteSticker(params: DeleteStickerParams): Promise<void> 
 
 export async function deleteEmblem(params: DeleteEmblemParams): Promise<void> {
   try {
-    await blobCreator.deleteBlob(params.emblem_url, CONTAINERS.stickers);
+    await blobCreator.deleteBlob(params.emblem_url, CONTAINER.stickers);
     await user_model.findByIdAndUpdate(params.user_id, {
       $pull: {
         emblems: params.emblem_url,
       },
     });
+  } catch (e) {
+    throw new Error('Failed to delete sticker');
+  }
+}
+
+export async function deleteSaved(params: DeleteSavedParams): Promise<void> {
+  try {
+    const saved: Saved = {
+      img: params.img_url,
+      drawing: params.drawing_url,
+    };
+    await Promise.all([
+      blobCreator.deleteBlob(params.img_url, CONTAINER.stickers),
+      blobCreator.deleteBlob(params.drawing_url, CONTAINER.stickers),
+      await user_model.findByIdAndUpdate(params.user_id, {
+        $pull: {
+          saved: saved,
+        },
+      }),
+    ]);
   } catch (e) {
     throw new Error('Failed to delete sticker');
   }
