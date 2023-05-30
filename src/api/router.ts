@@ -1,26 +1,27 @@
 import Router from 'koa-router';
 import {
   ChangeUserNameParams,
-  CommentParams,
   CreateEmblemParams,
+  CreateSavedParams,
   CreateStickerParams,
   DeleteEmblemParams,
+  DeleteSavedParams,
   DeleteStickerParams,
   ENDPOINTS,
   GetInboxItemsParams,
   GetUserParams,
-  NotificationType,
   RemoveFromInboxParams,
   SubscribeParams,
   UploadProfileImgParams,
 } from '../types/types';
 import {
   changeUserName,
-  comment,
   createEmblem,
+  createSaved,
   createSticker,
   createUser,
   deleteEmblem,
+  deleteSaved,
   deleteSticker,
   getInboxItems,
   getUser,
@@ -81,6 +82,17 @@ router.post(`${ENDPOINTS.emblem}/:id`, async (ctx) => {
   ctx.body = await createEmblem(params);
 });
 
+router.post(`${ENDPOINTS.saved}/:id`, async (ctx) => {
+  if (!ctx.request.files) throw new Error();
+  const files = ctx.request.files;
+  const params: CreateSavedParams = {
+    _id: ctx.params.id,
+    img: files.img,
+    drawing: files.drawing,
+  };
+  ctx.body = await createSaved(params);
+});
+
 router.put(ENDPOINTS.subscribe, async (ctx) => {
   ctx.body = await subscribe(parseParams<SubscribeParams>(ctx.request.body));
 });
@@ -95,6 +107,10 @@ router.delete(ENDPOINTS.sticker, async (ctx) => {
 
 router.delete(ENDPOINTS.emblem, async (ctx) => {
   ctx.body = await deleteEmblem(parseParams<DeleteEmblemParams>(ctx.query));
+});
+
+router.delete(ENDPOINTS.saved, async (ctx) => {
+  ctx.body = await deleteSaved(parseParams<DeleteSavedParams>(ctx.query));
 });
 
 router.delete(`${ENDPOINTS.inbox}/:userId/:inboxItemId`, async (ctx) => {

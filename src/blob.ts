@@ -6,7 +6,7 @@ import {
 } from '@azure/storage-blob';
 import { randomUUID } from 'crypto';
 
-export enum CONTAINERS {
+export enum CONTAINER {
   drawings = 'drawings',
   account = 'account',
   stickers = 'stickers',
@@ -24,7 +24,7 @@ export class BlobCreator {
     const accountKey = process.env.blob_key;
     if (account && accountKey) {
       const sharedKeyCredential = new StorageSharedKeyCredential(account, accountKey);
-      Object.values(CONTAINERS).forEach((container) => {
+      Object.values(CONTAINER).forEach((container) => {
         this.containerClients[container] = new BlobServiceClient(
           `https://${account}.blob.core.windows.net`,
           sharedKeyCredential
@@ -34,25 +34,25 @@ export class BlobCreator {
     }
   }
 
-  async upload(content: string | Buffer, options?: BlockBlobUploadOptions, container = CONTAINERS.drawings) {
+  async upload(content: string | Buffer, options?: BlockBlobUploadOptions, container = CONTAINER.drawings) {
     const blockBlobClient = this.containerClients[container].getBlockBlobClient(randomUUID().toString());
     await blockBlobClient.upload(content, content.length, options);
     return blockBlobClient.url;
   }
 
-  async uploadImg(buffer: Buffer, container = CONTAINERS.drawings) {
+  async uploadImg(buffer: Buffer, container = CONTAINER.drawings, type = 'image/jpg') {
     return await this.upload(
       buffer,
       {
         blobHTTPHeaders: {
-          blobContentType: 'image/png',
+          blobContentType: type,
         },
       },
       container
     );
   }
 
-  async uploadFile(filePath: string, fileType: string, container: CONTAINERS) {
+  async uploadFile(filePath: string, fileType: string, container: CONTAINER) {
     try {
       const fileName = randomUUID().toString();
       const blobClient = this.containerClients[container].getBlockBlobClient(fileName);
@@ -67,7 +67,7 @@ export class BlobCreator {
     }
   }
 
-  async deleteBlob(blobUrl: string, container: CONTAINERS) {
+  async deleteBlob(blobUrl: string, container: CONTAINER) {
     const blobName = blobUrl.substring(blobUrl.lastIndexOf('/') + 1);
     const blobClient = this.containerClients[container].getBlobClient(blobName);
     await blobClient.deleteIfExists();

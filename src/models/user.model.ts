@@ -1,8 +1,13 @@
 import mongoose, { Schema } from 'mongoose';
-import { Mate, User } from '../types/types';
+import { Mate, Saved, User } from '../types/types';
 
 const mateSchema = new Schema<Mate>({
   name: { type: String, required: true },
+  img: { type: String, required: true },
+});
+
+const savedSchema = new Schema<Saved>({
+  drawing: { type: String, required: true },
   img: { type: String, required: true },
 });
 
@@ -11,6 +16,7 @@ const user_schema = new Schema({
   inbox: { type: [String], required: true },
   stickers: { type: [String], required: true },
   emblems: { type: [String], required: true },
+  saved: { type: [savedSchema], required: true },
   subscription: { type: String },
   name: { type: String, required: true },
   img: { type: String, required: true },
