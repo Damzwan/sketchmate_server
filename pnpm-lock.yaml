@@ -14,6 +14,7 @@ specifiers:
   '@types/koa-router': ^7.4.4
   '@types/koa__cors': ^3.3.0
   '@types/node': ^18.11.18
+  '@types/node-cron': ^3.0.7
   '@types/pako': ^2.0.0
   '@types/web-push': ^3.3.2
   '@typescript-eslint/eslint-plugin': ^5.49.0
@@ -32,6 +33,7 @@ specifiers:
   koa-router: ^12.0.0
   mongodb: ^5.0.0
   mongoose: ^6.9.0
+  node-cron: ^3.0.2
   nodemon: ^2.0.20
   pako: ^2.1.0
   prettier: 2.8.3
@@ -57,6 +59,7 @@ dependencies:
   koa-router: 12.0.0
   mongodb: 5.0.0
   mongoose: 6.9.0
+  node-cron: 3.0.2
   pako: 2.1.0
   sharp: 0.32.0
   socket.io: 4.5.4
@@ -73,6 +76,7 @@ devDependencies:
   '@types/koa-router': 7.4.4
   '@types/koa__cors': 3.3.0
   '@types/node': 18.11.18
+  '@types/node-cron': 3.0.7
   '@types/pako': 2.0.0
   '@types/web-push': 3.3.2
   '@typescript-eslint/eslint-plugin': 5.49.0_iu322prlnwsygkcra5kbpy22si
@@ -1650,6 +1654,10 @@ packages:
     resolution: {integrity: sha512-cXoc4k+6+YAllH3ZHmx4hf7La1dzUk6keTR4bF4b4Sc0mZxU/zK4wO7l+ZzezXm/jkYj/qC+uYGZrarZdIVvyQ==}
     dependencies:
       '@types/node': 18.11.18
+    dev: true
+
+  /@types/node-cron/3.0.7:
+    resolution: {integrity: sha512-9PuLtBboc/+JJ7FshmJWv769gDonTpItN0Ol5TMwclpSQNjVyB2SRxSKBcTtbSysSL5R7Oea06kTTFNciCoYwA==}
     dev: true
 
   /@types/node-fetch/2.6.2:
@@ -3738,6 +3746,13 @@ packages:
 
   /node-addon-api/6.0.0:
     resolution: {integrity: sha512-GyHvgPvUXBvAkXa0YvYnhilSB1A+FRYMpIVggKzPZqdaZfevZOuzfWzyvgzOwRLHBeo/MMswmJFsrNF4Nw1pmA==}
+    dev: false
+
+  /node-cron/3.0.2:
+    resolution: {integrity: sha512-iP8l0yGlNpE0e6q1o185yOApANRe47UPbLf4YxfbiNHt/RU5eBcGB/e0oudruheSf+LQeDMezqC5BVAb5wwRcQ==}
+    engines: {node: '>=6.0.0'}
+    dependencies:
+      uuid: 8.3.2
     dev: false
 
   /node-fetch/2.6.8:

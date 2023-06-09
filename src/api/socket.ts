@@ -54,7 +54,8 @@ export function registerSocketHandlers(io: Server) {
     });
 
     let compressedData = new Uint8Array();
-    socket.on(`${SOCKET_ENDPONTS.send}chunk`, (chunk) => {
+    let isTextDataCompleted = false;
+    socket.on(`${SOCKET_ENDPONTS.send}text_chunk`, (chunk) => {
       // Combine the chunks into one Uint8Array
       const temp = new Uint8Array(compressedData.length + chunk.length);
       temp.set(compressedData, 0);
@@ -62,12 +63,30 @@ export function registerSocketHandlers(io: Server) {
       compressedData = temp;
     });
 
-    socket.on(`${SOCKET_ENDPONTS.send}end`, async () => {
-      const decompressedData = pako.inflate(compressedData);
+    socket.on(`${SOCKET_ENDPONTS.send}text_end`, async () => {
+      isTextDataCompleted = true;
+      await handleSendDataCompletion();
+    });
+
+    let imageBuffer = Buffer.alloc(0);
+    let isImageDataCompleted = false;
+    socket.on(`${SOCKET_ENDPONTS.send}img_chunk`, (chunk) => {
+      imageBuffer = Buffer.concat([imageBuffer, Buffer.from(chunk)]);
+    });
+
+    socket.on(`${SOCKET_ENDPONTS.send}img_end`, async () => {
+      isImageDataCompleted = true;
+      await handleSendDataCompletion();
+    });
+
+    async function handleSendDataCompletion() {
+      if (!isImageDataCompleted || !isTextDataCompleted) return;
+      const decompressedTextData = pako.inflate(compressedData);
       const decoder = new TextDecoder(); // Use TextDecoder to convert Uint8Array to string
-      const dataString = decoder.decode(decompressedData);
+      const dataString = decoder.decode(decompressedTextData);
       const params: SendParams = JSON.parse(dataString);
-      compressedData = new Uint8Array();
+      params.img = imageBuffer;
+      resetBinaryData();
 
       const inboxItem = await storeMessage(params);
       socket.emit(SOCKET_ENDPONTS.send, inboxItem);
@@ -78,7 +97,14 @@ export function registerSocketHandlers(io: Server) {
           mate.subscription,
           drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id)
         );
-    });
+    }
+
+    function resetBinaryData() {
+      isImageDataCompleted = false;
+      isTextDataCompleted = false;
+      compressedData = new Uint8Array();
+      imageBuffer = Buffer.alloc(0);
+    }
 
     socket.on(SOCKET_ENDPONTS.comment, async (params: CommentParams) => {
       const createdComment = await comment(params);

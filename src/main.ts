@@ -14,6 +14,7 @@ import { router } from './api/router';
 import { registerSocketHandlers } from './api/socket';
 import { errorHandler } from './middleware/error_handler';
 import * as fs from 'fs';
+import { scheduleResetUploadFolder } from './helper';
 
 const app = new Koa();
 const server = createServer(app.callback());
@@ -53,4 +54,5 @@ app
 server.listen(port, async () => {
   console.log(`Listening on ${port}`);
   await connectDb();
+  scheduleResetUploadFolder();
 });
