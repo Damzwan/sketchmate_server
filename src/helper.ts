@@ -1,6 +1,9 @@
 import { ParsedUrlQuery } from 'querystring';
 import sharp from 'sharp';
 import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
+import * as cron from 'node-cron';
 
 export function parseParams<T>(params: ParsedUrlQuery | string): T {
   const newParams = typeof params === 'string' ? JSON.parse(params) : params;
@@ -14,13 +17,13 @@ export function dataUrlToBuffer(dataUrl: string) {
 
 const THUMBNAIL_WIDTH = 200; // Set the desired width for the thumbnail
 export async function createThumbnail(buffer: Buffer | string) {
-  return await sharp(buffer).resize(THUMBNAIL_WIDTH).jpeg({ mozjpeg: true }).toBuffer();
+  return await sharp(buffer).resize(THUMBNAIL_WIDTH).webp().toBuffer();
 }
 
 export async function compressImg(buffer: Buffer | string, size?: number) {
   let sharpInstance = sharp(buffer);
   if (size) sharpInstance = sharpInstance.resize(size);
-  return await sharpInstance.jpeg({ mozjpeg: true }).toBuffer();
+  return await sharpInstance.webp().toBuffer();
 }
 
 export async function trimTransparentBackground(buffer: Buffer | string) {
@@ -55,4 +58,19 @@ export async function removeBackground(imgUrl: string) {
     },
   });
   return response.data.blob_url;
+}
+
+export function scheduleResetUploadFolder() {
+  const directory = 'uploads';
+  cron.schedule('0 0 * * *', () => {
+    fs.readdir(directory, (err, files) => {
+      if (err) throw err;
+
+      for (const file of files) {
+        fs.unlink(path.join(directory, file), (err) => {
+          if (err) throw err;
+        });
+      }
+    });
+  });
 }

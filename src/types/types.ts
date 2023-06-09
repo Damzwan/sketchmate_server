@@ -56,7 +56,7 @@ export interface SendParams {
   name: string;
   mate_id: string;
   drawing: string;
-  img: string;
+  img: any;
 }
 
 export interface SendRes {

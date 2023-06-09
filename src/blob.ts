@@ -40,7 +40,7 @@ export class BlobCreator {
     return blockBlobClient.url;
   }
 
-  async uploadImg(buffer: Buffer, container = CONTAINER.drawings, type = 'image/jpg') {
+  async uploadImg(buffer: Buffer, container = CONTAINER.drawings, type = 'image/webp') {
     return await this.upload(
       buffer,
       {

@@ -182,12 +182,12 @@ export async function match(params: MatchParams) {
 
 export async function storeMessage(params: SendParams): Promise<Res<InboxItem>> {
   try {
-    const imgBuffer = dataUrlToBuffer(params.img);
+    // const imgBuffer = dataUrlToBuffer(params.img);
 
     const [blobUrl, imgUrl, thumbnailUrl] = await Promise.all([
       blobCreator.upload(params.drawing),
-      blobCreator.uploadImg(await compressImg(imgBuffer)),
-      blobCreator.uploadImg(await createThumbnail(imgBuffer)),
+      blobCreator.uploadImg(params.img),
+      blobCreator.uploadImg(await createThumbnail(params.img)),
     ]);
 
     const date = new Date();
@@ -276,7 +276,7 @@ export async function uploadProfileImg(params: UploadProfileImgParams): Promise<
 
 export async function createSticker(params: CreateStickerParams): Promise<Res<string>> {
   try {
-    const url = await blobCreator.uploadFile(params.img.filepath, 'image/png', CONTAINER.stickers);
+    const url = await blobCreator.uploadFile(params.img.filepath, 'image/webp', CONTAINER.stickers);
     const new_url: string = await removeBackground(url!);
 
     const response = await axios({
@@ -312,7 +312,7 @@ export async function createSaved(params: CreateSavedParams): Promise<Res<Saved>
   try {
     const [drawing_url, img_url] = await Promise.all([
       blobCreator.uploadFile(params.drawing.filepath, 'application/json', CONTAINER.stickers),
-      blobCreator.uploadFile(params.img.filepath, 'image/png', CONTAINER.stickers),
+      blobCreator.uploadFile(params.img.filepath, 'image/webp', CONTAINER.stickers),
     ]);
     const saved: Saved = {
       img: img_url!,
