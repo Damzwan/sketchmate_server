@@ -279,19 +279,8 @@ export async function createSticker(params: CreateStickerParams): Promise<Res<st
     const url = await blobCreator.uploadFile(params.img.filepath, 'image/webp', CONTAINER.stickers);
     const new_url: string = await removeBackground(url!);
 
-    const response = await axios({
-      method: 'GET',
-      url: new_url,
-      responseType: 'arraybuffer',
-    });
-    blobCreator.deleteBlob(new_url, CONTAINER.stickers);
-
-    const buffer = Buffer.from(response.data, 'binary');
-
-    const new_img = await trimTransparentBackground(buffer);
-    const new_new_url = await blobCreator.uploadImg(new_img, CONTAINER.stickers);
-    await user_model.updateOne({ _id: params._id }, { $push: { stickers: new_new_url } });
-    return new_new_url;
+    await user_model.updateOne({ _id: params._id }, { $push: { stickers: new_url } });
+    return new_url;
   } catch (e) {
     throw new Error('Failed to create sticker');
   }
@@ -347,7 +336,7 @@ export async function deleteEmblem(params: DeleteEmblemParams): Promise<void> {
       },
     });
   } catch (e) {
-    throw new Error('Failed to delete sticker');
+    throw new Error('Failed to delete emblem');
   }
 }
 
