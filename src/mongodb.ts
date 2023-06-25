@@ -52,18 +52,21 @@ export async function connectDb(): Promise<void> {
   }
 }
 
-export async function createUser(): Promise<Res<User>> {
+export async function createUser(user: Partial<User>): Promise<Res<User>> {
   try {
+    if (user.img && !user.img?.includes('https'))
+      user.img = await blobCreator.uploadFile(user.img, 'image/webp', CONTAINER.account);
     return await user_model.create({
       inbox: [],
       stickers: [],
       emblems: [],
       saved: [],
-      name: 'anonymous',
       img: stock_img,
+      name: 'Anonymous',
+      ...user,
     });
   } catch (e) {
-    throw new Error('Something went wrong creating a user');
+    console.log(e);
   }
 }
 

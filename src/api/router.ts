@@ -13,6 +13,7 @@ import {
   RemoveFromInboxParams,
   SubscribeParams,
   UploadProfileImgParams,
+  User,
 } from '../types/types';
 import {
   changeUserName,
@@ -31,6 +32,7 @@ import {
   uploadProfileImg,
 } from '../mongodb';
 import { parseParams } from '../helper';
+import { PageRangeInfo } from '@azure/storage-blob';
 
 export const router = new Router();
 
@@ -45,7 +47,11 @@ router.get(ENDPOINTS.inbox, async (ctx) => {
 });
 
 router.post(ENDPOINTS.user, async (ctx) => {
-  ctx.body = await createUser();
+  const files = ctx.request.files as any;
+  const userData: Partial<User> = JSON.parse(ctx.request.body.user);
+  if (files.img) userData.img = files.img.filepath;
+
+  ctx.body = await createUser(userData);
 });
 
 router.put(ENDPOINTS.user, async (ctx) => {

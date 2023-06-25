@@ -158,10 +158,10 @@ export interface Saved {
   img: string;
 }
 
-export type Res<T> = T | undefined | null;
+export type Res<T> = T | undefined;
 
 export interface API {
-  createUser(): Promise<Res<User>>;
+  createUser(params: Partial<User>): Promise<Res<User>>;
 
   getUser(params: GetUserParams): Promise<Res<User>>;
 
