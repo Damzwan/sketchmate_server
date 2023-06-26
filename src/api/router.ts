@@ -4,6 +4,7 @@ import {
   CreateEmblemParams,
   CreateSavedParams,
   CreateStickerParams,
+  CreateUserParams,
   DeleteEmblemParams,
   DeleteSavedParams,
   DeleteStickerParams,
@@ -48,7 +49,7 @@ router.get(ENDPOINTS.inbox, async (ctx) => {
 
 router.post(ENDPOINTS.user, async (ctx) => {
   const files = ctx.request.files as any;
-  const userData: Partial<User> = JSON.parse(ctx.request.body.user);
+  const userData: CreateUserParams = JSON.parse(ctx.request.body.user);
   if (files.img) userData.img = files.img.filepath;
 
   ctx.body = await createUser(userData);
