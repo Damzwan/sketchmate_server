@@ -4,6 +4,7 @@ import {
   CommentParams,
   CreateSavedParams,
   CreateStickerParams,
+  CreateUserParams,
   DeleteEmblemParams,
   DeleteSavedParams,
   DeleteStickerParams,
@@ -52,7 +53,7 @@ export async function connectDb(): Promise<void> {
   }
 }
 
-export async function createUser(user: Partial<User>): Promise<Res<User>> {
+export async function createUser(user: CreateUserParams): Promise<Res<User>> {
   try {
     if (user.img && !user.img?.includes('https'))
       user.img = await blobCreator.uploadFile(user.img, 'image/webp', CONTAINER.account);
