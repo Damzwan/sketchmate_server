@@ -44,6 +44,7 @@ export const drawingReceivedNotification = (mateName: string, drawingImg: string
     data: {
       type: NotificationType.message,
       inbox_id: inbox_id,
+      image_url: drawingImg,
     },
   };
 };
