@@ -92,11 +92,14 @@ export function registerSocketHandlers(io: Server) {
       socket.emit(SOCKET_ENDPONTS.send, inboxItem);
       if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.send, inboxItem);
       const mate = await getUserSubscription({ _id: params.mate_id });
-      if (mate && mate.subscription)
-        await sendNotification(
-          mate.subscription,
-          drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id)
-        );
+      if (mate && mate.subscription) {
+        const notification = drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id);
+        sendNotification(mate.subscription, notification);
+
+        // We send a data message which is always received by firebase onMessageReceive
+        delete notification.notification;
+        await sendNotification(mate.subscription, notification);
+      }
     }
 
     function resetBinaryData() {
