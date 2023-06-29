@@ -1,7 +1,7 @@
 import { AndroidConfig, Notification } from 'firebase-admin/lib/messaging';
 
 export interface FBNotification {
-  notification: Notification;
+  notification?: Notification;
   android?: AndroidConfig;
   data?: { [key: string]: string };
 }
