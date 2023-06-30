@@ -95,14 +95,11 @@ export function registerSocketHandlers(io: Server) {
       if (mate && mate.subscription) {
         const notification = drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id);
         delete notification.notification;
-
-        await Promise.all([
-          sendNotification(mate.subscription, notification),
-          sendNotification(
-            mate.subscription,
-            drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id)
-          ),
-        ]);
+        await sendNotification(mate.subscription, notification);
+        await sendNotification(
+          mate.subscription,
+          drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id)
+        );
 
         // We send a data message which is always received by firebase onMessageReceive
       }
