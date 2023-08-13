@@ -93,9 +93,12 @@ export function registerSocketHandlers(io: Server) {
       if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.send, inboxItem);
       const mate = await getUserSubscription({ _id: params.mate_id });
       if (mate && mate.subscription) {
-        // const notification = drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id);
-        // delete notification.notification;
-        // await sendNotification(mate.subscription, notification);
+        // this is being used by our widget, we are sending a silent notification
+        const notification = drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id);
+        delete notification.notification;
+        notification.data = { ...notification.data, silent: 'true' };
+        await sendNotification(mate.subscription, notification);
+
         await sendNotification(
           mate.subscription,
           drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id)
