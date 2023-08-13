@@ -1,5 +1,4 @@
 import * as admin from 'firebase-admin';
-import fs from 'fs';
 import { FBNotification } from './types/notification.type';
 import serviceAccount from '../fcm.json';
 import { getUserSubscription } from './mongodb';

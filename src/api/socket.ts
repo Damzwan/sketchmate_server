@@ -93,9 +93,9 @@ export function registerSocketHandlers(io: Server) {
       if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.send, inboxItem);
       const mate = await getUserSubscription({ _id: params.mate_id });
       if (mate && mate.subscription) {
-        const notification = drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id);
-        delete notification.notification;
-        await sendNotification(mate.subscription, notification);
+        // const notification = drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id);
+        // delete notification.notification;
+        // await sendNotification(mate.subscription, notification);
         await sendNotification(
           mate.subscription,
           drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id)
