@@ -23,6 +23,7 @@ import {
   createSticker,
   createUser,
   deleteEmblem,
+  deleteProfileImg,
   deleteSaved,
   deleteSticker,
   getInboxItems,
@@ -69,6 +70,12 @@ router.put(`${ENDPOINTS.user}/img/:id`, async (ctx) => {
   };
 
   ctx.body = await uploadProfileImg(params);
+});
+
+router.delete(`${ENDPOINTS.user}/img/:id`, async (ctx) => {
+  const user_id = ctx.params.id;
+  const stock_img = ctx.request.query.stockImage as string;
+  ctx.body = await deleteProfileImg(user_id, stock_img);
 });
 
 router.post(`${ENDPOINTS.sticker}/:id`, async (ctx) => {

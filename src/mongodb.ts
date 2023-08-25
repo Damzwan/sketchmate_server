@@ -278,6 +278,14 @@ export async function uploadProfileImg(params: UploadProfileImgParams): Promise<
   }
 }
 
+export async function deleteProfileImg(user_id: string, stock_img: string) {
+  try {
+    await user_model.updateOne({ _id: user_id }, { $set: { img: stock_img } });
+  } catch (e) {
+    console.log(e);
+  }
+}
+
 export async function createSticker(params: CreateStickerParams): Promise<Res<string>> {
   try {
     const url = await blobCreator.uploadFile(params.img.filepath, 'image/webp', CONTAINER.stickers);
