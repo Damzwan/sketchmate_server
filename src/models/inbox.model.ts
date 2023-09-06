@@ -16,6 +16,7 @@ const inbox_schema = new Schema<InboxItem>(
     sender: { type: String, required: true },
     image: { type: String, required: true },
     thumbnail: { type: String, required: true },
+    aspect_ratio: { type: Number, required: true },
     reply: { type: Schema.Types.ObjectId, ref: 'InboxItem', required: false },
     comments: { type: [comment_schema], required: false },
   },
