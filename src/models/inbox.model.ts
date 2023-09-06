@@ -1,4 +1,4 @@
-import mongoose, { Schema } from 'mongoose';
+import mongoose, { Schema, Types } from 'mongoose';
 import { Comment, InboxItem } from '../types/types';
 import { ObjectId } from 'mongodb';
 
@@ -8,12 +8,12 @@ const comment_schema = new Schema<Comment>({
   date: { type: Date, required: true },
 });
 
-const inbox_schema = new Schema<InboxItem>(
+const inbox_schema = new Schema<Omit<InboxItem, 'sender'> & { sender: ObjectId }>(
   {
     drawing: { type: String, required: true },
-    followers: { type: [String], required: true },
+    followers: { type: [Types.ObjectId], required: true },
     date: { type: Date, required: true },
-    sender: { type: String, required: true },
+    sender: { type: Types.ObjectId, required: true },
     image: { type: String, required: true },
     thumbnail: { type: String, required: true },
     aspect_ratio: { type: Number, required: true },

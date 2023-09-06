@@ -14,7 +14,6 @@ import {
   RemoveFromInboxParams,
   SubscribeParams,
   UploadProfileImgParams,
-  User,
 } from '../types/types';
 import {
   changeUserName,
@@ -34,7 +33,6 @@ import {
   uploadProfileImg,
 } from '../mongodb';
 import { parseParams } from '../helper';
-import { PageRangeInfo } from '@azure/storage-blob';
 
 export const router = new Router();
 

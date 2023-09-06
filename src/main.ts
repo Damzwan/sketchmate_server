@@ -56,3 +56,12 @@ server.listen(port, async () => {
   await connectDb();
   scheduleResetUploadFolder();
 });
+
+// Make the server not crash on unhandled error
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason);
+});
