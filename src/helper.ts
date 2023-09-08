@@ -15,9 +15,17 @@ export function dataUrlToBuffer(dataUrl: string) {
   return Buffer.from(base64Data, 'base64');
 }
 
-const THUMBNAIL_WIDTH = 300; // Set the desired width for the thumbnail
+const THUMBNAIL_SIZE = 300; // Set the desired width for the thumbnail
 export async function createThumbnail(buffer: Buffer | string) {
-  return await sharp(buffer).resize(THUMBNAIL_WIDTH).webp().toBuffer();
+  // Create a sharp instance and get metadata
+  const image = sharp(buffer);
+  const metadata = await image.metadata();
+
+  // Determine dimensions for resizing
+  const resizeOptions = metadata.height! > metadata.width! ? { height: THUMBNAIL_SIZE } : { width: THUMBNAIL_SIZE };
+
+  // Resize the image and convert to WebP format
+  return await image.resize(resizeOptions).webp().toBuffer();
 }
 
 export async function compressImg(buffer: Buffer | string, size?: number) {

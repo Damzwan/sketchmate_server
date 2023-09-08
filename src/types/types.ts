@@ -1,6 +1,3 @@
-import { Types } from 'mongoose';
-import { ObjectId } from 'mongodb';
-
 export enum NotificationType {
   match = 'match',
   unmatch = 'unmatch',
