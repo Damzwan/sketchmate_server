@@ -65,7 +65,7 @@ export async function removeBackground(imgUrl: string) {
       url: imgUrl,
     },
   });
-  return response.data.blob_url;
+  return response.data;
 }
 
 export function scheduleResetUploadFolder() {
