@@ -15,6 +15,7 @@ import {
   RemoveFromInboxParams,
   Res,
   Saved,
+  SeeInboxParams,
   SendParams,
   SubscribeParams,
   UnMatchParams,
@@ -104,6 +105,9 @@ export async function comment(params: CommentParams) {
         _id: params.inbox_id,
       },
       {
+        $set: {
+          comments_seen_by: [params.sender],
+        },
         $push: {
           comments: comment,
         },
@@ -203,6 +207,8 @@ export async function storeMessage(params: SendParams): Promise<Res<InboxItem>> 
       date: date,
       sender: params._id,
       followers: [params.mate_id, params._id],
+      seen_by: [params._id],
+      comments_seen_by: [],
       comments: [],
       aspect_ratio: params.aspect_ratio,
     };
@@ -370,5 +376,18 @@ export async function deleteSaved(params: DeleteSavedParams): Promise<void> {
     ]);
   } catch (e) {
     throw new Error('Failed to delete sticker');
+  }
+}
+
+export async function seeInbox(params: SeeInboxParams) {
+  try {
+    await inbox_model.findByIdAndUpdate(params.inbox_id, {
+      $push: {
+        seen_by: params.user_id,
+        comments_seen_by: params.user_id,
+      },
+    });
+  } catch (e) {
+    throw new Error(e as any);
   }
 }
