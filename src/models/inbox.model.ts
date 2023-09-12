@@ -12,6 +12,8 @@ const inbox_schema = new Schema<Omit<InboxItem, 'sender'> & { sender: ObjectId }
   {
     drawing: { type: String, required: true },
     followers: { type: [Types.ObjectId], required: true },
+    seen_by: { type: [Types.ObjectId], required: true },
+    comments_seen_by: { type: [Types.ObjectId], required: true },
     date: { type: Date, required: true },
     sender: { type: Types.ObjectId, required: true },
     image: { type: String, required: true },

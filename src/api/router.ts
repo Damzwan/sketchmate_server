@@ -28,6 +28,7 @@ import {
   getInboxItems,
   getUser,
   removeFromInbox,
+  seeInbox,
   subscribe,
   unsubscribe,
   uploadProfileImg,
@@ -131,4 +132,11 @@ router.delete(`${ENDPOINTS.inbox}/:userId/:inboxItemId`, async (ctx) => {
     inbox_id: ctx.params.inboxItemId,
   };
   ctx.body = await removeFromInbox(params);
+});
+
+router.post(`${ENDPOINTS.inbox}/see/:id`, async (ctx) => {
+  const inbox_id = ctx.params.id;
+  const user_id = ctx.request.query.user_id as string;
+
+  ctx.body = await seeInbox({ inbox_id, user_id });
 });
