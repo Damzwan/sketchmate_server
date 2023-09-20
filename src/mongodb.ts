@@ -25,19 +25,10 @@ import {
 import { BlobCreator, CONTAINER } from './blob';
 import mongoose from 'mongoose';
 import { user_model } from './models/user.model';
-import {
-  compressImg,
-  createThumbnail,
-  dataUrlToBuffer,
-  imgToEmblem,
-  removeBackground,
-  STICKER_SIZE,
-  trimTransparentBackground,
-} from './helper';
+import { createThumbnail, imgToEmblem, removeBackground } from './helper';
 import { ObjectId } from 'mongodb';
 import { inbox_model } from './models/inbox.model';
 import * as fs from 'fs';
-import axios from 'axios';
 
 let blobCreator: BlobCreator;
 const stock_img = 'https://sketchmate.blob.core.windows.net/account/aku.jpg';
