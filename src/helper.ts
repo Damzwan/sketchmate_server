@@ -15,7 +15,7 @@ export function dataUrlToBuffer(dataUrl: string) {
   return Buffer.from(base64Data, 'base64');
 }
 
-const THUMBNAIL_SIZE = 300; // Set the desired width for the thumbnail
+const THUMBNAIL_SIZE = 600; // Set the desired width for the thumbnail
 export async function createThumbnail(buffer: Buffer | string) {
   // Create a sharp instance and get metadata
   const image = sharp(buffer);
