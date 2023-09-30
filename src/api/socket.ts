@@ -33,8 +33,10 @@ export function registerSocketHandlers(io: Server) {
         const res = await match(params);
         socket.emit(SOCKET_ENDPONTS.match, res.user);
         if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.match, res.mate);
-        if (res.mate.subscription) await sendNotification(res.mate.subscription, matchNotification(res.user.name));
+        if (res.mate.subscription)
+          await sendNotification(res.mate.subscription, matchNotification(res.user.name), params.mate_id);
       } catch (e) {
+        console.log(e);
         socket.emit(SOCKET_ENDPONTS.match);
         if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.match);
       }
@@ -46,7 +48,8 @@ export function registerSocketHandlers(io: Server) {
         socket.emit(SOCKET_ENDPONTS.unmatch, true);
         if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.unmatch, true);
         const mate = await getUserSubscription({ _id: params.mate_id });
-        if (mate && mate.subscription) await sendNotification(mate.subscription, unmatchNotification(params.name));
+        if (mate && mate.subscription)
+          await sendNotification(mate.subscription, unmatchNotification(params.name), params.mate_id);
       } catch (e) {
         socket.emit(SOCKET_ENDPONTS.unmatch, false);
         if (userIdToSocket[params.mate_id]) io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.unmatch, false);
@@ -97,11 +100,12 @@ export function registerSocketHandlers(io: Server) {
         const notification = drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id);
         delete notification.notification;
         notification.data = { ...notification.data, silent: 'true' };
-        await sendNotification(mate.subscription, notification);
+        await sendNotification(mate.subscription, notification, mate._id);
 
         await sendNotification(
           mate.subscription,
-          drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id)
+          drawingReceivedNotification(params.name, inboxItem!.thumbnail, inboxItem!._id),
+          mate._id
         );
 
         // We send a data message which is always received by firebase onMessageReceive
@@ -126,7 +130,7 @@ export function registerSocketHandlers(io: Server) {
         io.to(userIdToSocket[params.mate_id]).emit(SOCKET_ENDPONTS.comment, commentRes);
       const mate = await getUserSubscription({ _id: params.mate_id });
       if (mate && mate.subscription)
-        await sendNotification(mate.subscription, commentReceivedNotification(params.name, params.inbox_id));
+        await sendNotification(mate.subscription, commentReceivedNotification(params.name, params.inbox_id), mate._id);
     });
 
     socket.on(SOCKET_ENDPONTS.disconnect, () => {
