@@ -31,8 +31,6 @@ import { inbox_model } from './models/inbox.model';
 import * as fs from 'fs';
 
 let blobCreator: BlobCreator;
-const stock_img = 'https://sketchmate.blob.core.windows.net/account/aku.jpg';
-
 export async function connectDb(): Promise<void> {
   try {
     const url = process.env.mongo;
@@ -54,7 +52,6 @@ export async function createUser(user: CreateUserParams): Promise<Res<User>> {
       stickers: [],
       emblems: [],
       saved: [],
-      img: stock_img,
       name: 'Anonymous',
       ...user,
     });
