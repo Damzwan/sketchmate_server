@@ -276,7 +276,16 @@ export async function uploadProfileImg(params: UploadProfileImgParams): Promise<
 
 export async function deleteProfileImg(user_id: string, stock_img: string) {
   try {
-    await user_model.updateOne({ _id: user_id }, { $set: { img: stock_img } });
+    const user = await user_model.findOneAndUpdate(
+      { _id: user_id },
+      { $set: { img: stock_img } },
+      {
+        new: false, // This will return the document as it was before the update
+        projection: { img: 1 }, // Only project the img field
+      }
+    );
+
+    if (user && !user.img.includes('stock')) blobCreator.deleteBlob(user.img, CONTAINER.account);
   } catch (e) {
     console.log(e);
   }
