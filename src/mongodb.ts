@@ -265,7 +265,8 @@ export async function uploadProfileImg(params: UploadProfileImgParams): Promise<
       params.mate_id ? user_model.updateOne({ _id: params.mate_id }, mateUpdate) : null,
     ]);
 
-    if (params.previousImage) blobCreator.deleteBlob(params.previousImage, CONTAINER.account);
+    if (params.previousImage && !params.previousImage.includes('stock'))
+      blobCreator.deleteBlob(params.previousImage, CONTAINER.account);
     fs.promises.unlink(params.img.filepath);
     return url;
   } catch (e) {
