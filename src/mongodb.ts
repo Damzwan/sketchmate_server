@@ -281,9 +281,10 @@ export async function deleteProfileImg(user_id: string, stock_img: string) {
       { $set: { img: stock_img } },
       {
         new: false, // This will return the document as it was before the update
-        projection: { img: 1 }, // Only project the img field
       }
     );
+
+    if (user && user.mate) await user_model.findByIdAndUpdate(user.mate._id, { $set: { 'mate.img': stock_img } });
 
     if (user && !user.img.includes('stock')) blobCreator.deleteBlob(user.img, CONTAINER.account);
   } catch (e) {
