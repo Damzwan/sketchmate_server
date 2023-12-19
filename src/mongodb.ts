@@ -381,7 +381,7 @@ export async function deleteSaved(params: DeleteSavedParams): Promise<void> {
 export async function seeInbox(params: SeeInboxParams) {
   try {
     await inbox_model.findByIdAndUpdate(params.inbox_id, {
-      $push: {
+      $addToSet: {
         seen_by: params.user_id,
         comments_seen_by: params.user_id,
       },
@@ -390,3 +390,4 @@ export async function seeInbox(params: SeeInboxParams) {
     throw new Error(e as any);
   }
 }
+
