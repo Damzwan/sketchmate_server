@@ -4,6 +4,8 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import * as cron from 'node-cron';
+import { account_blob } from './config/app.config';
+import { FBNotification } from './types/notification.type';
 
 export function parseParams<T>(params: ParsedUrlQuery | string): T {
   const newParams = typeof params === 'string' ? JSON.parse(params) : params;
@@ -50,7 +52,7 @@ export async function imgToEmblem(buffer: Buffer | string) {
   return await sharp(buffer)
     .resize(STICKER_SIZE, STICKER_SIZE, {
       fit: 'cover',
-      position: 'center',
+      position: 'center'
     })
     .composite([{ input: roundedMask, blend: 'dest-in' }])
     .png()
@@ -62,8 +64,8 @@ const bg_url = process.env.BG_URL;
 export async function removeBackground(imgUrl: string) {
   const response = await axios.post(bg_url!, undefined, {
     params: {
-      url: imgUrl,
-    },
+      url: imgUrl
+    }
   });
   return response.data;
 }
@@ -81,4 +83,14 @@ export function scheduleResetUploadFolder() {
       }
     });
   });
+}
+
+export function getRandomStockAvatar() {
+  const randomNum = Math.floor(Math.random() * 5) + 1;
+  return `${account_blob}/stock_${randomNum}.webp`;
+}
+
+export function silentNotification(notification: FBNotification) {
+  delete notification.notification;
+  return notification
 }

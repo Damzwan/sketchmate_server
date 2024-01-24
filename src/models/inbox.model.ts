@@ -1,6 +1,7 @@
 import mongoose, { Schema, Types } from 'mongoose';
 import { Comment, InboxItem } from '../types/types';
 import { ObjectId } from 'mongodb';
+import { mateSchema } from './user.model';
 
 const comment_schema = new Schema<Comment>({
   sender: { type: String, required: true },
@@ -11,7 +12,8 @@ const comment_schema = new Schema<Comment>({
 const inbox_schema = new Schema<Omit<InboxItem, 'sender'> & { sender: ObjectId }>(
   {
     drawing: { type: String, required: true },
-    followers: { type: [Types.ObjectId], required: true },
+    followers: { type: [String], required: true },
+    original_followers: { type: [String], required: true },
     seen_by: { type: [Types.ObjectId], required: true },
     comments_seen_by: { type: [Types.ObjectId], required: true },
     date: { type: Date, required: true },

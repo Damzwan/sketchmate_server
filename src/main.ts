@@ -27,6 +27,7 @@ const io = new Server(server, {
 });
 
 const port = process.env.PORT || 4000;
+export const minimum_supported_version = "0.2.0"
 
 registerSocketHandlers(io);
 
