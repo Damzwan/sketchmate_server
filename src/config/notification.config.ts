@@ -20,7 +20,7 @@ export const unmatchNotification = (mateName: string, mate_id: string, unmatcher
   return {
     notification: {
       title: `${mateName} unmatched you`,
-      body: 'Connect to a new mate'
+      body: ''
     },
     android: {
       notification: {}
