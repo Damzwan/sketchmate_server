@@ -36,10 +36,6 @@ export async function compressImg(buffer: Buffer | string, size?: number) {
   return await sharpInstance.webp().toBuffer();
 }
 
-export async function trimTransparentBackground(buffer: Buffer | string) {
-  return await sharp(buffer).trim().toBuffer();
-}
-
 export const STICKER_SIZE = 256;
 
 export async function imgToEmblem(buffer: Buffer | string) {
@@ -85,12 +81,8 @@ export function scheduleResetUploadFolder() {
   });
 }
 
-export function getRandomStockAvatar() {
-  const randomNum = Math.floor(Math.random() * 5) + 1;
-  return `${account_blob}/stock_${randomNum}.webp`;
-}
 
 export function silentNotification(notification: FBNotification) {
   delete notification.notification;
-  return notification
+  return notification;
 }

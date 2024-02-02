@@ -22,12 +22,12 @@ const io = new Server(server, {
   cors: {
     origin: ['https://app.sketchmate.ninja', 'http://localhost:8100', 'http://localhost', 'http://192.168.0.102:8100'],
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    credentials: true,
-  },
+    credentials: true
+  }
 });
 
 const port = process.env.PORT || 4000;
-export const minimum_supported_version = "0.2.0"
+export const minimum_supported_version = '0.2.0';
 
 registerSocketHandlers(io);
 
@@ -43,7 +43,7 @@ app
     koaBody({
       multipart: true,
       formidable: { uploadDir: uploadDir }, //This is where the files would come
-      parsedMethods: [HttpMethodEnum.PUT, HttpMethodEnum.POST],
+      parsedMethods: [HttpMethodEnum.PUT, HttpMethodEnum.POST]
     })
   )
   .use(logger())

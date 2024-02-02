@@ -27,24 +27,24 @@ import {
   UploadProfileImgParams,
   User
 } from './types/types';
-import { BlobCreator, CONTAINER } from './blob';
+import { S3Creator, CONTAINER } from './s3';
 import mongoose, { Types } from 'mongoose';
 import { user_model } from './models/user.model';
-import { createThumbnail, getRandomStockAvatar, imgToEmblem, removeBackground } from './helper';
+import { createThumbnail, imgToEmblem, removeBackground } from './helper';
 import { ObjectId } from 'mongodb';
 import { inbox_model } from './models/inbox.model';
 import * as fs from 'fs';
 import { minimum_supported_version } from './main';
 
-let blobCreator: BlobCreator;
+let s3Creator: S3Creator;
 
 export async function connectDb(): Promise<void> {
   try {
     const url = process.env.mongo;
     if (!url) throw Error('No url available');
-    await mongoose.connect(url, { dbName: 'test' });
+    await mongoose.connect(url, { dbName: 'prod' });
     console.log('Connected to database 👻');
-    blobCreator = new BlobCreator();
+    s3Creator = new S3Creator();
   } catch (e) {
     console.log(e);
   }
@@ -59,7 +59,7 @@ export async function createUser(auth_id: string): Promise<Res<User>> {
       emblems: [],
       saved: [],
       name: 'Anonymous',
-      img: getRandomStockAvatar(),
+      img: s3Creator.getRandomStockProfileImg(),
       mates: [],
       mate_requests_sent: [],
       mate_requests_received: [],
@@ -194,7 +194,7 @@ export async function removeFromInbox(params: RemoveFromInboxParams) {
     ]);
 
     if (inboxItem?.followers.length === 0) {
-      await Promise.all([blobCreator.deleteBlob(inboxItem.thumbnail, CONTAINER.drawings), blobCreator.deleteBlob(inboxItem.image, CONTAINER.drawings), blobCreator.deleteBlob(inboxItem.drawing, CONTAINER.drawings), inbox_model.deleteOne({ _id: params.inbox_id })]);
+      await Promise.all([s3Creator.deleteBlob(inboxItem.thumbnail, CONTAINER.drawings), s3Creator.deleteBlob(inboxItem.image, CONTAINER.drawings), s3Creator.deleteBlob(inboxItem.drawing, CONTAINER.drawings), inbox_model.deleteOne({ _id: params.inbox_id })]);
     }
   } catch (e) {
     throw new Error('Cannot remove');
@@ -204,7 +204,7 @@ export async function removeFromInbox(params: RemoveFromInboxParams) {
 
 export async function getUserSubscription(params: { _id: string }): Promise<Res<User>> {
   try {
-    return await user_model.findById(params._id, { subscriptions: 1, mate: 1, _id: 1, img: 1 }).lean();
+    return await user_model.findById(params._id, { subscriptions: 1, mate: 1, _id: 1, img: 1 }).lean() as Res<User>;
   } catch (e) {
     throw new Error('User not found');
   }
@@ -275,9 +275,9 @@ export async function storeMessage(params: SendParams): Promise<Res<InboxItem>> 
     // const imgBuffer = dataUrlToBuffer(params.img);
 
     const [blobUrl, imgUrl, thumbnailUrl] = await Promise.all([
-      blobCreator.upload(params.drawing),
-      blobCreator.uploadImg(params.img),
-      blobCreator.uploadImg(await createThumbnail(params.img))
+      s3Creator.upload(params.drawing),
+      s3Creator.uploadImg(params.img),
+      s3Creator.uploadImg(await createThumbnail(params.img))
     ]);
 
     const date = new Date();
@@ -329,17 +329,18 @@ export async function subscribe(params: RegisterNotificationParams): Promise<Res
   try {
     await user_model.updateOne(
       { _id: params.user_id },
-      {
-        $addToSet: {
-          subscriptions: {
-            $each: [params.subscription],
-            $sort: { fingerprint: 1 }  // Ensure consistent ordering for uniqueness checks
+      [
+        {
+          $set: {
+            subscriptions: {
+              $setUnion: ['$subscriptions', [params.subscription]]
+            }
           }
         }
-      }
+      ]
     );
   } catch (e) {
-    throw new Error('Failed to subscribe');
+    throw new Error('Failed to subscribe: ' + e);
   }
 }
 
@@ -415,7 +416,7 @@ export async function changeUserName(params: ChangeUserNameParams): Promise<Res<
 
 export async function uploadProfileImg(params: UploadProfileImgParams): Promise<Res<string>> {
   try {
-    const url = await blobCreator.uploadFile(params.img.filepath, params.img.mimetype, CONTAINER.account);
+    const url = await s3Creator.uploadFile(params.img.filepath, params.img.mimetype, CONTAINER.account);
 
     const user = await user_model.findById(params._id);
     if (!user) return;
@@ -448,7 +449,7 @@ export async function uploadProfileImg(params: UploadProfileImgParams): Promise<
     await user_model.bulkWrite(updates);
 
     if (params.previousImage && !params.previousImage.includes('stock'))
-      blobCreator.deleteBlob(params.previousImage, CONTAINER.account);
+      s3Creator.deleteBlob(params.previousImage, CONTAINER.account);
     fs.promises.unlink(params.img.filepath);
     return url;
   } catch (e) {
@@ -488,7 +489,7 @@ export async function deleteProfileImg(user_id: string, stock_img: string) {
 
     await user_model.bulkWrite(updates);
 
-    if (user && !user.img.includes('stock')) blobCreator.deleteBlob(user.img, CONTAINER.account);
+    if (user && !user.img.includes('stock')) s3Creator.deleteBlob(user.img, CONTAINER.account);
   } catch (e) {
     console.log(e);
   }
@@ -496,7 +497,7 @@ export async function deleteProfileImg(user_id: string, stock_img: string) {
 
 export async function createSticker(params: CreateStickerParams): Promise<Res<string>> {
   try {
-    const url = await blobCreator.uploadFile(params.img.filepath, 'image/webp', CONTAINER.stickers);
+    const url = await s3Creator.uploadFile(params.img.filepath, 'image/webp', CONTAINER.stickers);
     const new_url: string = await removeBackground(url!);
 
     await user_model.updateOne({ _id: params._id }, { $push: { stickers: new_url } });
@@ -509,7 +510,7 @@ export async function createSticker(params: CreateStickerParams): Promise<Res<st
 export async function createEmblem(params: CreateStickerParams): Promise<Res<string>> {
   try {
     const img = await imgToEmblem(params.img.filepath);
-    const url = await blobCreator.uploadImg(img, CONTAINER.stickers);
+    const url = await s3Creator.uploadImg(img, CONTAINER.stickers);
     await user_model.updateOne({ _id: params._id }, { $push: { emblems: url } });
     return url;
   } catch (e) {
@@ -520,8 +521,8 @@ export async function createEmblem(params: CreateStickerParams): Promise<Res<str
 export async function createSaved(params: CreateSavedParams): Promise<Res<Saved>> {
   try {
     const [drawing_url, img_url] = await Promise.all([
-      blobCreator.uploadFile(params.drawing.filepath, 'application/json', CONTAINER.stickers),
-      blobCreator.uploadFile(params.img.filepath, 'image/webp', CONTAINER.stickers)
+      s3Creator.uploadFile(params.drawing.filepath, 'application/json', CONTAINER.stickers),
+      s3Creator.uploadFile(params.img.filepath, 'image/webp', CONTAINER.stickers)
     ]);
     const saved: Saved = {
       img: img_url!,
@@ -536,7 +537,7 @@ export async function createSaved(params: CreateSavedParams): Promise<Res<Saved>
 
 export async function deleteSticker(params: DeleteStickerParams): Promise<void> {
   try {
-    await blobCreator.deleteBlob(params.sticker_url, CONTAINER.stickers);
+    await s3Creator.deleteBlob(params.sticker_url, CONTAINER.stickers);
     await user_model.findByIdAndUpdate(params.user_id, {
       $pull: {
         stickers: params.sticker_url
@@ -549,7 +550,7 @@ export async function deleteSticker(params: DeleteStickerParams): Promise<void> 
 
 export async function deleteEmblem(params: DeleteEmblemParams): Promise<void> {
   try {
-    await blobCreator.deleteBlob(params.emblem_url, CONTAINER.stickers);
+    await s3Creator.deleteBlob(params.emblem_url, CONTAINER.stickers);
     await user_model.findByIdAndUpdate(params.user_id, {
       $pull: {
         emblems: params.emblem_url
@@ -567,8 +568,8 @@ export async function deleteSaved(params: DeleteSavedParams): Promise<void> {
       drawing: params.drawing_url
     };
     await Promise.all([
-      blobCreator.deleteBlob(params.img_url, CONTAINER.stickers),
-      blobCreator.deleteBlob(params.drawing_url, CONTAINER.stickers),
+      s3Creator.deleteBlob(params.img_url, CONTAINER.stickers),
+      s3Creator.deleteBlob(params.drawing_url, CONTAINER.stickers),
       await user_model.findByIdAndUpdate(params.user_id, {
         $pull: {
           saved: saved
