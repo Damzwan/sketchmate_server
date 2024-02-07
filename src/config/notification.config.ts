@@ -4,8 +4,8 @@ import { NotificationType } from '../types/types';
 export const matchNotification = (mateName: string): FBNotification => {
   return {
     notification: {
-      title: `You are matched to ${mateName}`,
-      body: 'Start drawing now!'
+      title: `You became friends with ${mateName}`,
+      body: ''
     },
     android: {
       notification: {}
