@@ -228,8 +228,8 @@ export function registerSocketHandlers(io: Server) {
           mateSocket.emit(SOCKET_ENDPONTS.mate_request, params);
         });
       }
-      const retrievedSender = await getUserSubscription({ _id: params.sender });
-      if (retrievedSender && retrievedSender.subscriptions.length > 0) await sendNotification(retrievedSender.subscriptions, sendFriendRequestNotification(params.sender_name));
+      const retrievedReceiver = await getUserSubscription({ _id: params.receiver });
+      if (retrievedReceiver && retrievedReceiver.subscriptions.length > 0) await sendNotification(retrievedReceiver.subscriptions, sendFriendRequestNotification(params.sender_name));
     });
 
     socket.on(SOCKET_ENDPONTS.cancel_mate_request, async (params: SendMateRequestParams) => {
