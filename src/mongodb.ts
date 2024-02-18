@@ -324,20 +324,22 @@ export async function unMatch(params: UnMatchParams): Promise<Res<void>> {
   }
 }
 
-
 export async function subscribe(params: RegisterNotificationParams): Promise<Res<void>> {
   try {
+    // TODO we should be able to combine these but somehow not working...
     await user_model.updateOne(
       { _id: params.user_id },
-      [
-        {
-          $set: {
-            subscriptions: {
-              $setUnion: ['$subscriptions', [params.subscription]]
-            }
-          }
+      {
+        $pull: {
+          subscriptions: { fingerprint: params.subscription.fingerprint }  // Target the specific subscription to remove
         }
-      ]
+      }
+    );
+    await user_model.updateOne(
+      { _id: params.user_id },
+      {
+        $push: { subscriptions: params.subscription } // Add the new subscription
+      }
     );
   } catch (e) {
     throw new Error('Failed to subscribe: ' + e);
