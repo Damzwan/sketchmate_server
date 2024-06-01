@@ -8,7 +8,7 @@ export const matchNotification = (mateName: string): FBNotification => {
       body: ''
     },
     android: {
-      notification: {}
+      priority: 'high'
     },
     data: {
       type: NotificationType.match
@@ -23,7 +23,7 @@ export const unmatchNotification = (mateName: string, mate_id: string, unmatcher
       body: ''
     },
     android: {
-      notification: {}
+      priority: 'high'
     },
     data: {
       type: NotificationType.unmatch,
@@ -39,6 +39,9 @@ export const drawingReceivedNotification = (mate_id: string, mateName: string, d
       title: `${mateName} sent you a drawing`,
       body: 'Tap to view',
       imageUrl: drawingImg
+    },
+    android: {
+      priority: 'high'
     },
     data: {
       type: NotificationType.message,
@@ -56,7 +59,7 @@ export const commentReceivedNotification = (mateName: string, inbox_id: string):
       body: 'Tap to view'
     },
     android: {
-      notification: {}
+      priority: 'high'
     },
     data: {
       type: NotificationType.comment,
@@ -72,7 +75,7 @@ export const sendFriendRequestNotification = (senderName: string): FBNotificatio
       body: 'Tap to view'
     },
     android: {
-      notification: {}
+      priority: 'high'
     },
     data: {
       type: NotificationType.friend_request
