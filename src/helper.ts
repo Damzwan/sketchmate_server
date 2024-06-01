@@ -84,5 +84,6 @@ export function scheduleResetUploadFolder() {
 
 export function silentNotification(notification: FBNotification) {
   delete notification.notification;
+  delete notification.android
   return notification;
 }
