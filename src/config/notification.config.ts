@@ -8,7 +8,11 @@ export const matchNotification = (mateName: string): FBNotification => {
       body: ''
     },
     android: {
-      priority: 'high'
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
     },
     data: {
       type: NotificationType.match
@@ -23,7 +27,12 @@ export const unmatchNotification = (mateName: string, mate_id: string, unmatcher
       body: ''
     },
     android: {
-      priority: 'high'
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+
+      }
     },
     data: {
       type: NotificationType.unmatch,
@@ -41,7 +50,11 @@ export const drawingReceivedNotification = (mate_id: string, mateName: string, d
       imageUrl: drawingImg
     },
     android: {
-      priority: 'high'
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
     },
     data: {
       type: NotificationType.message,
@@ -59,7 +72,11 @@ export const commentReceivedNotification = (mateName: string, inbox_id: string):
       body: 'Tap to view'
     },
     android: {
-      priority: 'high'
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
     },
     data: {
       type: NotificationType.comment,
@@ -72,10 +89,14 @@ export const sendFriendRequestNotification = (senderName: string): FBNotificatio
   return {
     notification: {
       title: `${senderName} sent you a friend request`,
-      body: 'Tap to view'
+      body: 'Tap to view',
     },
     android: {
-      priority: 'high'
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
     },
     data: {
       type: NotificationType.friend_request
