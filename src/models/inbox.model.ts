@@ -17,7 +17,7 @@ const inbox_schema = new Schema<Omit<InboxItem, 'sender'> & { sender: ObjectId }
     seen_by: { type: [Types.ObjectId], required: true },
     comments_seen_by: { type: [Types.ObjectId], required: true },
     date: { type: Date, required: true },
-    sender: { type: Types.ObjectId, required: true },
+    sender: { type: Schema.Types.ObjectId, required: true },
     image: { type: String, required: true },
     thumbnail: { type: String, required: true },
     aspect_ratio: { type: Number, required: true },

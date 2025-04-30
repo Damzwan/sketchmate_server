@@ -136,7 +136,7 @@ export async function getInboxItems(params: GetInboxItemsParams): Promise<GetInb
       .find({
         _id: { $in: params._ids }
       })
-      .lean() as InboxItem[];
+      .lean() as any as InboxItem[]; // TODO fix
     const uniqueUserIds = Array.from(new Set(inboxItems.reduce((acc: string[], curr) => acc.concat(curr.original_followers), [])));
 
     const userInfo = await getPartialUsers(uniqueUserIds);
