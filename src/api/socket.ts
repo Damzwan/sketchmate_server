@@ -37,6 +37,8 @@ interface UserSocketMap {
 }
 
 const userSocketMap: UserSocketMap = {};
+const sketchmateCanvasRoomToSocketMap: Record<string, Socket[]> = {};
+const sketchmateCanvasSocketToRoomMap: Record<string, string> = {};
 
 
 export function registerSocketHandlers(io: Server) {
@@ -259,6 +261,79 @@ export function registerSocketHandlers(io: Server) {
         });
       }
     });
+
+    socket.on('sketchmate_canvas_join_room', async (params: any) => {
+      sketchmateCanvasSocketToRoomMap[socket.id] = params.room_id;
+
+      if (!sketchmateCanvasRoomToSocketMap[params.room_id]) sketchmateCanvasRoomToSocketMap[params.room_id] = [];
+      sketchmateCanvasRoomToSocketMap[params.room_id].push(socket);
+
+      sketchmateCanvasRoomToSocketMap[params.room_id].forEach(s => {
+        s.emit('sketchmate_canvas_room_count', sketchmateCanvasRoomToSocketMap[params.room_id].length);
+      });
+
+
+      if (sketchmateCanvasRoomToSocketMap[params.room_id].length > 1) {
+        sketchmateCanvasRoomToSocketMap[params.room_id][0].emit('sketchmate_canvas_sync_request', { socket_id_to_sync: socket.id });
+      }
+
+      // TODO this might be a problem
+      socket.on('disconnect', () => {
+        sketchmateCanvasRoomToSocketMap[sketchmateCanvasSocketToRoomMap[socket.id]] =
+          sketchmateCanvasRoomToSocketMap[sketchmateCanvasSocketToRoomMap[socket.id]].filter(s => s.id != socket.id);
+        sketchmateCanvasRoomToSocketMap[sketchmateCanvasSocketToRoomMap[socket.id]].forEach((s) => {
+          s.emit('sketchmate_canvas_room_count', sketchmateCanvasRoomToSocketMap[sketchmateCanvasSocketToRoomMap[socket.id]].length);
+        });
+      });
+    });
+
+    // socket.on('sketchmate_canvas_change_room', async (params: any) => {
+    //   sketchmateCanvasSocketToRoomMap[socket.id] = params.new_room_id;
+    //
+    //   sketchmateCanvasRoomToSocketMap[params.old_room_id] = sketchmateCanvasRoomToSocketMap[params.old_room_id].filter(s => s.id != socket.id);
+    //   sketchmateCanvasRoomToSocketMap[params.new_room_id].push(socket);
+    //
+    //   socket.emit('sketchmate_canvas_room_count', sketchmateCanvasRoomToSocketMap[params.room_id].length);
+    //
+    //   if (sketchmateCanvasRoomToSocketMap[params.new_room_id].length > 1) {
+    //     sketchmateCanvasRoomToSocketMap[params.new_room_id][0].emit('sketchmate_canvas_sync_request', { socket_id_to_sync: socket.id });
+    //   }
+    // });
+
+    socket.on('sketchmate_canvas_sync_request', async (params: any) => {
+      const matching_socket = sketchmateCanvasRoomToSocketMap[sketchmateCanvasSocketToRoomMap[socket.id]]?.find(s => s.id == params.socket_id_to_sync);
+      if (!matching_socket) return;
+      matching_socket.emit('sketchmate_canvas_sync', { canvas: params.canvas });
+    });
+
+    socket.on('sketchmate_canvas_friend_action', async (params: any) => {
+      const otherSockets = sketchmateCanvasRoomToSocketMap[sketchmateCanvasSocketToRoomMap[socket.id]]?.filter(s => s.id != socket.id);
+      otherSockets.forEach((otherSocket) => {
+        otherSocket.emit('sketchmate_canvas_friend_action', params);
+      });
+    });
+
+    socket.on('sketchmate_canvas_pen_down', async (params: any) => {
+      const otherSockets = sketchmateCanvasRoomToSocketMap[sketchmateCanvasSocketToRoomMap[socket.id]]?.filter(s => s.id != socket.id);
+      otherSockets.forEach((otherSocket) => {
+        otherSocket.emit('sketchmate_canvas_pen_down', params);
+      });
+    });
+
+    socket.on('sketchmate_canvas_pen_move', async (params: any) => {
+      const otherSockets = sketchmateCanvasRoomToSocketMap[sketchmateCanvasSocketToRoomMap[socket.id]]?.filter(s => s.id != socket.id);
+      otherSockets.forEach((otherSocket) => {
+        otherSocket.emit('sketchmate_canvas_pen_move', params);
+      });
+    });
+
+    socket.on('sketchmate_canvas_pen_up', async (params: any) => {
+      const otherSockets = sketchmateCanvasRoomToSocketMap[sketchmateCanvasSocketToRoomMap[socket.id]]?.filter(s => s.id != socket.id);
+      otherSockets.forEach((otherSocket) => {
+        otherSocket.emit('sketchmate_canvas_pen_up', params);
+      });
+    });
+
 
   });
 }
