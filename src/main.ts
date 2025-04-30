@@ -20,7 +20,7 @@ const app = new Koa();
 const server = createServer(app.callback());
 const io = new Server(server, {
   cors: {
-    origin: ['https://app.sketchmate.ninja', 'http://localhost:8100', 'http://localhost', 'http://192.168.0.102:8100'],
+    origin: ['https://app.sketchmate.ninja', 'http://localhost:8100', 'http://localhost', 'https://localhost'],
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true
   }
