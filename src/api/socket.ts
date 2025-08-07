@@ -46,6 +46,8 @@ export function registerSocketHandlers(io: Server) {
       if (!userSocketMap[params._id]) {
         userSocketMap[params._id] = [];
       }
+      socket.emit(SOCKET_ENDPONTS.login);
+
 
       // Add the new socket to the array
       userSocketMap[params._id].push(socket);
