@@ -206,9 +206,13 @@ export interface UnRegisterNotificationParams {
 }
 
 export interface OnLoginEventParams {
-  user_id: string
-  fingerprint: string
-  loggedIn: boolean
+  user_id: string;
+  fingerprint: string;
+  loggedIn: boolean;
+}
+
+export interface SearchMateParams {
+  mateName: string;
 }
 
 
@@ -247,7 +251,10 @@ export interface API {
   deleteSaved(params: DeleteSavedParams): Promise<void>;
 
   seeInboxItem(params: SeeInboxParams): Promise<void>;
+
   onLoginEvent(params: OnLoginEventParams): Promise<void>;
+
+  searchMate(params: SearchMateParams): Promise<Res<Mate[]>>;
 }
 
 export interface SocketAPI {
