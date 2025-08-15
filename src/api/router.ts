@@ -26,7 +26,7 @@ import {
   deleteSticker,
   getInboxItems, getLastImgFromUser, getPartialUsers,
   getUser, getUserMates, onLoginEvent,
-  removeFromInbox,
+  removeFromInbox, searchMate,
   seeInbox,
   subscribe,
   unsubscribe,
@@ -50,6 +50,11 @@ router.get(`${ENDPOINTS.user}/mates`, async (ctx) => {
 
 router.get(`${ENDPOINTS.user}/drawing`, async (ctx) => {
   ctx.body = await getLastImgFromUser(parseParams<{ user_id: string, friend_id: string }>(ctx.query));
+});
+
+router.get(`${ENDPOINTS.user}/search_mate`, async (ctx) => {
+  const params = parseParams<{ mateName: string, user_id: string }>(ctx.query);
+  ctx.body = await searchMate(params.mateName, params.user_id);
 });
 
 router.get(ENDPOINTS.partial_users, async (ctx) => {

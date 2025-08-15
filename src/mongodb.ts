@@ -664,4 +664,26 @@ export async function getPartialUsers(user_ids: string[]): Promise<Mate[]> {
   }
 }
 
+export async function searchMate(
+  mateName: string,
+  userId: string,
+  limit = 10
+): Promise<Mate[]> {
+  try {
+    return await user_model
+      .find(
+        {
+          _id: { $ne: userId },
+          name: { $regex: `^${mateName}`, $options: 'i' }    // starts with search (case-insensitive)
+        },
+        { _id: 1, img: 1, name: 1 }
+      )
+      .limit(limit)
+      .lean();
+  } catch (e: any) {
+    throw new Error(e.message || e);
+  }
+}
+
+
 
