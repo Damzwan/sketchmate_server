@@ -1,12 +1,11 @@
 import mongoose, { Schema, Types } from 'mongoose';
 import { Comment, InboxItem } from '../types/types';
 import { ObjectId } from 'mongodb';
-import { mateSchema } from './user.model';
 
 const comment_schema = new Schema<Comment>({
   sender: { type: String, required: true },
   message: { type: String, required: true },
-  date: { type: Date, required: true },
+  date: { type: Date, required: true }
 });
 
 const inbox_schema = new Schema<Omit<InboxItem, 'sender'> & { sender: ObjectId }>(
@@ -22,7 +21,7 @@ const inbox_schema = new Schema<Omit<InboxItem, 'sender'> & { sender: ObjectId }
     thumbnail: { type: String, required: true },
     aspect_ratio: { type: Number, required: true },
     reply: { type: Schema.Types.ObjectId, ref: 'InboxItem', required: false },
-    comments: { type: [comment_schema], required: false },
+    comments: { type: [comment_schema], required: false }
   },
   { collection: 'inbox' }
 );

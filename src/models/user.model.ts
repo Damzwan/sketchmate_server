@@ -17,7 +17,7 @@ export const notificationSchema = new Schema<NotificationSubscription>({
   fingerprint: { type: String, required: true },
   model: { type: String, required: true },
   os: { type: String, required: true },
-  logged_in: { type: Boolean, required: true },
+  logged_in: { type: Boolean, required: true }
 });
 
 const user_schema = new Schema({
@@ -31,7 +31,11 @@ const user_schema = new Schema({
   name: { type: String, required: true },
   img: { type: String, required: true },
   mate_requests_received: { type: [String], required: true },
-  mate_requests_sent: { type: [String], required: true }
+  mate_requests_sent: { type: [String], required: true },
+  balloon: {
+    sent: { type: Schema.Types.ObjectId, default: null },
+    received: { type: Schema.Types.ObjectId, default: null }
+  }
 }) as mongoose.Schema<User>;
 
 export const user_model = mongoose.model('users', user_schema);

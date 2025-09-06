@@ -1,7 +1,9 @@
 import {
+  AcceptBalloonParams,
+  Balloon, CancelBalloonParams,
   ChangeUserNameParams,
   Comment,
-  CommentParams,
+  CommentParams, CreateBalloonPostParams,
   CreateSavedParams,
   CreateStickerParams,
   DeleteEmblemParams,
@@ -21,20 +23,28 @@ import {
   Saved,
   SeeInboxParams,
   SendMateRequestParams,
-  SendParams,
+  SendParams, SOCKET_ENDPONTS,
   UnMatchParams,
   UnRegisterNotificationParams,
   UploadProfileImgParams,
   User
 } from './types/types';
 import { S3Creator, CONTAINER } from './s3';
-import mongoose, { Types } from 'mongoose';
+import mongoose, { Schema, Types } from 'mongoose';
 import { user_model } from './models/user.model';
 import { createThumbnail, imgToEmblem, removeBackground } from './helper';
 import { ObjectId } from 'mongodb';
 import { inbox_model } from './models/inbox.model';
 import * as fs from 'fs';
 import { minimum_supported_version } from './main';
+import { balloon_model } from './models/balloon.model';
+import { sendNotificationUser } from './notifications';
+import {
+  balloonAcceptNotification, balloonExpiredNotification,
+  balloonMatchExpiredNotification,
+  balloonReceivedNotification
+} from './config/notification.config';
+import { sendSocketNotificationToUser } from './api/socket';
 
 let s3Creator: S3Creator;
 
@@ -92,6 +102,14 @@ export async function getUser(params: GetUserParams): Promise<Res<GetUserRes>> {
     user = await createUser(params.auth_id);
     return { user, new_account: true, minimum_supported_version };
 
+  } catch (e) {
+    throw new Error('User not found');
+  }
+}
+
+export async function getUserByID(user_id: Schema.Types.ObjectId): Promise<Res<User>> {
+  try {
+    return await user_model.findById(user_id).lean();
   } catch (e) {
     throw new Error('User not found');
   }
@@ -596,6 +614,240 @@ export async function seeInbox(params: SeeInboxParams) {
   }
 }
 
+export async function createBalloon(params: CreateBalloonPostParams): Promise<Balloon> {
+  const [drawingJsonUrl, img, thumbnail] = await Promise.all([
+    s3Creator.upload(params.drawing),
+    s3Creator.uploadImg(params.img),
+    s3Creator.uploadImg(await createThumbnail(params.img))
+  ]);
+
+  const balloonId = new ObjectId().toString();
+  const balloonToCreate: Balloon = {
+    _id: balloonId,
+    status: 'pending',
+    createdAt: new Date(),
+    drawingJsonUrl,
+    img,
+    thumbnail,
+    aspect_ratio: params.aspect_ratio,
+    sender: params.sender,
+    message: params.message,
+    cancelledBalloons: []
+  };
+
+  try {
+    await Promise.all([
+      balloon_model.create(balloonToCreate),
+      user_model.updateOne(
+        { _id: params.sender },
+        { $set: { 'balloon.sent': balloonId } }
+      )
+    ]);
+
+
+    return balloonToCreate;
+  } catch (e) {
+    throw new Error(`Failed to create balloon: ${(e as Error).message}`);
+  }
+}
+
+export async function getBalloon(balloonId: string): Promise<Balloon | null> {
+  try {
+    return await balloon_model.findById(balloonId);
+  } catch (e) {
+    throw new Error(`Failed to get balloon: ${(e as Error).message}`);
+  }
+}
+
+export async function matchBalloons() {
+  const pendingBalloons = await balloon_model
+    .find({ status: 'pending' })
+    .sort({ createdAt: 1 });
+
+  for (let i = 0; i < pendingBalloons.length; i++) {
+    const balloon1 = pendingBalloons[i];
+
+    const user1 = await getUserByID(balloon1.sender);
+    if (!user1) {
+      await balloon_model.findByIdAndDelete(balloon1._id);
+      continue;
+    }
+
+    let matched = false;
+
+    for (let j = i + 1; j < pendingBalloons.length; j++) {
+      const balloon2 = pendingBalloons[j];
+
+      const user2 = await getUserByID(balloon2.sender);
+      if (!user2) {
+        await balloon_model.findByIdAndDelete(balloon2._id);
+        continue;
+      }
+
+      if (
+        balloon1.cancelledBalloons?.includes(balloon2._id) ||
+        balloon2.cancelledBalloons?.includes(balloon1._id)
+      ) {
+        continue; // skip cancelled pair
+      }
+
+
+      // skip if they are already mates
+      if (
+        user1.mates.some(m => m._id.toString() === user2._id.toString()) ||
+        user2.mates.some(m => m._id.toString() === user1._id.toString())
+      ) {
+        continue;
+      }
+
+      // ✅ match found
+      await Promise.all([
+        balloon_model.updateOne(
+          { _id: balloon1._id },
+          {
+            $set: {
+              status: 'paired',
+              pairedUser: balloon2.sender,
+              pairedBalloon: balloon2._id,
+              matchedAt: new Date()
+            }
+          }
+        ),
+        balloon_model.updateOne(
+          { _id: balloon2._id },
+          {
+            $set: {
+              status: 'paired',
+              pairedUser: balloon1.sender,
+              pairedBalloon: balloon1._id,
+              matchedAt: new Date()
+            }
+          }
+        ),
+        user_model.updateOne(
+          { _id: balloon1.sender },
+          { $set: { 'balloon.received': balloon2._id } }
+        ),
+        user_model.updateOne(
+          { _id: balloon2.sender },
+          { $set: { 'balloon.received': balloon1._id } }
+        ),
+        sendNotificationUser(
+          balloon1.sender.toString(),
+          balloonReceivedNotification()
+        ),
+        sendNotificationUser(
+          balloon2.sender.toString(),
+          balloonReceivedNotification()
+        )
+      ]);
+
+      sendSocketNotificationToUser(
+        balloon1.sender.toString(),
+        SOCKET_ENDPONTS.match_balloon,
+        { received_balloon: balloon2 }
+      );
+      sendSocketNotificationToUser(
+        balloon2.sender.toString(),
+        SOCKET_ENDPONTS.match_balloon,
+        { received_balloon: balloon1 }
+      );
+
+      console.log(`Matched balloons: ${balloon1._id} ↔ ${balloon2._id}`);
+
+      // remove both from local array
+      pendingBalloons.splice(j, 1); // remove balloon2 first
+      pendingBalloons.splice(i, 1); // then balloon1
+      i--; // adjust index because we removed the current one
+      matched = true;
+      break;
+    }
+
+    if (!matched) {
+      console.log(`No match found for balloon: ${balloon1._id}`);
+    }
+  }
+
+  console.log('Matching cycle complete.');
+}
+
+export async function unMatchExpiredBalloons() {
+  const balloons = await balloon_model.find({
+    status: { $in: ['paired', 'accepted'] }
+  });
+
+  const expirationTime = 1000 * 60 * 60 * 24 * 4; // 4 days
+
+  for (const balloon of balloons) {
+
+    if (!balloon.matchedAt || balloon.matchedAt < new Date(Date.now() - expirationTime)) {
+      await Promise.all([
+        balloon_model.updateOne(
+          { _id: balloon._id },
+          {
+            $addToSet: { cancelledBalloons: balloon.pairedBalloon },
+            $set: {
+              status: 'pending',
+              pairedUser: null,
+              pairedBalloon: null,
+              matchedAt: null
+            }
+          }
+        ),
+        user_model.updateOne(
+          { _id: balloon.sender },
+          { $set: { 'balloon.received': null } }
+        ),
+        sendNotificationUser(
+          balloon.sender.toString(),
+          balloonMatchExpiredNotification()
+        )
+      ]);
+
+      sendSocketNotificationToUser(
+        balloon.sender.toString(),
+        SOCKET_ENDPONTS.balloon_match_expired,
+        {}
+      );
+
+      console.log(`⏳ Balloon ${balloon._id} expired and reset.`);
+    }
+  }
+}
+
+export async function removeExpiredBalloons() {
+  const oneMonthAgo = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+
+  const balloons = await balloon_model.find({
+    status: 'pending',
+    createdAt: { $lt: oneMonthAgo } // older than 1 month
+  });
+
+  for (const balloon of balloons) {
+    await Promise.all([
+      deleteBalloonS3(balloon as any as Balloon),
+      balloon_model.findByIdAndDelete(balloon._id),
+      user_model.updateOne(
+        { _id: balloon.sender },
+        { $set: { 'balloon.sent': null } }
+      ),
+      sendNotificationUser(
+        balloon.sender.toString(),
+        balloonExpiredNotification()
+      )
+    ]);
+
+    sendSocketNotificationToUser(
+      balloon.sender.toString(),
+      SOCKET_ENDPONTS.balloon_expired,
+      {}
+    );
+
+    console.log(`⏳ Balloon ${balloon._id} removed after 1 month.`);
+  }
+}
+
+
 export async function sendMateRequest(params: SendMateRequestParams): Promise<void> {
   try {
     await Promise.all([
@@ -651,6 +903,213 @@ export async function refuseSendMateRequest(params: SendMateRequestParams): Prom
     throw new Error('Failed to cancel mate request');
   }
 }
+
+export async function acceptBalloon(params: AcceptBalloonParams): Promise<Balloon[] | null> {
+  try {
+    const [otherBalloon, balloon] = await Promise.all([
+      balloon_model.findOne({ sender: params.user_id }),
+      balloon_model.findOneAndUpdate(
+        { _id: params.balloon_id },
+        { $set: { status: 'accepted' } },
+        { new: true }
+      )
+    ]);
+    return [otherBalloon as unknown as Balloon, balloon as unknown as Balloon];
+  } catch (e) {
+    throw new Error('Failed to accept balloon');
+  }
+}
+
+export async function refuseBalloon(params: AcceptBalloonParams): Promise<Balloon[] | null> {
+  try {
+    const [otherBalloon, balloon] = await Promise.all([
+      balloon_model.findOne({ sender: params.user_id }),
+      balloon_model.findOneAndUpdate(
+        { _id: params.balloon_id },
+        { $set: { status: 'rejected' } },
+        { new: true }
+      )
+    ]);
+    return [otherBalloon as unknown as Balloon, balloon as unknown as Balloon];
+  } catch (e) {
+    throw new Error('Failed to accept balloon');
+  }
+}
+
+export async function cancelBalloon(params: CancelBalloonParams): Promise<Balloon | null> {
+  try {
+    const balloon = await balloon_model.findByIdAndDelete(params.balloon_id);
+
+    // Always prepare updates array
+    const updates: Promise<any>[] = [];
+
+    if (balloon) {
+      // fetch other balloon in parallel with S3 deletion
+      const [otherBalloon] = await Promise.all([
+        balloon_model.findOne({ pairedUser: params.user_id }),
+        deleteBalloonS3(balloon as any as Balloon)
+      ]);
+
+      if (otherBalloon) {
+        updates.push(
+          user_model.updateOne(
+            { _id: otherBalloon.sender },
+            { $set: { 'balloon.received': null } }
+          ),
+          balloon_model.updateOne(
+            { _id: otherBalloon._id },
+            { $set: { status: 'pending' } }
+          )
+        );
+      }
+
+      // clean up user's balloon reference
+      updates.push(
+        user_model.updateOne(
+          { _id: params.user_id },
+          { $set: { balloon: {} } }
+        )
+      );
+
+      await Promise.all(updates);
+
+      return otherBalloon as unknown as Balloon;
+    } else {
+      // balloon already deleted, still cleanup user reference
+      await user_model.updateOne(
+        { _id: params.user_id },
+        { $set: { balloon: {} } }
+      );
+      return null;
+    }
+  } catch (e) {
+    throw new Error('Failed to cancel balloon');
+  }
+}
+
+
+export async function acceptBalloonCleanUp(params: { balloon: Balloon, otherBalloon: Balloon } & {
+  otherBalloon: Balloon
+}): Promise<void> {
+  try {
+    const inboxItem1: InboxItem = {
+      _id: new ObjectId().toString(),
+      drawing: params.balloon.drawingJsonUrl,
+      image: params.balloon.img,
+      thumbnail: params.balloon.thumbnail,
+      date: new Date(),
+      sender: params.balloon.sender,
+      followers: [params.balloon.sender, params.otherBalloon.sender],
+      original_followers: [params.balloon.sender, params.otherBalloon.sender],
+      seen_by: [],
+      comments_seen_by: [],
+      comments: [],
+      aspect_ratio: params.balloon.aspect_ratio
+    };
+
+    const inboxItem2: InboxItem = {
+      _id: new ObjectId().toString(),
+      drawing: params.otherBalloon.drawingJsonUrl,
+      image: params.otherBalloon.img,
+      thumbnail: params.otherBalloon.thumbnail,
+      date: new Date(),
+      sender: params.otherBalloon.sender,
+      followers: [params.otherBalloon.sender, params.balloon.sender],
+      original_followers: [params.otherBalloon.sender, params.balloon.sender],
+      seen_by: [],
+      comments_seen_by: [],
+      comments: [],
+      aspect_ratio: params.otherBalloon.aspect_ratio
+    };
+
+    await Promise.all([
+      inbox_model.create(inboxItem1),
+      inbox_model.create(inboxItem2),
+      user_model.updateOne(
+        { _id: params.balloon.sender },
+        {
+          $push: {
+            inbox: {
+              $each: [inboxItem1._id, inboxItem2._id]
+            }
+          }
+        }
+      ),
+      user_model.updateOne(
+        { _id: params.otherBalloon.sender },
+        {
+          $push: {
+            inbox: {
+              $each: [inboxItem1._id, inboxItem2._id]
+            }
+          }
+        }
+      ),
+      balloon_model.findByIdAndDelete(params.balloon._id),
+      balloon_model.findByIdAndDelete(params.otherBalloon._id),
+      user_model.updateOne(
+        { _id: params.balloon.sender },
+        { $set: { balloon: {} } }
+      ),
+      user_model.updateOne(
+        { _id: params.otherBalloon.sender },
+        { $set: { balloon: {} } }
+      )
+    ])
+    ;
+
+  } catch (e) {
+    throw new Error('Failed to accept balloon' + e);
+  }
+}
+
+export async function deleteBalloonS3(balloon: Balloon): Promise<void> {
+  await Promise.all([s3Creator.deleteBlob(balloon.img, CONTAINER.drawings),
+    s3Creator.deleteBlob(balloon.thumbnail, CONTAINER.drawings),
+    s3Creator.deleteBlob(balloon.drawingJsonUrl, CONTAINER.drawings)]);
+}
+
+export async function rejectBalloonCleanUp(params: { balloon: Balloon; otherBalloon: Balloon }): Promise<void> {
+  try {
+    await Promise.all([
+      balloon_model.updateOne(
+        { _id: params.balloon._id },
+        {
+          $addToSet: { cancelledBalloons: params.otherBalloon._id },
+          $set: {
+            status: 'pending',
+            pairedUser: null,
+            pairedBalloon: null,
+            matchedAt: null
+          }
+        }
+      ),
+      balloon_model.updateOne(
+        { _id: params.otherBalloon._id },
+        {
+          $addToSet: { cancelledBalloons: params.balloon._id },
+          $set: {
+            status: 'pending',
+            pairedUser: null,
+            pairedBalloon: null,
+            matchedAt: null
+          }
+        }
+      ),
+      user_model.updateOne(
+        { _id: params.balloon.sender },
+        { $set: { 'balloon.received': null } }
+      ),
+      user_model.updateOne(
+        { _id: params.otherBalloon.sender },
+        { $set: { 'balloon.received': null } }
+      )
+    ]);
+  } catch (e) {
+    throw new Error('Failed to reject balloon');
+  }
+}
+
 
 export async function getPartialUsers(user_ids: string[]): Promise<Mate[]> {
   try {

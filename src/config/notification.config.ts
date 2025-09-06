@@ -20,6 +20,121 @@ export const matchNotification = (mateName: string): FBNotification => {
   };
 };
 
+export const balloonMatchNotification = (mateName: string): FBNotification => {
+  return {
+    notification: {
+      title: `${mateName} accepted your balloon request!`,
+      body: 'You can now send drawings to each other'
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
+    },
+    data: {
+      type: NotificationType.match
+    }
+  };
+};
+
+export const balloonAcceptNotification = (): FBNotification => {
+  return {
+    notification: {
+      title: `A stranger accepted your balloon request!`,
+      body: 'Accept their balloon to send drawings to each other'
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
+    },
+    data: {
+      type: NotificationType.balloon
+    }
+  };
+};
+
+export const balloonReceivedNotification = (): FBNotification => {
+  return {
+    notification: {
+      title: `You have received a balloon from a stranger`,
+      body: 'Open it to become mates'
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
+    },
+    data: {
+      type: NotificationType.balloon
+    }
+  };
+};
+
+export const balloonMatchExpiredNotification = (): FBNotification => {
+  return {
+    notification: {
+      title: `Your balloon has expired`,
+      body: 'We will try to match you with someone else'
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
+    },
+    data: {
+      type: NotificationType.balloon
+    }
+  };
+};
+
+export const balloonExpiredNotification = (): FBNotification => {
+  return {
+    notification: {
+      title: `Your balloon has expired`,
+      body: 'Please create another one'
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
+    },
+    data: {
+      type: NotificationType.balloon
+    }
+  };
+};
+
+
+export const balloonRejectNotification = (): FBNotification => {
+  return {
+    notification: {
+      title: `Someone rejected your balloon request!`,
+      body: 'We will try to match you with someone else'
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
+    },
+    data: {
+      type: NotificationType.balloon
+    }
+  };
+};
+
 export const unmatchNotification = (mateName: string, mate_id: string, unmatcher: string): FBNotification => {
   return {
     notification: {
@@ -89,7 +204,7 @@ export const sendFriendRequestNotification = (senderName: string): FBNotificatio
   return {
     notification: {
       title: `${senderName} sent you a friend request`,
-      body: 'Tap to view',
+      body: 'Tap to view'
     },
     android: {
       priority: 'high',
