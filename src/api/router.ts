@@ -1,6 +1,7 @@
 import Router from 'koa-router';
 import {
   ChangeUserNameParams,
+  CreateBalloonPostParams, CreateBalloonPostRes,
   CreateEmblemParams,
   CreateSavedParams,
   CreateStickerParams,
@@ -9,30 +10,39 @@ import {
   DeleteStickerParams,
   ENDPOINTS,
   GetInboxItemsParams,
-  GetUserParams, OnLoginEventParams, RegisterNotificationParams,
+  GetUserParams,
+  OnLoginEventParams,
+  RegisterNotificationParams,
   RemoveFromInboxParams,
   UnRegisterNotificationParams,
   UploadProfileImgParams
 } from '../types/types';
 import {
   changeUserName,
+  createBalloon,
   createEmblem,
   createSaved,
   createSticker,
-  createUser,
   deleteEmblem,
   deleteProfileImg,
   deleteSaved,
-  deleteSticker,
-  getInboxItems, getLastImgFromUser, getPartialUsers,
-  getUser, getUserMates, onLoginEvent,
-  removeFromInbox, searchMate,
+  deleteSticker, getBalloon,
+  getInboxItems,
+  getLastImgFromUser,
+  getPartialUsers,
+  getUser,
+  getUserMates,
+  onLoginEvent,
+  removeFromInbox,
+  searchMate,
   seeInbox,
   subscribe,
   unsubscribe,
   uploadProfileImg
 } from '../mongodb';
 import { parseParams } from '../helper';
+import pako from 'pako';
+import fs from 'fs';
 
 export const router = new Router();
 
@@ -153,3 +163,29 @@ router.post(`${ENDPOINTS.inbox}/see/:id`, async (ctx) => {
 
   ctx.body = await seeInbox({ inbox_id, user_id });
 });
+
+router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
+  if (!ctx.request.files) {
+    throw new Error('No files uploaded');
+  }
+
+  const files = ctx.request.files as any;
+
+  const params = parseParams<CreateBalloonPostParams>(ctx.request.body);
+  params.aspect_ratio = parseFloat(params.aspect_ratio as any as string);
+  params.img = fs.readFileSync(files.img.filepath);
+  const drawingFile = files.drawing;
+  const compressedBuffer = fs.readFileSync(drawingFile.filepath);
+  const inflated = pako.inflate(compressedBuffer, { to: 'string' });
+  params.drawing = JSON.parse(inflated);
+
+
+  const balloon = await createBalloon(params);
+  ctx.body = { balloon } as CreateBalloonPostRes;
+});
+
+router.get(`${ENDPOINTS.balloon}/:id`, async (ctx) => {
+  const balloon_id = ctx.params.id;
+  return ctx.body = await getBalloon(balloon_id);
+});
+

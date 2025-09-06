@@ -9,12 +9,13 @@ import etag from 'koa-etag';
 import conditional from 'koa-conditional-get';
 
 import { Server } from 'socket.io';
-import { connectDb } from './mongodb';
+import { connectDb, matchBalloons, removeExpiredBalloons, unMatchExpiredBalloons } from './mongodb';
 import { router } from './api/router';
 import { registerSocketHandlers } from './api/socket';
 import { errorHandler } from './middleware/error_handler';
 import * as fs from 'fs';
 import { scheduleResetUploadFolder } from './helper';
+import cron from 'node-cron';
 
 const app = new Koa();
 const server = createServer(app.callback());
@@ -65,4 +66,11 @@ process.on('uncaughtException', (error) => {
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection:', reason);
+});
+
+// Every hour hours (at :00)
+cron.schedule('0 */1 * * *', async () => {
+  await matchBalloons();
+  await unMatchExpiredBalloons();
+  await removeExpiredBalloons();
 });
