@@ -181,6 +181,7 @@ router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
 
 
   const balloon = await createBalloon(params);
+  if (!balloon) return;
   ctx.body = { balloon } as CreateBalloonPostRes;
 });
 

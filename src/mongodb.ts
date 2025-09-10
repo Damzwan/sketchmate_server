@@ -614,7 +614,13 @@ export async function seeInbox(params: SeeInboxParams) {
   }
 }
 
-export async function createBalloon(params: CreateBalloonPostParams): Promise<Balloon> {
+export async function createBalloon(params: CreateBalloonPostParams): Promise<Res<Balloon>> {
+  const alreadyExistingBalloon = await balloon_model.findOne({ sender: params.sender });
+
+  if (alreadyExistingBalloon) {
+    throw new Error('Balloon already exists');
+  }
+
   const [drawingJsonUrl, img, thumbnail] = await Promise.all([
     s3Creator.upload(params.drawing),
     s3Creator.uploadImg(params.img),
