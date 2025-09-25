@@ -56,7 +56,6 @@ export interface User {
     sent?: string,
     received?: string,
   };
-  date_of_birth?: Date;
 }
 
 export type BalloonStatus = 'pending' | 'paired' | 'accepted';
@@ -208,11 +207,6 @@ export interface ChangeUserNameParams {
   name: string;
 }
 
-export interface UpdateUserParams extends Partial<User> {
-  _id: string;
-}
-
-
 export interface UploadProfileImgParams {
   _id: string;
   img: any;
@@ -289,8 +283,6 @@ export type Res<T> = T | undefined | null;
 export interface API {
 
   getUser(params: GetUserParams): Promise<Res<GetUserRes>>;
-
-  updateUser(params: UpdateUserParams): Promise<Res<void>>;
 
   getPartialUsers(params: { _ids: string[] }): Promise<Res<Mate[]>>;
 
