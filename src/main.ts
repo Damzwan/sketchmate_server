@@ -19,6 +19,7 @@ import cron from 'node-cron';
 
 const app = new Koa();
 export const isDev = process.env.NODE_ENV === 'development';
+console.log('lit')
 
 
 const server = createServer(app.callback());
