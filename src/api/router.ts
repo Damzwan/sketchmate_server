@@ -14,7 +14,7 @@ import {
   OnLoginEventParams,
   RegisterNotificationParams,
   RemoveFromInboxParams,
-  UnRegisterNotificationParams, UpdateUserParams,
+  UnRegisterNotificationParams,
   UploadProfileImgParams
 } from '../types/types';
 import {
@@ -37,13 +37,12 @@ import {
   searchMate,
   seeInbox,
   subscribe,
-  unsubscribe, updateUser,
+  unsubscribe,
   uploadProfileImg
 } from '../mongodb';
 import { parseParams } from '../helper';
 import pako from 'pako';
 import fs from 'fs';
-import { mixpanelEvents, trackEvent } from '../mixpanel';
 
 export const router = new Router();
 
@@ -82,10 +81,6 @@ router.get(ENDPOINTS.inbox, async (ctx) => {
 
 router.put(ENDPOINTS.user, async (ctx) => {
   ctx.body = await changeUserName(parseParams<ChangeUserNameParams>(ctx.request.body));
-});
-
-router.put(`${ENDPOINTS.user}/update`, async (ctx) => {
-  ctx.body = await updateUser(parseParams<UpdateUserParams>(ctx.request.body));
 });
 
 router.put(`${ENDPOINTS.user}/img/:id`, async (ctx) => {

@@ -35,8 +35,7 @@ const user_schema = new Schema({
   balloon: {
     sent: { type: Schema.Types.ObjectId, default: null },
     received: { type: Schema.Types.ObjectId, default: null }
-  },
-  date_of_birth: { type: Date, required: false }
+  }
 }) as mongoose.Schema<User>;
 
 export const user_model = mongoose.model('users', user_schema);

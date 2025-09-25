@@ -9,7 +9,7 @@ import etag from 'koa-etag';
 import conditional from 'koa-conditional-get';
 
 import { Server } from 'socket.io';
-import { connectDb, pairBalloons, removeExpiredBalloons, unPairBalloons } from './mongodb';
+import { connectDb, matchBalloons, removeExpiredBalloons, unMatchExpiredBalloons } from './mongodb';
 import { router } from './api/router';
 import { registerSocketHandlers } from './api/socket';
 import { errorHandler } from './middleware/error_handler';
@@ -18,9 +18,6 @@ import { scheduleResetUploadFolder } from './helper';
 import cron from 'node-cron';
 
 const app = new Koa();
-export const isDev = process.env.NODE_ENV === 'development';
-
-
 const server = createServer(app.callback());
 const io = new Server(server, {
   cors: {
@@ -73,7 +70,7 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Every hour hours (at :00)
 cron.schedule('0 */1 * * *', async () => {
-  await pairBalloons();
-  await unPairBalloons();
+  await matchBalloons();
+  await unMatchExpiredBalloons();
   await removeExpiredBalloons();
 });
