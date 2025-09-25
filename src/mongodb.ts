@@ -1,9 +1,11 @@
 import {
   AcceptBalloonParams,
-  Balloon, CancelBalloonParams,
+  Balloon,
+  CancelBalloonParams,
   ChangeUserNameParams,
   Comment,
-  CommentParams, CreateBalloonPostParams,
+  CommentParams,
+  CreateBalloonPostParams,
   CreateSavedParams,
   CreateStickerParams,
   DeleteEmblemParams,
@@ -23,13 +25,15 @@ import {
   Saved,
   SeeInboxParams,
   SendMateRequestParams,
-  SendParams, SOCKET_ENDPONTS,
+  SendParams,
+  SOCKET_ENDPONTS,
   UnMatchParams,
   UnRegisterNotificationParams,
+  UpdateUserParams,
   UploadProfileImgParams,
   User
 } from './types/types';
-import { S3Creator, CONTAINER } from './s3';
+import { CONTAINER, S3Creator } from './s3';
 import mongoose, { Schema, Types } from 'mongoose';
 import { user_model } from './models/user.model';
 import { createThumbnail, imgToEmblem, removeBackground } from './helper';
@@ -40,11 +44,12 @@ import { minimum_supported_version } from './main';
 import { balloon_model } from './models/balloon.model';
 import { sendNotificationUser } from './notifications';
 import {
-  balloonAcceptNotification, balloonExpiredNotification,
+  balloonExpiredNotification,
   balloonMatchExpiredNotification,
   balloonReceivedNotification
 } from './config/notification.config';
 import { sendSocketNotificationToUser } from './api/socket';
+import { mixpanelEvents, trackEvent } from './mixpanel';
 
 let s3Creator: S3Creator;
 
@@ -62,7 +67,7 @@ export async function connectDb(): Promise<void> {
 
 export async function createUser(auth_id: string): Promise<Res<User>> {
   try {
-    return await user_model.create({
+    const user = await user_model.create({
       auth_id,
       inbox: [],
       stickers: [],
@@ -75,6 +80,9 @@ export async function createUser(auth_id: string): Promise<Res<User>> {
       mate_requests_received: [],
       notifications: []
     });
+    if (user._id) trackEvent(user._id, mixpanelEvents.create_account);
+
+    return user;
   } catch (e) {
     console.log(e);
   }
@@ -186,6 +194,7 @@ export async function comment(params: CommentParams) {
         }
       }
     );
+    trackEvent(params.sender, mixpanelEvents.drawing_comment);
     return comment;
   } catch (e) {
     console.log(e);
@@ -195,6 +204,7 @@ export async function comment(params: CommentParams) {
 
 export async function removeFromInbox(params: RemoveFromInboxParams) {
   try {
+    trackEvent(params.user_id, mixpanelEvents.drawing_deleted);
     const [inboxItem] = await Promise.all([
       inbox_model.findByIdAndUpdate(
         params.inbox_id,
@@ -282,6 +292,8 @@ export async function match(params: MatchParams) {
         }
       )
     ]);
+    trackEvent(params._id, mixpanelEvents.match);
+
     return { user: user, mate: mate };
   } catch (e) {
     throw new Error('Cannot match with mate');
@@ -318,6 +330,7 @@ export async function storeMessage(params: SendParams): Promise<Res<InboxItem>> 
       inbox_model.create(inboxItem),
       ...params.followers.map(follower => user_model.updateOne({ _id: follower }, { $push: { inbox: inboxItem._id } }))
     ]);
+    trackEvent(params._id, mixpanelEvents.drawing_sent);
     return inboxItem;
   } catch (e) {
     console.log(e);
@@ -337,6 +350,7 @@ export async function unMatch(params: UnMatchParams): Promise<Res<void>> {
         { $pull: { mates: { _id: params._id } } }
       )
     ]);
+    trackEvent(params._id, mixpanelEvents.unMatch);
   } catch (e) {
     throw new Error('Failed to unmatch');
   }
@@ -383,6 +397,7 @@ export async function unsubscribe(params: UnRegisterNotificationParams): Promise
 
 export async function onLoginEvent(params: OnLoginEventParams): Promise<Res<void>> {
   try {
+    trackEvent(params.user_id, mixpanelEvents.login);
     await user_model.updateOne(
       { _id: params.user_id, 'subscriptions.fingerprint': params.fingerprint },
       {
@@ -433,6 +448,20 @@ export async function changeUserName(params: ChangeUserNameParams): Promise<Res<
     throw new Error('Failed to change name');
   }
 }
+
+export async function updateUser(params: UpdateUserParams): Promise<Res<void>> {
+  try {
+    const { _id, ...updates } = params;
+
+    if (!_id) throw new Error('User _id is required');
+
+    await user_model.updateOne({ _id }, { $set: updates });
+
+  } catch (e) {
+    throw new Error('Failed to update user: ' + (e as Error).message);
+  }
+}
+
 
 export async function uploadProfileImg(params: UploadProfileImgParams): Promise<Res<string>> {
   try {
@@ -651,6 +680,8 @@ export async function createBalloon(params: CreateBalloonPostParams): Promise<Re
     ]);
 
 
+    trackEvent(params.sender, mixpanelEvents.balloon_create);
+
     return balloonToCreate;
   } catch (e) {
     throw new Error(`Failed to create balloon: ${(e as Error).message}`);
@@ -665,7 +696,7 @@ export async function getBalloon(balloonId: string): Promise<Balloon | null> {
   }
 }
 
-export async function matchBalloons() {
+export async function pairBalloons() {
   const pendingBalloons = await balloon_model
     .find({ status: 'pending' })
     .sort({ createdAt: 1 });
@@ -759,7 +790,7 @@ export async function matchBalloons() {
         { received_balloon: balloon1 }
       );
 
-      console.log(`Matched balloons: ${balloon1._id} ↔ ${balloon2._id}`);
+      trackEvent(balloon1.sender.toString(), mixpanelEvents.balloon_pair);
 
       // remove both from local array
       pendingBalloons.splice(j, 1); // remove balloon2 first
@@ -777,12 +808,12 @@ export async function matchBalloons() {
   console.log('Matching cycle complete.');
 }
 
-export async function unMatchExpiredBalloons() {
+export async function unPairBalloons() {
   const balloons = await balloon_model.find({
     status: { $in: ['paired', 'accepted'] }
   });
 
-  const expirationTime = 1000 * 60 * 60 * 24 * 4; // 4 days
+  const expirationTime = 1000 * 60 * 60 * 24 * 1; // 1 day
 
   for (const balloon of balloons) {
 
@@ -816,13 +847,15 @@ export async function unMatchExpiredBalloons() {
         {}
       );
 
+      trackEvent(balloon.sender.toString(), mixpanelEvents.balloon_unpaired);
+
       console.log(`⏳ Balloon ${balloon._id} expired and reset.`);
     }
   }
 }
 
 export async function removeExpiredBalloons() {
-  const oneMonthAgo = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+  const oneMonthAgo = new Date(Date.now() - 1000 * 60 * 60 * 24 * 3); // 3 days
 
   const balloons = await balloon_model.find({
     status: 'pending',
@@ -849,7 +882,9 @@ export async function removeExpiredBalloons() {
       {}
     );
 
-    console.log(`⏳ Balloon ${balloon._id} removed after 1 month.`);
+    trackEvent(balloon.sender.toString(), mixpanelEvents.balloon_expired);
+
+    console.log(`⏳ Balloon ${balloon._id} removed after 3 days.`);
   }
 }
 
@@ -920,6 +955,7 @@ export async function acceptBalloon(params: AcceptBalloonParams): Promise<Balloo
         { new: true }
       )
     ]);
+    trackEvent(params.user_id, mixpanelEvents.balloon_accept);
     return [otherBalloon as unknown as Balloon, balloon as unknown as Balloon];
   } catch (e) {
     throw new Error('Failed to accept balloon');
@@ -936,6 +972,8 @@ export async function refuseBalloon(params: AcceptBalloonParams): Promise<Balloo
         { new: true }
       )
     ]);
+    trackEvent(params.user_id, mixpanelEvents.balloon_refuse);
+
     return [otherBalloon as unknown as Balloon, balloon as unknown as Balloon];
   } catch (e) {
     throw new Error('Failed to accept balloon');
@@ -948,6 +986,8 @@ export async function cancelBalloon(params: CancelBalloonParams): Promise<Balloo
 
     // Always prepare updates array
     const updates: Promise<any>[] = [];
+
+    trackEvent(params.user_id, mixpanelEvents.balloon_cancel);
 
     if (balloon) {
       // fetch other balloon in parallel with S3 deletion
@@ -1061,8 +1101,12 @@ export async function acceptBalloonCleanUp(params: { balloon: Balloon, otherBall
         { _id: params.otherBalloon.sender },
         { $set: { balloon: {} } }
       )
+
     ])
     ;
+
+    trackEvent(params.balloon.sender, mixpanelEvents.balloon_match);
+
 
   } catch (e) {
     throw new Error('Failed to accept balloon' + e);
