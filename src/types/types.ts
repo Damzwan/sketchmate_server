@@ -72,6 +72,7 @@ export interface Balloon {
   status: BalloonStatus,
   createdAt: Date,
   matchedAt?: Date,
+  lastActivityAt: Date,
   pairedUser?: string,
   pairedBalloon?: string,
   cancelledBalloons: string[]

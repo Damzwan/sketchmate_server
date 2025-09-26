@@ -9,7 +9,7 @@ import etag from 'koa-etag';
 import conditional from 'koa-conditional-get';
 
 import { Server } from 'socket.io';
-import { connectDb, pairBalloons, removeExpiredBalloons, unPairBalloons } from './mongodb';
+import { addLastActivityToBalloons, connectDb, pairBalloons, removeExpiredBalloons, unPairBalloons } from './mongodb';
 import { router } from './api/router';
 import { registerSocketHandlers } from './api/socket';
 import { errorHandler } from './middleware/error_handler';
@@ -77,3 +77,4 @@ cron.schedule('0 */1 * * *', async () => {
   await unPairBalloons();
   await removeExpiredBalloons();
 });
+

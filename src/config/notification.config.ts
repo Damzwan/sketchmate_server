@@ -115,6 +115,25 @@ export const balloonExpiredNotification = (): FBNotification => {
   };
 };
 
+export const otherBalloonExpiredNotification = (): FBNotification => {
+  return {
+    notification: {
+      title: `Your match expired`,
+      body: `The other person’s balloon expired, but don’t worry—we’ll pair you with someone new soon!`
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
+    },
+    data: {
+      type: NotificationType.balloon
+    }
+  };
+};
+
 
 export const balloonRejectNotification = (): FBNotification => {
   return {
