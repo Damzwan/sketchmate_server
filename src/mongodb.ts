@@ -819,7 +819,7 @@ export async function unPairBalloons() {
 
   for (const balloon of balloons) {
 
-    if (!balloon.matchedAt || balloon.lastActivityAt < new Date(Date.now() - expirationTime)) {
+    if (!balloon.matchedAt || balloon.matchedAt < new Date(Date.now() - expirationTime)) {
       await Promise.all([
         balloon_model.updateOne(
           { _id: balloon._id },
