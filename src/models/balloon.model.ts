@@ -18,6 +18,7 @@ const balloon_schema = new Schema<Omit<Balloon, 'sender'> & {
     },
     createdAt: { type: Date, default: Date.now },
     matchedAt: { type: Date, default: Date.now, required: false },
+    lastActivityAt: { type: Date, default: Date.now },
     pairedUser: { type: Schema.Types.ObjectId, default: null, required: false },
     pairedBalloon: { type: Schema.Types.ObjectId, default: null, required: false },
     cancelledBalloons: [

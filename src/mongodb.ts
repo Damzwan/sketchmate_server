@@ -46,7 +46,8 @@ import { sendNotificationUser } from './notifications';
 import {
   balloonExpiredNotification,
   balloonMatchExpiredNotification,
-  balloonReceivedNotification
+  balloonReceivedNotification,
+  otherBalloonExpiredNotification
 } from './config/notification.config';
 import { sendSocketNotificationToUser } from './api/socket';
 import { mixpanelEvents, trackEvent } from './mixpanel';
@@ -661,6 +662,7 @@ export async function createBalloon(params: CreateBalloonPostParams): Promise<Re
     _id: balloonId,
     status: 'pending',
     createdAt: new Date(),
+    lastActivityAt: new Date(),
     drawingJsonUrl,
     img,
     thumbnail,
@@ -817,7 +819,7 @@ export async function unPairBalloons() {
 
   for (const balloon of balloons) {
 
-    if (!balloon.matchedAt || balloon.matchedAt < new Date(Date.now() - expirationTime)) {
+    if (!balloon.matchedAt || balloon.lastActivityAt < new Date(Date.now() - expirationTime)) {
       await Promise.all([
         balloon_model.updateOne(
           { _id: balloon._id },
@@ -855,37 +857,61 @@ export async function unPairBalloons() {
 }
 
 export async function removeExpiredBalloons() {
-  const oneMonthAgo = new Date(Date.now() - 1000 * 60 * 60 * 24 * 3); // 3 days
+  const expirationDate = new Date(Date.now() - 1000 * 60 * 60 * 24 * 3); // 3 days
 
   const balloons = await balloon_model.find({
-    status: 'pending',
-    createdAt: { $lt: oneMonthAgo } // older than 1 month
+    lastActivityAt: { $lt: expirationDate }
   });
 
-  for (const balloon of balloons) {
-    await Promise.all([
-      deleteBalloonS3(balloon as any as Balloon),
-      balloon_model.findByIdAndDelete(balloon._id),
-      user_model.updateOne(
-        { _id: balloon.sender },
-        { $set: { 'balloon.sent': null } }
-      ),
-      sendNotificationUser(
+  await Promise.all(
+    balloons.map(async (balloon) => {
+      // Remove the balloon
+      await Promise.all([
+        deleteBalloonS3(balloon as any as Balloon),
+        balloon_model.findByIdAndDelete(balloon._id),
+        user_model.updateOne(
+          { _id: balloon.sender },
+          { $set: { 'balloon.sent': null } }
+        ),
+        sendNotificationUser(
+          balloon.sender.toString(),
+          balloonExpiredNotification()
+        )
+      ]);
+
+      sendSocketNotificationToUser(
         balloon.sender.toString(),
-        balloonExpiredNotification()
-      )
-    ]);
+        SOCKET_ENDPONTS.balloon_expired,
+        {}
+      );
 
-    sendSocketNotificationToUser(
-      balloon.sender.toString(),
-      SOCKET_ENDPONTS.balloon_expired,
-      {}
-    );
+      // Handle paired balloon
+      if (balloon.pairedBalloon) {
+        const otherBalloon = await balloon_model.findById(balloon.pairedBalloon);
+        if (otherBalloon) {
+          await Promise.all([
+            user_model.updateOne(
+              { _id: otherBalloon.sender },
+              { $set: { 'balloon.received': null } }
+            ),
+            balloon_model.updateOne(
+              { _id: otherBalloon._id },
+              { $set: { status: 'pending' } }
+            ),
+            sendNotificationUser(
+              otherBalloon.sender.toString(),
+              otherBalloonExpiredNotification()
+            )
+          ]);
 
-    trackEvent(balloon.sender.toString(), mixpanelEvents.balloon_expired);
+          console.log(`🔄 Paired balloon ${otherBalloon._id} set to pending`);
+        }
+      }
 
-    console.log(`⏳ Balloon ${balloon._id} removed after 3 days.`);
-  }
+      trackEvent(balloon.sender.toString(), mixpanelEvents.balloon_expired);
+      console.log(`⏳ Balloon ${balloon._id} expired`);
+    })
+  );
 }
 
 
@@ -951,7 +977,7 @@ export async function acceptBalloon(params: AcceptBalloonParams): Promise<Balloo
       balloon_model.findOne({ sender: params.user_id }),
       balloon_model.findOneAndUpdate(
         { _id: params.balloon_id },
-        { $set: { status: 'accepted' } },
+        { $set: { status: 'accepted', lastActivityAt: new Date() } },
         { new: true }
       )
     ]);
@@ -968,7 +994,7 @@ export async function refuseBalloon(params: AcceptBalloonParams): Promise<Balloo
       balloon_model.findOne({ sender: params.user_id }),
       balloon_model.findOneAndUpdate(
         { _id: params.balloon_id },
-        { $set: { status: 'rejected' } },
+        { $set: { status: 'rejected', lastActivityAt: new Date() } },
         { new: true }
       )
     ]);
@@ -1192,6 +1218,17 @@ export async function searchMate(
   } catch (e: any) {
     throw new Error(e.message || e);
   }
+}
+
+export async function addLastActivityToBalloons() {
+  const now = new Date();
+
+  const result = await balloon_model.updateMany(
+    { lastActivityAt: { $exists: false } }, // only add if it doesn't exist
+    { $set: { lastActivityAt: now } }
+  );
+
+  console.log(`✅ Updated ${result.modifiedCount} balloons with lastActivityAt`);
 }
 
 
