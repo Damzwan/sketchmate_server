@@ -1220,16 +1220,4 @@ export async function searchMate(
   }
 }
 
-export async function addLastActivityToBalloons() {
-  const now = new Date();
-
-  const result = await balloon_model.updateMany(
-    { lastActivityAt: { $exists: false } }, // only add if it doesn't exist
-    { $set: { lastActivityAt: now } }
-  );
-
-  console.log(`✅ Updated ${result.modifiedCount} balloons with lastActivityAt`);
-}
-
-
 
