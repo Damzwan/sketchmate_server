@@ -20,25 +20,24 @@ export enum mixpanelEvents {
   unMatch = 'unmatch'
 }
 
-// const mp = Mixpanel.init(process.env.mixpanel_token!, {
-//   host: 'api-eu.mixpanel.com'
-// });
+const mp = Mixpanel.init(process.env.mixpanel_token!, {
+  host: 'api-eu.mixpanel.com'
+});
 
 
 export function trackEvent(user_id: string, event: mixpanelEvents, params?: any): Promise<void> {
-  return new Promise<void>((resolve) => resolve());
-  // return new Promise((resolve, reject) => {
-  //   if (isDev) return;
-  //
-  //
-  //   mp.track(event, { distinct_id: user_id, ...params }, (err) => {
-  //     if (err) {
-  //       console.error('Mixpanel tracking error:', err);
-  //       reject(err);
-  //     } else {
-  //       console.log('Mixpanel event tracked:', event);
-  //       resolve();
-  //     }
-  //   });
-  // });
+  return new Promise((resolve, reject) => {
+    if (isDev) return;
+
+
+    mp.track(event, { distinct_id: user_id, ...params }, (err) => {
+      if (err) {
+        console.error('Mixpanel tracking error:', err);
+        reject(err);
+      } else {
+        console.log('Mixpanel event tracked:', event);
+        resolve();
+      }
+    });
+  });
 }
