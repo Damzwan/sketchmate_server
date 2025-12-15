@@ -1,7 +1,8 @@
 import Router from 'koa-router';
 import {
   ChangeUserNameParams,
-  CreateBalloonPostParams, CreateBalloonPostRes,
+  CreateBalloonPostParams,
+  CreateBalloonPostRes,
   CreateEmblemParams,
   CreateSavedParams,
   CreateStickerParams,
@@ -14,7 +15,8 @@ import {
   OnLoginEventParams,
   RegisterNotificationParams,
   RemoveFromInboxParams,
-  UnRegisterNotificationParams, UpdateUserParams,
+  UnRegisterNotificationParams,
+  UpdateUserParams,
   UploadProfileImgParams
 } from '../types/types';
 import {
@@ -26,7 +28,8 @@ import {
   deleteEmblem,
   deleteProfileImg,
   deleteSaved,
-  deleteSticker, getBalloon,
+  deleteSticker,
+  getBalloon,
   getInboxItems,
   getLastImgFromUser,
   getPartialUsers,
@@ -37,7 +40,8 @@ import {
   searchMate,
   seeInbox,
   subscribe,
-  unsubscribe, updateUser,
+  unsubscribe,
+  updateUser,
   uploadProfileImg
 } from '../mongodb';
 import { parseParams } from '../helper';
