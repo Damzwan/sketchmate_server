@@ -43,7 +43,6 @@ import {
 import { parseParams } from '../helper';
 import pako from 'pako';
 import fs from 'fs';
-import { mixpanelEvents, trackEvent } from '../mixpanel';
 
 export const router = new Router();
 

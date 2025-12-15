@@ -692,11 +692,12 @@ export async function createBalloon(params: CreateBalloonPostParams): Promise<Re
 
 export async function getBalloon(balloonId: string): Promise<Balloon | null> {
   try {
-    return await balloon_model.findById(balloonId);
-  } catch (e) {
-    throw new Error(`Failed to get balloon: ${(e as Error).message}`);
+    return await balloon_model.findById(balloonId).lean<Balloon | null>();
+  } catch (error) {
+    throw new Error(`Failed to get balloon: ${(error as Error).message}`);
   }
 }
+
 
 export async function pairBalloons() {
   const pendingBalloons = await balloon_model
@@ -871,7 +872,7 @@ export async function removeExpiredBalloons() {
         balloon_model.findByIdAndDelete(balloon._id),
         user_model.updateOne(
           { _id: balloon.sender },
-          { $set: { 'balloon.sent': null } }
+          { $set: { 'balloon.sent': null, 'balloon.received': null } }
         ),
         sendNotificationUser(
           balloon.sender.toString(),
@@ -1219,5 +1220,4 @@ export async function searchMate(
     throw new Error(e.message || e);
   }
 }
-
 
