@@ -11,7 +11,7 @@ import conditional from 'koa-conditional-get';
 import { Server } from 'socket.io';
 import { connectDb, pairBalloons, removeExpiredBalloons, unPairBalloons } from './mongodb';
 import { router } from './api/router';
-import { registerSocketHandlers } from './api/socket';
+import { registerSocketHandlers } from './api/socket/socket';
 import { errorHandler } from './middleware/error_handler';
 import * as fs from 'fs';
 import { scheduleResetUploadFolder } from './helper';
@@ -23,10 +23,11 @@ export const isDev = process.env.NODE_ENV === 'development';
 
 const server = createServer(app.callback());
 const io = new Server(server, {
+  maxHttpBufferSize: 1e7,
   cors: {
     origin: ['https://app.sketchmate.ninja', 'http://localhost:8100', 'http://localhost', 'https://localhost'],
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    credentials: true
+    credentials: true,
   }
 });
 
