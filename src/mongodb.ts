@@ -49,7 +49,7 @@ import {
   balloonReceivedNotification,
   otherBalloonExpiredNotification
 } from './config/notification.config';
-import { sendSocketNotificationToUser } from './api/socket';
+import { sendSocketNotificationToUser } from './api/socket/socket';
 import { mixpanelEvents, trackEvent } from './mixpanel';
 
 let s3Creator: S3Creator;
@@ -1195,6 +1195,14 @@ export async function getPartialUsers(user_ids: string[]): Promise<Mate[]> {
         _id: { $in: user_ids }
       }, { _id: 1, img: 1, name: 1 })
       .lean();
+  } catch (e: any) {
+    throw new Error(e);
+  }
+}
+
+export async function getPartialUser(user_id: string): Promise<Res<Mate>> {
+  try {
+    return await user_model.findById(user_id, { _id: 1, img: 1, name: 1 }).lean();
   } catch (e: any) {
     throw new Error(e);
   }

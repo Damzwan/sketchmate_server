@@ -237,3 +237,24 @@ export const sendFriendRequestNotification = (senderName: string): FBNotificatio
     }
   };
 };
+
+export const lobbyInvitationNotification = (mateName: string, lobby_id: string): FBNotification => {
+  return {
+    notification: {
+      title: `${mateName} invited you to draw together`,
+      body: 'Tap to join'
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
+    },
+    data: {
+      type: NotificationType.lobby_invitation,
+      lobby_id: lobby_id
+    }
+  };
+};
+

@@ -5,6 +5,7 @@ export enum NotificationType {
   comment = 'comment',
   friend_request = 'friend_request',
   balloon = 'balloon',
+  lobby_invitation = 'lobby_invitation',
 }
 
 export interface InboxItem {
@@ -385,4 +386,5 @@ export enum SOCKET_ENDPONTS {
   match_balloon = 'match-balloon ',
   balloon_match_expired = 'balloon-match-expired ',
   balloon_expired = 'balloon-expired ',
+  friend_invitation = 'friend-invitation ',
 }

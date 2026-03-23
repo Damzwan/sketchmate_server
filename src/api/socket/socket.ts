@@ -8,23 +8,23 @@ import {
   SendParams,
   SOCKET_ENDPONTS,
   UnMatchParams
-} from '../types/types';
+} from '../../types/types';
 import {
   acceptBalloon, acceptBalloonCleanUp, cancelBalloon,
   cancelSendMateRequest,
-  comment,
+  comment, getPartialUser, getPartialUsers,
   getUserSubscription,
   match, refuseBalloon, refuseSendMateRequest, rejectBalloonCleanUp,
   sendMateRequest,
   storeMessage,
   unMatch
-} from '../mongodb';
+} from '../../mongodb';
 import {
   sendNotification,
   sendNotificationIncludingSilent,
   sendNotificationUser,
   sendSilentNotification
-} from '../notifications';
+} from '../../notifications';
 import {
   balloonAcceptNotification,
   balloonMatchNotification, balloonRejectNotification,
@@ -32,29 +32,39 @@ import {
   drawingReceivedNotification,
   matchNotification, sendFriendRequestNotification,
   unmatchNotification
-} from '../config/notification.config';
+} from '../../config/notification.config';
 import pako from 'pako';
-import { silentNotification } from '../helper';
+import { silentNotification } from '../../helper';
+import { registerDrawSyncingHandlers } from './drawSyncing';
 
 interface UserSocketMap {
   [userId: string]: Socket[];
 }
 
-const userSocketMap: UserSocketMap = {};
+export const userSocketMap: UserSocketMap = {};
 
 
 export function registerSocketHandlers(io: Server) {
   io.on('connection', (socket) => {
+    registerDrawSyncingHandlers(io, socket);
     socket.on(SOCKET_ENDPONTS.login, (params: { _id: string }) => {
       // Initialize array if not exists
       if (!userSocketMap[params._id]) {
         userSocketMap[params._id] = [];
       }
-      socket.emit(SOCKET_ENDPONTS.login);
-
-
       // Add the new socket to the array
       userSocketMap[params._id].push(socket);
+
+      getPartialUser(params._id).then(user => {
+        if (!user) return;
+        socket.data.user = {
+          _id: user._id,
+          name: user.name,
+          img: user.img
+        };
+        socket.emit(SOCKET_ENDPONTS.login);
+      });
+
 
       // Store the socket id in the socketToUserId map
       socket.on(SOCKET_ENDPONTS.disconnect, () => {
