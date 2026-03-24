@@ -41,17 +41,19 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     }
 
     if (!isPublic && intent == 'join') {
-      const existingSockets = await io.in(roomId).fetchSockets();
-
-      if (existingSockets.length === 0) {
+      if (clients.length === 0) {
         socket.emit('join-error', { reason: 'ROOM_NOT_FOUND' });
         return;
       }
     }
 
-    if (clients.find(client => client.data.user._id.toString() === socket.data.user._id.toString())) {
-      socket.emit('join-error', { reason: 'USER_ALREADY_IN_LOBBY' });
-      return;
+    const existingSocket = clients.find(
+      s => s.data.user?._id.toString() === socket.data.user._id.toString() && s.id !== socket.id
+    );
+
+    if (existingSocket) {
+      existingSocket.emit('join-error', { reason: 'DOUBLE_JOIN' });
+      existingSocket.leave(roomId);
     }
 
     socket.join(roomId);
@@ -96,6 +98,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
   });
 
   socket.on('leave-room', async ({ roomId }) => {
+    console.log('leave-room', roomId);
     socket.leave(roomId);
 
     socket.to(roomId).emit('user-left', {
