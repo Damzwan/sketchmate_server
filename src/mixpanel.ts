@@ -17,7 +17,10 @@ export enum mixpanelEvents {
   drawing_comment = 'drawing_comment',
   drawing_deleted = 'drawing_deleted',
   match = 'match',
-  unMatch = 'unmatch'
+  unMatch = 'unmatch',
+  joinLobby = 'join_lobby',
+  inviteLobby = 'invite_lobby',
+  messageLobby = 'message_lobby',
 }
 
 const mp = Mixpanel.init(process.env.mixpanel_token!, {

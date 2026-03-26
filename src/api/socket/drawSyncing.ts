@@ -4,6 +4,7 @@ import { userSocketMap } from './socket';
 import { v4 as uuidv4 } from 'uuid';
 import { sendNotificationUser } from '../../notifications';
 import { lobbyInvitationNotification } from '../../config/notification.config';
+import { mixpanelEvents, trackEvent } from '../../mixpanel';
 
 type PublicLobby = {
   id: string;
@@ -79,6 +80,8 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       timestamp: new Date().toISOString(),
       id: uuidv4()
     });
+
+    trackEvent(socket.data.user._id, mixpanelEvents.joinLobby, { isPublic: isPublic });
   });
 
   socket.on('disconnecting', () => {
@@ -132,7 +135,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       });
     }
     sendNotificationUser(friendId, lobbyInvitationNotification(socket.data.user.name, roomId));
-
+    trackEvent(socket.data.user._id, mixpanelEvents.inviteLobby);
   });
 
   socket.on('lobby-message', ({ roomId, message }) => {
@@ -142,6 +145,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       timestamp: new Date().toISOString(),
       id: uuidv4()
     });
+    trackEvent(socket.data.user._id, mixpanelEvents.messageLobby);
   });
 
   socket.on('watch-public-lobbies', () => {

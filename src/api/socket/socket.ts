@@ -81,6 +81,7 @@ export function registerSocketHandlers(io: Server) {
 
     });
 
+
     socket.on(SOCKET_ENDPONTS.match, async (params: MatchParams) => {
       try {
         const res = await match(params);
