@@ -25,9 +25,9 @@ const server = createServer(app.callback());
 const io = new Server(server, {
   maxHttpBufferSize: 1e7,
   cors: {
-    origin: ['https://app.sketchmate.ninja', 'http://localhost:8100', 'http://localhost', 'https://localhost'],
+    origin: ['https://app.sketchmate.ninja', 'http://localhost:8100', 'http://localhost', 'https://localhost', 'https://sketchmate-testing-5e62bf42145c.herokuapp.com'],
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    credentials: true,
+    credentials: true
   }
 });
 
