@@ -1,20 +1,29 @@
 import { Server, Socket } from 'socket.io';
 import {
-  AcceptBalloonParams, AcceptBalloonRes, CancelBalloonParams,
+  AcceptBalloonParams,
+  AcceptBalloonRes,
+  CancelBalloonParams,
   CommentParams,
   CommentRes,
-  GetUserParams,
-  MatchParams, RejectBalloonRes, SendMateRequestParams,
+  MatchParams,
+  RejectBalloonRes,
+  SendMateRequestParams,
   SendParams,
   SOCKET_ENDPONTS,
   UnMatchParams
 } from '../../types/types';
 import {
-  acceptBalloon, acceptBalloonCleanUp, cancelBalloon,
+  acceptBalloon,
+  acceptBalloonCleanUp,
+  cancelBalloon,
   cancelSendMateRequest,
-  comment, getPartialUser, getPartialUsers,
+  comment,
+  getPartialUser,
   getUserSubscription,
-  match, refuseBalloon, refuseSendMateRequest, rejectBalloonCleanUp,
+  match,
+  refuseBalloon,
+  refuseSendMateRequest,
+  rejectBalloonCleanUp,
   sendMateRequest,
   storeMessage,
   unMatch
@@ -27,14 +36,15 @@ import {
 } from '../../notifications';
 import {
   balloonAcceptNotification,
-  balloonMatchNotification, balloonRejectNotification,
+  balloonMatchNotification,
+  balloonRejectNotification,
   commentReceivedNotification,
   drawingReceivedNotification,
-  matchNotification, sendFriendRequestNotification,
+  matchNotification,
+  sendFriendRequestNotification,
   unmatchNotification
 } from '../../config/notification.config';
 import pako from 'pako';
-import { silentNotification } from '../../helper';
 import { registerDrawSyncingHandlers } from './drawSyncing';
 
 interface UserSocketMap {

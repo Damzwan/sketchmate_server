@@ -101,7 +101,6 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
   });
 
   socket.on('leave-room', async ({ roomId }) => {
-    console.log('leave-room', roomId);
     socket.leave(roomId);
 
     socket.to(roomId).emit('user-left', {
@@ -117,6 +116,19 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
   socket.on('send-canvas-state', ({ targetSocketId, canvasState }) => {
     io.to(targetSocketId).emit('initial-canvas-state', { canvasState });
+
+    setImmediate(() => {
+      try {
+        const sizeBytes = canvasState.length;
+        const dataSizeKB = sizeBytes / 1024;
+
+        trackEvent(socket.data.user._id, mixpanelEvents.canvasSize, {
+          size: Math.round(dataSizeKB)
+        });
+      } catch (e) {
+        console.error('Tracking error', e);
+      }
+    });
   });
 
   socket.on('draw-event', ({ roomId, action }) => {

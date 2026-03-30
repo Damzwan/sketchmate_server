@@ -21,6 +21,7 @@ export enum mixpanelEvents {
   joinLobby = 'join_lobby',
   inviteLobby = 'invite_lobby',
   messageLobby = 'message_lobby',
+  canvasSize = 'canvas_size',
 }
 
 const mp = Mixpanel.init(process.env.mixpanel_token!, {
