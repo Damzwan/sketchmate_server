@@ -324,7 +324,6 @@ export async function storeMessage(params: SendParams): Promise<Res<InboxItem>> 
       seen_by: [params._id],
       comments_seen_by: [params._id],
       comments: [],
-      aspect_ratio: params.aspect_ratio
     };
 
     await Promise.all([
