@@ -133,7 +133,8 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
   socket.on('draw-event', ({ roomId, action }) => {
     socket.to(roomId).emit('draw-event', {
-      action
+      action,
+      creator: socket.data.user._id
     });
   });
 

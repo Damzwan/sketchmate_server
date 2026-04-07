@@ -320,10 +320,11 @@ export async function storeMessage(params: SendParams): Promise<Res<InboxItem>> 
       date: date,
       sender: params._id,
       followers: params.followers,
+      aspect_ratio: params.aspect_ratio,
       original_followers: params.followers,
       seen_by: [params._id],
       comments_seen_by: [params._id],
-      comments: [],
+      comments: []
     };
 
     await Promise.all([
