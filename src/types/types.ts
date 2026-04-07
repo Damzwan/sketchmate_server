@@ -19,7 +19,7 @@ export interface InboxItem {
   sender: string;
   reply?: InboxItem;
   comments: Comment[];
-  aspect_ratio?: number; // @deprecated
+  aspect_ratio: number;
   seen_by: string[];
   comments_seen_by: string[];
 }
@@ -118,6 +118,7 @@ export interface SendParams {
   followers: string[];
   drawing: string;
   img: any;
+  aspect_ratio: number;
 }
 
 export interface SendRes {
