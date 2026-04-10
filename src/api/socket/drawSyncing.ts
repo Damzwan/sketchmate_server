@@ -25,31 +25,59 @@ const PUBLIC_LOBBY_ROOMS = new Map<string, PublicLobby>([
   ['lobby-10', { id: 'lobby-10', name: 'Robot', maxUsers: 6 }]
 ]);
 
+const ROOM_STATES = new Map();
+const MAX_BUFFER_SIZE = 5;
+const DISCONNECT_GRACE_PERIOD_MS = 15000;
+const MAX_MESSAGE_BUFFER = 50;
+const ROOM_CLEANUP_TIMEOUT_MS = 30000;
+
+
+function getOrCreateRoomState(roomId: any) {
+  if (!ROOM_STATES.has(roomId)) {
+    ROOM_STATES.set(roomId, {
+      sessionId: uuidv4(),
+      currentSequenceId: 0,
+      actionBuffer: [],
+      cachedSnapshot: null,
+      cachedSnapshotSequenceId: 0,
+      isRequestingSnapshot: false,
+      cleanupTimeout: null,
+
+      // NEW: Chat tracking and Ghost handling
+      messageBuffer: [],
+      ghostUsers: new Map() // Tracks users who are in the disconnect grace period
+    });
+  }
+  return ROOM_STATES.get(roomId);
+}
+
 export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
-  socket.on('join-room', async ({ roomId, intent }) => {
+  socket.on('join-room', async ({ roomId, intent, lastSequenceId, lastSessionId }) => {
+
+    // 1. Identify the client version (defaults to '1' for existing users)
+    const clientVersion = socket.handshake.query.clientVersion || '1';
+    socket.data.version = clientVersion;
+
     const publicRoom = PUBLIC_LOBBY_ROOMS.get(roomId);
     const isPublic = !!publicRoom;
     const clients = await io.in(roomId).fetchSockets();
 
-    if (isPublic) {
-      const clients = await io.in(roomId).fetchSockets();
-
-      if (clients.length >= publicRoom.maxUsers) {
-        socket.emit('join-error', { reason: 'ROOM_FULL' });
-        return;
-      }
+    // Handle limits and validation
+    if (isPublic && clients.length >= publicRoom.maxUsers) {
+      socket.emit('join-error', { reason: 'ROOM_FULL' });
+      return;
     }
 
-    if (!isPublic && intent == 'join') {
-      if (clients.length === 0) {
-        socket.emit('join-error', { reason: 'ROOM_NOT_FOUND' });
-        return;
-      }
+    if (!isPublic && intent == 'join' && clients.length === 0) {
+      socket.emit('join-error', { reason: 'ROOM_NOT_FOUND' });
+      return;
     }
+
+    const userId = socket.data.user?._id.toString();
 
     const existingSocket = clients.find(
-      s => s.data.user?._id.toString() === socket.data.user._id.toString() && s.id !== socket.id
+      s => s.data.user?._id.toString() === userId && s.id !== socket.id
     );
 
     if (existingSocket) {
@@ -57,46 +85,188 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       existingSocket.leave(roomId);
     }
 
+    // Join the room
     socket.join(roomId);
     if (isPublic) broadcastLobbyOccupancy(io);
 
-    const potentialHosts = clients.filter(s => s.id !== socket.id);
-    if (potentialHosts.length > 0) {
-      const host = potentialHosts[0];
-      io.to(host.id).emit('request-canvas-state', {
-        targetSocketId: socket.id
-      });
+    const roomState = getOrCreateRoomState(roomId);
+    const isSessionMismatch = lastSessionId && lastSessionId !== roomState.sessionId;
+    if (isSessionMismatch) {
+      lastSequenceId = undefined;
     }
+
+    // ABORT ROOM DESTRUCTION: If the room was empty and ticking down, rescue it
+    if (roomState.cleanupTimeout) {
+      clearTimeout(roomState.cleanupTimeout);
+      roomState.cleanupTimeout = null;
+    }
+
+    const potentialHosts = clients.filter(s => s.id !== socket.id);
+
+    // ---- THE VERSIONING SPLIT ----
+    if (clientVersion === '1') {
+      setTimeout(() => {
+        sendLegacyMessage(socket);
+      }, 500);
+      setTimeout(() => {
+        socket.emit('join-error', { reason: 'OUTDATED', message: 'Please update your app' });
+      }, 5000);
+    } else {
+      // V2 MODERN USER
+      const v2Hosts = potentialHosts.filter(s => s.data.version === '2');
+      const v1Hosts = potentialHosts.filter(s => s.data.version !== '2');
+
+      const effectiveLastSeq = lastSequenceId !== undefined ? lastSequenceId : 0;
+      const oldestAvailableSeq = roomState.actionBuffer.length > 0 ? roomState.actionBuffer[0].sequenceId : 1;
+
+      // 1. BRAND NEW JOIN (Cold Start)
+      if (lastSequenceId === undefined) {
+        if (roomState.cachedSnapshot) {
+          // If we have a snapshot (from a V1 creator or previous V2 sync), use it!
+          sendFullSnapshot(socket, roomId, roomState, v2Hosts, true);
+        } else if (v1Hosts.length > 0) {
+          // BRIDGE: V1 user is here, but hasn't finished 'Genius Idea' upload yet
+          const legacyHost = v1Hosts[0];
+          console.log(`[Bridge] Asking V1 Host ${legacyHost.id} for state for V2 Joiner`);
+          requestSnapshotWithTimeout(socket, roomId, roomState, [legacyHost], 0);
+        } else if (effectiveLastSeq >= oldestAvailableSeq - 1) {
+          // FAST SYNC: They just blipped, give them the delta
+          const missedActions = roomState.actionBuffer.filter((a: any) => a.sequenceId > effectiveLastSeq);
+          socket.emit('missed-actions', {
+            actions: missedActions,
+            isInitialSync: true
+          });
+        } else {
+          // Truly empty room, tell client to stop loading
+          console.log('what');
+          socket.emit('missed-actions', { actions: [], isInitialSync: true });
+        }
+      }
+      // 2. RECONNECTING USER (Warm Start)
+      else {
+        if (effectiveLastSeq >= oldestAvailableSeq - 1) {
+          // FAST SYNC: They just blipped, give them the delta
+          const missedActions = roomState.actionBuffer.filter((a: any) => a.sequenceId > effectiveLastSeq);
+          socket.emit('missed-actions', {
+            actions: missedActions,
+            isInitialSync: false
+          });
+        } else {
+          // Too far behind, give them the full snapshot
+          sendFullSnapshot(socket, roomId, roomState, v2Hosts, false);
+        }
+      }
+    }
+
+    // ---- GHOST RESCUE & MISSED MESSAGES ----
+    let isGhostRescue = false;
+
+    if (userId && roomState.ghostUsers && roomState.ghostUsers.has(userId)) {
+      isGhostRescue = true;
+      const ghostData = roomState.ghostUsers.get(userId);
+
+      // 1. Cancel the delayed "user-left" broadcast!
+      clearTimeout(ghostData.timeoutId);
+      roomState.ghostUsers.delete(userId);
+
+      // 2. Send missed messages
+      if (roomState.messageBuffer) {
+        const missedMessages = roomState.messageBuffer
+          .filter((m: any) => m.timestampMs > ghostData.disconnectTimeMs)
+          .map((m: any) => m.payload);
+
+        if (missedMessages.length > 0) {
+          // Send directly to this specific socket, not the whole room
+          socket.emit('missed-lobby-messages', missedMessages);
+        }
+      }
+    }
+
+    // ---- BROADCASTS & TRACKING ----
 
     const updatedSockets = await io.in(roomId).fetchSockets();
     socket.emit('room-joined', {
       roomId,
       users: updatedSockets.map(s => s.data.user),
-      isCreator: intent === 'create' || isPublic && potentialHosts.length == 0 // first one joining public lobby
+      isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0),
+      sessionId: roomState.sessionId
     });
 
-    io.to(roomId).emit('user-joined', {
-      user: socket.data.user,
-      timestamp: new Date().toISOString(),
-      id: uuidv4()
-    });
-
-    trackEvent(socket.data.user._id, mixpanelEvents.joinLobby, { isPublic: isPublic });
-  });
-
-  socket.on('disconnecting', () => {
-    const rooms = Array.from(socket.rooms);
-    rooms.forEach((roomId) => {
-      socket.to(roomId).emit('user-left', {
+    // Only announce "user-joined" if they weren't a ghost.
+    // If they were a ghost, nobody knew they left, so we don't announce they joined!
+    if (!isGhostRescue) {
+      io.to(roomId).emit('user-joined', {
         user: socket.data.user,
         timestamp: new Date().toISOString(),
         id: uuidv4()
       });
+    }
 
-      if (PUBLIC_LOBBY_ROOMS.has(roomId)) {
-        broadcastLobbyOccupancy(io);
+    trackEvent(userId, mixpanelEvents.joinLobby, { isPublic });
+  });
+
+// Helper function to handle sending the snapshot
+  function sendFullSnapshot(socket: any, roomId: any, roomState: any, potentialHosts: any, isInitialSync: boolean) {
+    const oldestAvailableSeq = roomState.actionBuffer.length > 0
+      ? roomState.actionBuffer[0].sequenceId
+      : roomState.currentSequenceId;
+
+    const hasUnbridgeableGap = roomState.cachedSnapshotSequenceId < (oldestAvailableSeq - 1);
+    const isCacheValid = roomState.cachedSnapshot && !hasUnbridgeableGap;
+
+    if (isCacheValid) {
+      const missedActions = roomState.actionBuffer.filter(
+        (a: any) => a.sequenceId > roomState.cachedSnapshotSequenceId
+      );
+      socket.emit('initial-canvas-state', {
+        canvasState: roomState.cachedSnapshot,
+        sequenceId: roomState.cachedSnapshotSequenceId,
+        missedActions: missedActions,
+        isInitialSync
+      });
+    } else if (potentialHosts.length > 0) {
+      // START THE TIMEOUT LOOP
+      requestSnapshotWithTimeout(socket, roomId, roomState, potentialHosts, 0);
+    }
+  }
+
+
+  socket.on('disconnecting', () => {
+    const rooms = Array.from(socket.rooms);
+    const userId = socket.data.user._id.toString();
+
+    rooms.forEach((roomId) => {
+      if (roomId === socket.id) return;
+
+      const roomState = getOrCreateRoomState(roomId);
+
+      // 1. Start the countdown for the delayed broadcast
+      const timeoutId = setTimeout(() => {
+        // Time is up! They didn't reconnect. Announce they left.
+        roomState.ghostUsers.delete(userId);
+
+        io.to(roomId).emit('user-left', {
+          user: socket.data.user,
+          timestamp: new Date().toISOString(),
+          id: uuidv4()
+        });
+
+        if (PUBLIC_LOBBY_ROOMS.has(roomId)) {
+          broadcastLobbyOccupancy(io);
+        }
+      }, DISCONNECT_GRACE_PERIOD_MS);
+
+      // 2. Save them as a Ghost so we can rescue them if they rejoin
+      roomState.ghostUsers.set(userId, {
+        disconnectTimeMs: Date.now(),
+        timeoutId: timeoutId
+      });
+
+      // 3. Room Cleanup check (still valid, but respects your 5-minute timeout)
+      const room = io.sockets.adapter.rooms.get(roomId);
+      if (room && room.size === 1) {
+        scheduleRoomCleanup(roomId);
       }
-
     });
   });
 
@@ -112,31 +282,91 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     if (PUBLIC_LOBBY_ROOMS.has(roomId)) {
       broadcastLobbyOccupancy(io);
     }
+
+    // Since they already left, the room might not exist anymore, or its size is 0.
+    const room = io.sockets.adapter.rooms.get(roomId);
+    if (!room || room.size === 0) {
+      scheduleRoomCleanup(roomId);
+    }
   });
 
-  socket.on('send-canvas-state', ({ targetSocketId, canvasState }) => {
-    io.to(targetSocketId).emit('initial-canvas-state', { canvasState });
+  socket.on('send-canvas-state', ({ targetSocketId, canvasState, snapshotSequenceId, isBackgroundUpdate }) => {
+    // Filter out the socket's own ID AND the lobby watcher room
+    // should just pass as param in v2...
+    const roomId = Array.from(socket.rooms).find(r =>
+      r !== socket.id && r !== 'public-lobby-watchers'
+    );
 
-    setImmediate(() => {
-      try {
-        const sizeBytes = canvasState.length;
-        const dataSizeKB = sizeBytes / 1024;
+    if (!roomId) return;
 
-        trackEvent(socket.data.user._id, mixpanelEvents.canvasSize, {
-          size: Math.round(dataSizeKB)
-        });
-      } catch (e) {
-        console.error('Tracking error', e);
-      }
-    });
+    const roomState = getOrCreateRoomState(roomId);
+
+    // FIX: If the sequence ID is missing (V1 user),
+    // we assume the snapshot represents the room "Right Now"
+    const effectiveSequenceId = snapshotSequenceId !== undefined
+      ? snapshotSequenceId
+      : roomState.currentSequenceId;
+
+    roomState.cachedSnapshot = canvasState;
+    roomState.cachedSnapshotSequenceId = effectiveSequenceId;
+    roomState.isRequestingSnapshot = false;
+
+
+    if (targetSocketId && roomState.pendingTimeouts?.has(targetSocketId)) {
+      clearTimeout(roomState.pendingTimeouts.get(targetSocketId));
+      roomState.pendingTimeouts.delete(targetSocketId);
+    }
+
+    // Guard: targetSocketId !== socket.id prevents an infinite loop for the V1 creator
+    if (targetSocketId && targetSocketId !== socket.id && !isBackgroundUpdate) {
+      const missedActions = roomState.actionBuffer.filter(
+        (a: any) => a.sequenceId > effectiveSequenceId
+      );
+
+      io.to(targetSocketId).emit('initial-canvas-state', {
+        canvasState,
+        sequenceId: effectiveSequenceId,
+        missedActions
+      });
+    }
   });
 
-  socket.on('draw-event', ({ roomId, action }) => {
+  socket.on('draw-event', async ({ roomId, action }) => {
+    const roomState = getOrCreateRoomState(roomId);
+
+    roomState.currentSequenceId += 1;
+
+    roomState.actionBuffer.push({ sequenceId: roomState.currentSequenceId, ...action });
+    if (roomState.actionBuffer.length > MAX_BUFFER_SIZE) {
+      roomState.actionBuffer.shift();
+    }
+
     socket.to(roomId).emit('draw-event', {
+      sequenceId: roomState.currentSequenceId,
       action,
       creator: socket.data.user._id
     });
+
+    // --- NEW: The Background Trigger ---
+    const actionsSinceLastSnapshot = roomState.currentSequenceId - roomState.cachedSnapshotSequenceId;
+
+    // Ask for an update when we reach 50% of our buffer capacity
+    if (actionsSinceLastSnapshot >= (MAX_BUFFER_SIZE * 0.75) && !roomState.isRequestingSnapshot) {
+      const clients = await io.in(roomId).fetchSockets();
+      const potentialHosts = clients;
+
+      if (potentialHosts.length > 0) {
+        roomState.isRequestingSnapshot = true; // Lock it
+
+        io.to(potentialHosts[0].id).emit('request-canvas-state', {
+          // We don't need a targetSocketId because this is a background update
+          snapshotSequenceId: roomState.currentSequenceId,
+          isBackgroundUpdate: true // Tell the client to do this silently
+        });
+      }
+    }
   });
+
 
   socket.on('friend-invite', ({ roomId, friendId }) => {
     if (userSocketMap[friendId]) {
@@ -152,14 +382,82 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
   });
 
   socket.on('lobby-message', ({ roomId, message }) => {
-    io.to(roomId).emit('lobby-message', {
+    const roomState = getOrCreateRoomState(roomId);
+
+    const payload = {
       message,
       member: socket.data.user,
       timestamp: new Date().toISOString(),
       id: uuidv4()
+    };
+
+    // Add to buffer and enforce size limit
+    roomState.messageBuffer.push({
+      payload: payload,
+      timestampMs: Date.now()
     });
+    if (roomState.messageBuffer.length > MAX_MESSAGE_BUFFER) {
+      roomState.messageBuffer.shift();
+    }
+
+    io.to(roomId).emit('lobby-message', payload);
     trackEvent(socket.data.user._id, mixpanelEvents.messageLobby);
   });
+
+
+  function scheduleRoomCleanup(roomId: any) {
+    const roomState = ROOM_STATES.get(roomId);
+    if (!roomState) return;
+
+    // Clear any existing timeout just in case it was already ticking
+    if (roomState.cleanupTimeout) {
+      clearTimeout(roomState.cleanupTimeout);
+    }
+
+    // Start the countdown to destruction
+    roomState.cleanupTimeout = setTimeout(() => {
+      ROOM_STATES.delete(roomId);
+    }, ROOM_CLEANUP_TIMEOUT_MS);
+  }
+
+  function requestSnapshotWithTimeout(targetSocket: any, roomId: any, roomState: any, potentialHosts: any, attemptIndex: any) {
+    // 1. Check if we've run out of hosts to ask
+    if (attemptIndex >= potentialHosts.length) {
+      console.warn(`[Room ${roomId}] All hosts timed out. Using Fallback.`);
+
+      // FALLBACK: Give them the stale cache if we have one, just to get them in the room
+      if (roomState.cachedSnapshot) {
+        targetSocket.emit('initial-canvas-state', {
+          canvasState: roomState.cachedSnapshot,
+          sequenceId: roomState.cachedSnapshotSequenceId,
+          missedActions: [], // We accept the gap. Better than a dead UI.
+          warning: 'Network unstable: Some recent drawings may be missing.'
+        });
+      } else {
+        // Ultimate failure: No cache, no hosts. Boot them or give a blank canvas.
+        targetSocket.emit('join-error', { reason: 'ROOM_UNRESPONSIVE' });
+      }
+      return;
+    }
+
+    // 2. Ask the current host in the list
+    const host = potentialHosts[attemptIndex];
+    io.to(host.id).emit('request-canvas-state', {
+      targetSocketId: targetSocket.id,
+      snapshotSequenceId: roomState.currentSequenceId,
+      isBackgroundUpdate: false
+    });
+
+    // 3. Set a strict 4-second timeout
+    const timeoutId = setTimeout(() => {
+      // If this triggers, the host failed us. Try the next one!
+      requestSnapshotWithTimeout(targetSocket, roomId, roomState, potentialHosts, attemptIndex + 1);
+    }, 4000);
+
+    // 4. Save the timeout ID so we can cancel it if the host DOES reply
+    roomState.pendingTimeouts = roomState.pendingTimeouts || new Map();
+    roomState.pendingTimeouts.set(targetSocket.id, timeoutId);
+  }
 
   socket.on('watch-public-lobbies', () => {
     socket.join('public-lobby-watchers');
@@ -206,3 +504,24 @@ function broadcastLobbyOccupancy(io: Server) {
 
   io.to('public-lobby-watchers').emit('public-lobbies-update', lobbies);
 }
+
+function sendLegacyMessage(socket: any) {
+  const payload = {
+    message: `⚠️ SYSTEM:
+Your app version is outdated.
+
+Please update the app to join this lobby.
+You will be disconnected. I am sorry :(`,
+    member: {
+      _id: 'system',
+      name: 'Creator',
+      img: 'https://www.waldenu.edu/media/22271/seo-277-bs-serious-african-american-ceo-g-230286634-1200x630'
+    },
+    timestamp: new Date().toISOString(),
+    id: uuidv4()
+  };
+
+  socket.emit('lobby-message', payload);
+}
+
+

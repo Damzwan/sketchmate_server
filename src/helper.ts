@@ -4,7 +4,6 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import * as cron from 'node-cron';
-import { account_blob } from './config/app.config';
 import { FBNotification } from './types/notification.type';
 
 export function parseParams<T>(params: ParsedUrlQuery | string): T {
@@ -84,6 +83,44 @@ export function scheduleResetUploadFolder() {
 
 export function silentNotification(notification: FBNotification) {
   delete notification.notification;
-  delete notification.android
+  delete notification.android;
   return notification;
+}
+
+export const minimum_age_social_features = 13;
+
+/**
+ * Calculate age in years based on a Date of Birth
+ * @param dob Date of birth
+ * @returns age in years (floating point)
+ */
+export function calculateAge(dob: Date): number {
+  const ageMs = Date.now() - dob.getTime();
+  return ageMs / (1000 * 60 * 60 * 24 * 365.25);
+}
+
+/**
+ * Check if the age meets a minimum requirement
+ * @param dob Date of birth
+ * @returns true if age >= minimumAge, false otherwise
+ */
+export function isOldEnough(dob: Date): boolean {
+  return calculateAge(dob) >= minimum_age_social_features;
+}
+
+export function compareVersions(currentVersion: string, minimumVersion: string): number {
+  const current = currentVersion.split('.').map(Number);
+  const minimum = minimumVersion.split('.').map(Number);
+
+  const maxLength = Math.max(current.length, minimum.length);
+
+  for (let i = 0; i < maxLength; i++) {
+    const v1 = current[i] || 0;
+    const v2 = minimum[i] || 0;
+
+    if (v1 < v2) return -1; // Current is older
+    if (v1 > v2) return 1;  // Current is newer
+  }
+
+  return 0; // Exactly the same
 }

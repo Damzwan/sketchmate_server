@@ -47,6 +47,9 @@ import {
 import { parseParams } from '../helper';
 import pako from 'pako';
 import fs from 'fs';
+import { routeBalloonToOnlineUser } from './balloon';
+import { userSocketMap } from './socket/socket';
+import { mixpanelEvents, trackEvent } from '../mixpanel';
 
 export const router = new Router();
 
@@ -193,8 +196,43 @@ router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
   ctx.body = { balloon } as CreateBalloonPostRes;
 });
 
+router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
+  if (!ctx.request.files) {
+    throw new Error('No files uploaded');
+  }
+
+  const files = ctx.request.files as any;
+  const params = parseParams<CreateBalloonPostParams>(ctx.request.body);
+
+  params.aspect_ratio = parseFloat(params.aspect_ratio as any as string);
+  params.img = fs.readFileSync(files.img.filepath);
+
+  const drawingFile = files.drawing;
+  const compressedBuffer = fs.readFileSync(drawingFile.filepath);
+  const inflated = pako.inflate(compressedBuffer, { to: 'string' });
+  params.drawing = JSON.parse(inflated);
+
+  const balloonData = { ...params, version: 2 };
+  const balloon = await createBalloon(balloonData); // Make sure createBalloon accepts version if strictly typed
+
+  if (!balloon) return;
+
+  // 2. Circulation: Immediately start the Hot Potato routing
+  const senderId = balloon.sender.toString();
+  const balloonId = balloon._id.toString();
+
+  routeBalloonToOnlineUser(senderId, balloonId, userSocketMap, 0).catch(err => {
+    console.error('Error during balloon routing triage:', err);
+  });
+
+  ctx.body = { balloon } as CreateBalloonPostRes;
+  trackEvent(params.sender, mixpanelEvents.balloon_v2_create);
+});
+
+
 router.get(`${ENDPOINTS.balloon}/:id`, async (ctx) => {
   const balloon_id = ctx.params.id;
   return ctx.body = await getBalloon(balloon_id);
 });
+
 

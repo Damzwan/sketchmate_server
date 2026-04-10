@@ -9,13 +9,14 @@ import etag from 'koa-etag';
 import conditional from 'koa-conditional-get';
 
 import { Server } from 'socket.io';
-import { connectDb, pairBalloons, removeExpiredBalloons, unPairBalloons } from './mongodb';
+import { connectDb } from './mongodb';
 import { router } from './api/router';
 import { registerSocketHandlers } from './api/socket/socket';
 import { errorHandler } from './middleware/error_handler';
 import * as fs from 'fs';
 import { scheduleResetUploadFolder } from './helper';
 import cron from 'node-cron';
+import { pairBalloons, removeExpiredBalloons, unPairBalloons } from './api/balloon';
 
 const app = new Koa();
 export const isDev = process.env.NODE_ENV === 'development';
