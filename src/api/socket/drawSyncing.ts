@@ -5,6 +5,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { sendNotificationUser } from '../../notifications';
 import { lobbyInvitationNotification } from '../../config/notification.config';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
+import fs from 'fs';
+import path from 'path';
 
 type PublicLobby = {
   id: string;
@@ -26,10 +28,11 @@ const PUBLIC_LOBBY_ROOMS = new Map<string, PublicLobby>([
 ]);
 
 const ROOM_STATES = new Map();
-const MAX_BUFFER_SIZE = 5;
+const MAX_BUFFER_SIZE = 100;
 const DISCONNECT_GRACE_PERIOD_MS = 15000;
 const MAX_MESSAGE_BUFFER = 50;
 const ROOM_CLEANUP_TIMEOUT_MS = 30000;
+const THUMBNAIL_UPDATE_INTERVAL_MS = 15000;
 
 const LEGACY_MODE = process.env.LEGACY_MODE === 'true';
 
@@ -47,7 +50,12 @@ function getOrCreateRoomState(roomId: any) {
 
       // NEW: Chat tracking and Ghost handling
       messageBuffer: [],
-      ghostUsers: new Map() // Tracks users who are in the disconnect grace period
+      ghostUsers: new Map(), // Tracks users who are in the disconnect grace period
+
+      lastThumbnailTime: 0,
+      lastThumbnailSequenceId: 0,
+      isRequestingThumbnail: false
+
     });
   }
   return ROOM_STATES.get(roomId);
@@ -97,7 +105,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
           socket.emit('room-joined', {
             roomId,
             users: [],
-            isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0),
+            isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0)
           });
           setTimeout(() => {
             sendLegacyMessage(socket, `⚠️ Compatibility Check: This room is running a newer version of the
@@ -377,6 +385,14 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     }
   });
 
+  // TODO for later
+  socket.on('send-lobby-thumbnail', ({ thumbnailBuffer, aspectRatio, roomId }) => {
+    if (!roomId) return;
+
+    const roomState = getOrCreateRoomState(roomId);
+    roomState.lastThumbnailTime = Date.now();
+  });
+
   socket.on('draw-event', async ({ roomId, action }) => {
     const roomState = getOrCreateRoomState(roomId);
 
@@ -396,12 +412,9 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     // --- NEW: The Background Trigger ---
     const actionsSinceLastSnapshot = roomState.currentSequenceId - roomState.cachedSnapshotSequenceId;
 
-    // Ask for an update when we reach 50% of our buffer capacity
+    // Ask for an update when we reach 75% of our buffer capacity
     if (actionsSinceLastSnapshot >= (MAX_BUFFER_SIZE * 0.75) && !roomState.isRequestingSnapshot) {
-      // 1. Lock it IMMEDIATELY (Synchronously) to prevent concurrent triggers
       roomState.isRequestingSnapshot = true;
-
-      // 2. Now do the async work safely
       const clients = await io.in(roomId).fetchSockets();
 
       if (clients.length > 0) {
@@ -410,10 +423,36 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
           isBackgroundUpdate: true
         });
       } else {
-        // Unlock if no hosts were found
         roomState.isRequestingSnapshot = false;
       }
     }
+
+    // --- 2. THE THUMBNAIL TRIGGER (Time & Public-lobby based) ---
+    // TODO next update
+    // const isPublic = PUBLIC_LOBBY_ROOMS.has(roomId);
+    //
+    // if (isPublic && !roomState.isRequestingThumbnail) {
+    //   const now = Date.now();
+    //   const timeSinceLastThumbnail = now - roomState.lastThumbnailTime;
+    //   const actionsSinceLastThumbnail = roomState.currentSequenceId - roomState.lastThumbnailSequenceId;
+    //
+    //   // Only trigger if enough time has passed AND the canvas actually changed
+    //   if (timeSinceLastThumbnail >= THUMBNAIL_UPDATE_INTERVAL_MS && actionsSinceLastThumbnail > 0) {
+    //     roomState.isRequestingThumbnail = true;
+    //     roomState.lastThumbnailTime = now;
+    //     roomState.lastThumbnailSequenceId = roomState.currentSequenceId;
+    //
+    //     const clients = await io.in(roomId).fetchSockets();
+    //
+    //     if (clients.length > 0) {
+    //       // Load balance: pick the second client if available
+    //       const thumbnailClient = clients.length > 1 ? clients[1] : clients[0];
+    //       io.to(thumbnailClient.id).emit('request-lobby-thumbnail');
+    //     } else {
+    //       roomState.isRequestingThumbnail = false;
+    //     }
+    //   }
+    // }
   });
 
 
@@ -572,5 +611,3 @@ You will be disconnected. I am sorry :(`,
 
   socket.emit('lobby-message', payload);
 }
-
-
