@@ -45,11 +45,13 @@ import {
   uploadProfileImg
 } from '../mongodb';
 import { parseParams } from '../helper';
-import pako from 'pako';
 import fs from 'fs';
 import { routeBalloonToOnlineUser } from './balloon';
 import { userSocketMap } from './socket/socket';
 import { mixpanelEvents, trackEvent } from '../mixpanel';
+import zlib from 'zlib';
+import { promisify } from 'util';
+import { promises as fsPromises } from 'fs';
 
 export const router = new Router();
 
@@ -175,6 +177,8 @@ router.post(`${ENDPOINTS.inbox}/see/:id`, async (ctx) => {
   ctx.body = await seeInbox({ inbox_id, user_id });
 });
 
+
+const inflateAsync = promisify(zlib.inflate);
 router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
   if (!ctx.request.files) {
     throw new Error('No files uploaded');
@@ -184,17 +188,24 @@ router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
 
   const params = parseParams<CreateBalloonPostParams>(ctx.request.body);
   params.aspect_ratio = parseFloat(params.aspect_ratio as any as string);
-  params.img = fs.readFileSync(files.img.filepath);
-  const drawingFile = files.drawing;
-  const compressedBuffer = fs.readFileSync(drawingFile.filepath);
-  const inflated = pako.inflate(compressedBuffer, { to: 'string' });
-  params.drawing = JSON.parse(inflated);
 
+  const [imgBuffer, compressedBuffer] = await Promise.all([
+    fsPromises.readFile(files.img.filepath),
+    fsPromises.readFile(files.drawing.filepath)
+  ]);
+
+  params.img = imgBuffer;
+
+  const decompressedBuffer = await inflateAsync(compressedBuffer);
+  params.drawing = JSON.parse(decompressedBuffer.toString('utf-8'));
 
   const balloon = await createBalloon(params);
   if (!balloon) return;
+
   ctx.body = { balloon } as CreateBalloonPostRes;
 });
+
+const gunzipAsync = promisify(zlib.gunzip);
 
 router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
   if (!ctx.request.files) {
@@ -205,15 +216,20 @@ router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
   const params = parseParams<CreateBalloonPostParams>(ctx.request.body);
 
   params.aspect_ratio = parseFloat(params.aspect_ratio as any as string);
-  params.img = fs.readFileSync(files.img.filepath);
 
-  const drawingFile = files.drawing;
-  const compressedBuffer = fs.readFileSync(drawingFile.filepath);
-  const inflated = pako.inflate(compressedBuffer, { to: 'string' });
-  params.drawing = JSON.parse(inflated);
+  // ASYNC I/O: Read both files simultaneously without blocking the server's heartbeat
+  const [imgBuffer, compressedBuffer] = await Promise.all([
+    fsPromises.readFile(files.img.filepath),
+    fsPromises.readFile(files.drawing.filepath)
+  ]);
+
+  params.img = imgBuffer;
+
+  const decompressedBuffer = await gunzipAsync(compressedBuffer);
+  params.drawing = JSON.parse(decompressedBuffer.toString('utf-8'));
 
   const balloonData = { ...params, version: 2 };
-  const balloon = await createBalloon(balloonData); // Make sure createBalloon accepts version if strictly typed
+  const balloon = await createBalloon(balloonData);
 
   if (!balloon) return;
 
@@ -221,14 +237,13 @@ router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
   const senderId = balloon.sender.toString();
   const balloonId = balloon._id.toString();
 
-  routeBalloonToOnlineUser(senderId, balloonId, userSocketMap, 0).catch(err => {
+  routeBalloonToOnlineUser(senderId, balloonId, userSocketMap, 0).catch((err: any) => {
     console.error('Error during balloon routing triage:', err);
   });
 
   ctx.body = { balloon } as CreateBalloonPostRes;
   trackEvent(params.sender, mixpanelEvents.balloon_v2_create);
 });
-
 
 router.get(`${ENDPOINTS.balloon}/:id`, async (ctx) => {
   const balloon_id = ctx.params.id;

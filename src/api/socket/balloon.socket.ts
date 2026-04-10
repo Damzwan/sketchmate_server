@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import {
   AcceptBalloonParams,
-  AcceptBalloonRes,
+  AcceptBalloonRes, Balloon,
   CancelBalloonParams,
   RejectBalloonRes,
   SOCKET_ENDPONTS
@@ -18,7 +18,8 @@ import {
   rejectBalloonCleanUp,
   routeBalloonToOnlineUser,
   triageWaitingRoom,
-  v2AcceptBalloonCleanUp
+  v2AcceptBalloonCleanUp,
+  deleteBalloonS3
 } from '../balloon';
 import { match } from '../../mongodb';
 import {
@@ -92,6 +93,8 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
 
     // 2. Update acceptor's rate-limiting vital signs
     activeBalloonHolders.delete(params.balloon_id);
+    activeBalloonSkips.delete(params.balloon_id);
+
     void user_model.findByIdAndUpdate(params.user_id, {
       $set: {
         'balloon.last_received_at': new Date()
@@ -252,17 +255,18 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
       });
 
       activeBalloonHolders.delete(params.balloon_id);
+      activeBalloonSkips.delete(params.balloon_id);
     }
 
+    const balloonToDelete: Balloon | null = await balloon_model.findOne({ _id: params.balloon_id, sender: params.user_id });
     await Promise.all([
       user_model.updateOne(
         { _id: params.user_id },
         { $set: { 'balloon.sent': null } }
       ),
-      balloon_model.findOneAndDelete({
-        _id: params.balloon_id,
-        sender: params.user_id
-      })
+      ...(balloonToDelete
+        ? [deleteBalloonS3(balloonToDelete), balloon_model.findByIdAndDelete(balloonToDelete._id)]
+        : [])
     ]);
 
     trackEvent(params.user_id, mixpanelEvents.balloon_v2_cancel);

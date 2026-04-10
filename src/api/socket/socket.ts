@@ -11,7 +11,6 @@ import {
 import {
   cancelSendMateRequest,
   comment,
-  getPartialUser,
   getUserSubscription,
   match,
   refuseSendMateRequest,
@@ -27,10 +26,13 @@ import {
   sendFriendRequestNotification,
   unmatchNotification
 } from '../../config/notification.config';
-import pako from 'pako';
 import { registerDrawSyncingHandlers } from './drawSyncing';
 import { registerV2BalloonHandlers } from './balloon.socket';
 import { user_model } from '../../models/user.model';
+import zlib from 'zlib';
+import { promisify } from 'util';
+
+const inflateAsync = promisify(zlib.inflate);
 
 interface UserSocketMap {
   [userId: string]: Socket[];
@@ -44,7 +46,7 @@ export function registerSocketHandlers(io: Server) {
     registerDrawSyncingHandlers(io, socket);
     registerV2BalloonHandlers(io, socket);
 
-    socket.on(SOCKET_ENDPONTS.login, async (params: { _id: string, version: string}) => {
+    socket.on(SOCKET_ENDPONTS.login, async (params: { _id: string, version: string }) => {
       // Initialize array if not exists
       if (!userSocketMap[params._id]) {
         userSocketMap[params._id] = [];
@@ -67,20 +69,24 @@ export function registerSocketHandlers(io: Server) {
         version: params.version || null
       };
       socket.emit(SOCKET_ENDPONTS.login);
+    });
 
-      // Store the socket id in the socketToUserId map
-      socket.on(SOCKET_ENDPONTS.disconnect, () => {
-        const index = userSocketMap[params._id].indexOf(socket);
-        if (index !== -1) {
-          userSocketMap[params._id].splice(index, 1);
+    // Store the socket id in the socketToUserId map
+    socket.on(SOCKET_ENDPONTS.disconnect, () => {
+      const userId = socket.data.userId;
+      if (userId && userSocketMap[userId]) {
+        const index = userSocketMap[userId].indexOf(socket);
+        if (index !== -1) userSocketMap[userId].splice(index, 1);
+
+        if (userSocketMap[userId].length === 0) {
+          delete userSocketMap[userId];
         }
+      }
 
-        if (userSocketMap[params._id].length === 0) {
-          // If no more sockets for the user, remove the user entry
-          delete userSocketMap[params._id];
-        }
-      });
-
+      textChunks = [];
+      imageChunks = [];
+      isTextDataCompleted = false;
+      isImageDataCompleted = false;
     });
 
 
@@ -148,13 +154,16 @@ export function registerSocketHandlers(io: Server) {
     });
 
     let compressedData = new Uint8Array();
+
+    let imageChunks: Buffer[] = [];
+    let isImageDataCompleted = false;
+
+    let textChunks: Buffer[] = [];
     let isTextDataCompleted = false;
+
     socket.on(`${SOCKET_ENDPONTS.send}text_chunk`, (chunk) => {
-      // Combine the chunks into one Uint8Array
-      const temp = new Uint8Array(compressedData.length + chunk.length);
-      temp.set(compressedData, 0);
-      temp.set(chunk, compressedData.length);
-      compressedData = temp;
+      // HEALTHY: Just push to an array. Almost zero CPU/Memory overhead.
+      textChunks.push(Buffer.from(chunk));
     });
 
     socket.on(`${SOCKET_ENDPONTS.send}text_end`, async () => {
@@ -162,10 +171,8 @@ export function registerSocketHandlers(io: Server) {
       await handleSendDataCompletion();
     });
 
-    let imageBuffer = Buffer.alloc(0);
-    let isImageDataCompleted = false;
     socket.on(`${SOCKET_ENDPONTS.send}img_chunk`, (chunk) => {
-      imageBuffer = Buffer.concat([imageBuffer, Buffer.from(chunk)]);
+      imageChunks.push(Buffer.from(chunk));
     });
 
     socket.on(`${SOCKET_ENDPONTS.send}img_end`, async () => {
@@ -175,43 +182,57 @@ export function registerSocketHandlers(io: Server) {
 
     async function handleSendDataCompletion() {
       if (!isImageDataCompleted || !isTextDataCompleted) return;
-      const decompressedTextData = pako.inflate(compressedData);
-      const decoder = new TextDecoder(); // Use TextDecoder to convert Uint8Array to string
-      const dataString = decoder.decode(decompressedTextData);
-      const params: SendParams = JSON.parse(dataString);
-      params.img = imageBuffer;
-      resetBinaryData();
 
-      const inboxItem = await storeMessage(params);
-      if (!inboxItem) return;
+      try {
+        // 1. Efficiently stitch the buffers together exactly once
+        const compressedData = Buffer.concat(textChunks);
+        const imageBuffer = Buffer.concat(imageChunks);
 
-      for (const follower of inboxItem.followers) {
+        // 2. Native Decompression (Handles V1 Pako and V2 Native effortlessly)
+        const decompressedBuffer = await inflateAsync(compressedData);
 
-        if (userSocketMap[follower]) {
-          userSocketMap[follower].forEach((mateSocket) => {
-            mateSocket.emit(SOCKET_ENDPONTS.send, inboxItem);
-          });
+        // 3. Node Buffers can parse directly to string, no TextDecoder needed!
+        const dataString = decompressedBuffer.toString('utf-8');
+        const params: SendParams = JSON.parse(dataString);
+
+        params.img = imageBuffer;
+
+        // 4. Clear the arrays to free up the RAM immediately
+        textChunks = [];
+        imageChunks = [];
+        isTextDataCompleted = false;
+        isImageDataCompleted = false;
+
+        const inboxItem = await storeMessage(params);
+        if (!inboxItem) return;
+
+        for (const follower of inboxItem.followers) {
+          if (userSocketMap[follower]) {
+            userSocketMap[follower].forEach((mateSocket) => {
+              mateSocket.emit(SOCKET_ENDPONTS.send, inboxItem);
+            });
+          }
+
+          if (follower == params._id) continue;
+          const retrievedFollower = await getUserSubscription({ _id: follower });
+          if (retrievedFollower && retrievedFollower.subscriptions.length > 0) {
+
+            await sendNotificationIncludingSilent(
+              retrievedFollower.subscriptions,
+              drawingReceivedNotification(params._id, params.name, inboxItem!.thumbnail, inboxItem!._id)
+            );
+
+          }
         }
 
-        if (follower == params._id) continue;
-        const retrievedFollower = await getUserSubscription({ _id: follower });
-        if (retrievedFollower && retrievedFollower.subscriptions.length > 0) {
-
-          await sendNotificationIncludingSilent(
-            retrievedFollower.subscriptions,
-            drawingReceivedNotification(params._id, params.name, inboxItem!.thumbnail, inboxItem!._id)
-          );
-
-        }
+      } catch (error) {
+        console.error('Data processing failed:', error);
+        // Don't forget to reset state on error!
+        textChunks = [];
+        imageChunks = [];
       }
     }
 
-    function resetBinaryData() {
-      isImageDataCompleted = false;
-      isTextDataCompleted = false;
-      compressedData = new Uint8Array();
-      imageBuffer = Buffer.alloc(0);
-    }
 
     socket.on(SOCKET_ENDPONTS.comment, async (params: CommentParams) => {
       const createdComment = await comment(params);
