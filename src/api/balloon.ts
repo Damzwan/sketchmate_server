@@ -484,6 +484,7 @@ export async function cancelBalloon(params: CancelBalloonParams): Promise<Balloo
 
     trackEvent(params.user_id, mixpanelEvents.balloon_cancel);
 
+
     if (balloon) {
       // fetch other balloon in parallel with S3 deletion
       const [otherBalloon] = await Promise.all([

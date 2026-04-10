@@ -384,7 +384,7 @@ export enum SOCKET_ENDPONTS {
   // Balloon Events
   accept_balloon = 'accept_balloon',
   refuse_balloon = 'refuse_balloon',
-  cancel_balloon = 'cancel-balloon',
+  cancel_balloon = 'cancel-balloon ',
   match_balloon = 'match-balloon',
   balloon_match_expired = 'balloon-match-expired',
   balloon_expired = 'balloon-expired ',
