@@ -31,6 +31,8 @@ const DISCONNECT_GRACE_PERIOD_MS = 15000;
 const MAX_MESSAGE_BUFFER = 50;
 const ROOM_CLEANUP_TIMEOUT_MS = 30000;
 
+const LEGACY_MODE = process.env.LEGACY_MODE === 'true';
+
 
 function getOrCreateRoomState(roomId: any) {
   if (!ROOM_STATES.has(roomId)) {
@@ -85,6 +87,43 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       existingSocket.leave(roomId);
     }
 
+    const potentialHosts = clients.filter(s => s.id !== socket.id);
+
+
+    if (LEGACY_MODE) {
+      if (clientVersion === '1') {
+        if (potentialHosts.find(s => s.handshake.query.clientVersion === '2')) {
+          socket.join(roomId);
+          socket.emit('room-joined', {
+            roomId,
+            users: [],
+            isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0),
+          });
+          setTimeout(() => {
+            sendLegacyMessage(socket, `⚠️ Compatibility Check: This room is running a newer version of the
+             app that isn't public yet. To avoid glitches and crashes, we've disconnected you from this lobby. Please try a different room for now—the official update drops very soon!`);
+          }, 500);
+          setTimeout(() => {
+            socket.emit('join-error', { reason: 'OUTDATED', message: 'Please update your app' });
+          }, 5000);
+          return;
+        }
+      } else {
+        const v1Hosts = potentialHosts.filter(s => s.data.version !== '2');
+        if (v1Hosts.length > 0) {
+          setTimeout(() => {
+            socket.emit('join-error', {
+              reason: 'MIGRATION',
+              message: 'This lobby has v1 users, try another lobby please'
+            });
+          }, 500);
+          return;
+        }
+      }
+
+    }
+
+
     // Join the room
     socket.join(roomId);
     if (isPublic) broadcastLobbyOccupancy(io);
@@ -101,20 +140,28 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       roomState.cleanupTimeout = null;
     }
 
-    const potentialHosts = clients.filter(s => s.id !== socket.id);
 
     // ---- THE VERSIONING SPLIT ----
+    // TODO this should be cleaned up sometime
     if (clientVersion === '1') {
-      setTimeout(() => {
-        sendLegacyMessage(socket);
-      }, 500);
-      setTimeout(() => {
-        socket.emit('join-error', { reason: 'OUTDATED', message: 'Please update your app' });
-      }, 5000);
+      if (LEGACY_MODE) {
+        if (potentialHosts.length > 0) {
+          const host = potentialHosts[0];
+          io.to(host.id).emit('request-canvas-state', { targetSocketId: socket.id });
+        }
+      } else {
+        setTimeout(() => {
+          sendLegacyMessage(socket);
+        }, 500);
+        setTimeout(() => {
+          socket.emit('join-error', { reason: 'OUTDATED', message: 'Please update your app' });
+        }, 5000);
+      }
     } else {
       // V2 MODERN USER
       const v2Hosts = potentialHosts.filter(s => s.data.version === '2');
       const v1Hosts = potentialHosts.filter(s => s.data.version !== '2');
+
 
       const effectiveLastSeq = lastSequenceId !== undefined ? lastSequenceId : 0;
       const oldestAvailableSeq = roomState.actionBuffer.length > 0 ? roomState.actionBuffer[0].sequenceId : 1;
@@ -138,7 +185,6 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
           });
         } else {
           // Truly empty room, tell client to stop loading
-          console.log('what');
           socket.emit('missed-actions', { actions: [], isInitialSync: true });
         }
       }
@@ -352,17 +398,20 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
     // Ask for an update when we reach 50% of our buffer capacity
     if (actionsSinceLastSnapshot >= (MAX_BUFFER_SIZE * 0.75) && !roomState.isRequestingSnapshot) {
+      // 1. Lock it IMMEDIATELY (Synchronously) to prevent concurrent triggers
+      roomState.isRequestingSnapshot = true;
+
+      // 2. Now do the async work safely
       const clients = await io.in(roomId).fetchSockets();
-      const potentialHosts = clients;
 
-      if (potentialHosts.length > 0) {
-        roomState.isRequestingSnapshot = true; // Lock it
-
-        io.to(potentialHosts[0].id).emit('request-canvas-state', {
-          // We don't need a targetSocketId because this is a background update
+      if (clients.length > 0) {
+        io.to(clients[0].id).emit('request-canvas-state', {
           snapshotSequenceId: roomState.currentSequenceId,
-          isBackgroundUpdate: true // Tell the client to do this silently
+          isBackgroundUpdate: true
         });
+      } else {
+        // Unlock if no hosts were found
+        roomState.isRequestingSnapshot = false;
       }
     }
   });
@@ -505,17 +554,17 @@ function broadcastLobbyOccupancy(io: Server) {
   io.to('public-lobby-watchers').emit('public-lobbies-update', lobbies);
 }
 
-function sendLegacyMessage(socket: any) {
+function sendLegacyMessage(socket: any, message?: string) {
   const payload = {
-    message: `⚠️ SYSTEM:
+    message: message ? message : `⚠️ SYSTEM:
 Your app version is outdated.
 
-Please update the app to join this lobby.
+Please update the app or refresh the page to join this lobby.
 You will be disconnected. I am sorry :(`,
     member: {
       _id: 'system',
       name: 'Creator',
-      img: 'https://www.waldenu.edu/media/22271/seo-277-bs-serious-african-american-ceo-g-230286634-1200x630'
+      img: 'https://sketchmate-account.s3.eu-west-3.amazonaws.com/stock_4.webp'
     },
     timestamp: new Date().toISOString(),
     id: uuidv4()

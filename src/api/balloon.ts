@@ -34,7 +34,7 @@ export async function routeBalloonToOnlineUser(
   userSocketMap: any,
   attempts = 0,
   balloonData?: any
-) {
+): Promise<any> {
   if (attempts >= MAX_LIVE_ROUTING_ATTEMPTS) {
     console.log(`Balloon ${balloonId} exhausted attempts. Returning to Waiting Room.`);
     activeBalloonSkips.delete(balloonId); // CLEANUP
@@ -103,8 +103,13 @@ export async function routeBalloonToOnlineUser(
   ]);
 
   if (!eligibleUser || eligibleUser.length === 0) return false;
-
   const matchedUserId = eligibleUser[0]._id.toString();
+
+  const currentlyBusy = Array.from(activeBalloonHolders.values());
+  if (currentlyBusy.includes(matchedUserId)) {
+    console.log(`Race condition avoided! ${matchedUserId} was just taken.`);
+    return routeBalloonToOnlineUser(senderId, balloonId, userSocketMap, attempts, currentBalloon);
+  }
 
   // 5. Administer the balloon
   activeBalloonHolders.set(balloonId, matchedUserId);
