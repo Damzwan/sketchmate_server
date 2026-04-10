@@ -22,6 +22,15 @@ export enum mixpanelEvents {
   inviteLobby = 'invite_lobby',
   messageLobby = 'message_lobby',
   canvasSize = 'canvas_size',
+
+  // Balloon v2 (Hot Potato) Events
+  balloon_v2_receive = 'balloon_v2_receive',   // Triggered when a balloon floats onto a screen
+  balloon_v2_refuse = 'balloon_v2_refuse',
+  balloon_v2_accept = 'balloon_v2_accept',
+  balloon_v2_miss = 'balloon_v2_miss',         // timer expired
+  balloon_v2_stop = 'balloon_v2_stop',         // User clicked "Stop receiving balloons"
+  balloon_v2_create = 'balloon_v2_create',
+  balloon_v2_cancel = 'balloon_v2_cancel',
 }
 
 const mp = Mixpanel.init(process.env.mixpanel_token!, {

@@ -17,13 +17,15 @@ const balloon_schema = new Schema<Omit<Balloon, 'sender'> & {
       default: 'pending'
     },
     createdAt: { type: Date, default: Date.now },
-    matchedAt: { type: Date, default: Date.now, required: false },
+    matchedAt: { type: Date, default: Date.now, required: false }, // @deprecated
     lastActivityAt: { type: Date, default: Date.now },
-    pairedUser: { type: Schema.Types.ObjectId, default: null, required: false },
-    pairedBalloon: { type: Schema.Types.ObjectId, default: null, required: false },
+    pairedUser: { type: Schema.Types.ObjectId, default: null, required: false }, // @deprecated
+    pairedBalloon: { type: Schema.Types.ObjectId, default: null, required: false }, // @deprecated
     cancelledBalloons: [
       { type: Schema.Types.ObjectId, ref: 'balloon', default: [] }
-    ]
+    ],
+    version: { type: Number, default: 1 },
+    rejected_by: [{ type: Schema.Types.ObjectId, ref: 'User' }]
   },
   { collection: 'balloon' }
 );

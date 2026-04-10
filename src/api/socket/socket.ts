@@ -1,43 +1,26 @@
 import { Server, Socket } from 'socket.io';
 import {
-  AcceptBalloonParams,
-  AcceptBalloonRes,
-  CancelBalloonParams,
   CommentParams,
   CommentRes,
   MatchParams,
-  RejectBalloonRes,
   SendMateRequestParams,
   SendParams,
   SOCKET_ENDPONTS,
   UnMatchParams
 } from '../../types/types';
 import {
-  acceptBalloon,
-  acceptBalloonCleanUp,
-  cancelBalloon,
   cancelSendMateRequest,
   comment,
   getPartialUser,
   getUserSubscription,
   match,
-  refuseBalloon,
   refuseSendMateRequest,
-  rejectBalloonCleanUp,
   sendMateRequest,
   storeMessage,
   unMatch
 } from '../../mongodb';
+import { sendNotification, sendNotificationIncludingSilent, sendSilentNotification } from '../../notifications';
 import {
-  sendNotification,
-  sendNotificationIncludingSilent,
-  sendNotificationUser,
-  sendSilentNotification
-} from '../../notifications';
-import {
-  balloonAcceptNotification,
-  balloonMatchNotification,
-  balloonRejectNotification,
   commentReceivedNotification,
   drawingReceivedNotification,
   matchNotification,
@@ -46,6 +29,8 @@ import {
 } from '../../config/notification.config';
 import pako from 'pako';
 import { registerDrawSyncingHandlers } from './drawSyncing';
+import { registerV2BalloonHandlers } from './balloon.socket';
+import { user_model } from '../../models/user.model';
 
 interface UserSocketMap {
   [userId: string]: Socket[];
@@ -57,7 +42,9 @@ export const userSocketMap: UserSocketMap = {};
 export function registerSocketHandlers(io: Server) {
   io.on('connection', (socket) => {
     registerDrawSyncingHandlers(io, socket);
-    socket.on(SOCKET_ENDPONTS.login, (params: { _id: string }) => {
+    registerV2BalloonHandlers(io, socket);
+
+    socket.on(SOCKET_ENDPONTS.login, async (params: { _id: string, version: string}) => {
       // Initialize array if not exists
       if (!userSocketMap[params._id]) {
         userSocketMap[params._id] = [];
@@ -65,16 +52,21 @@ export function registerSocketHandlers(io: Server) {
       // Add the new socket to the array
       userSocketMap[params._id].push(socket);
 
-      getPartialUser(params._id).then(user => {
-        if (!user) return;
-        socket.data.user = {
-          _id: user._id,
-          name: user.name,
-          img: user.img
-        };
-        socket.emit(SOCKET_ENDPONTS.login);
-      });
-
+      const user = await user_model.findById(params._id, {
+        _id: 1,
+        img: 1,
+        name: 1,
+        date_of_birth: 1
+      }).lean();
+      if (!user) return;
+      socket.data.user = {
+        _id: user._id,
+        name: user.name,
+        img: user.img,
+        date_of_birth: user.date_of_birth,
+        version: params.version || null
+      };
+      socket.emit(SOCKET_ENDPONTS.login);
 
       // Store the socket id in the socketToUserId map
       socket.on(SOCKET_ENDPONTS.disconnect, () => {
@@ -287,99 +279,6 @@ export function registerSocketHandlers(io: Server) {
       }
     });
 
-    socket.on(SOCKET_ENDPONTS.accept_balloon, async (params: AcceptBalloonParams) => {
-      const res = await acceptBalloon(params);
-      if (!res) return;
-      const [otherBalloon, balloon] = res;
-      if (otherBalloon && otherBalloon.status == 'accepted') {
-        await acceptBalloonCleanUp({ balloon, otherBalloon });
-
-        const res = await match({ _id: params.user_id, mate_id: params.sender });
-        if (!res) return;
-
-        if (userSocketMap[params.user_id]) {
-          userSocketMap[params.user_id].forEach((associatedSocket) => {
-            associatedSocket.emit(SOCKET_ENDPONTS.match, { mate: res.mate });
-          });
-        }
-
-        if (userSocketMap[params.sender]) {
-          userSocketMap[params.sender].forEach((associatedSocket) => {
-            associatedSocket.emit(SOCKET_ENDPONTS.match, { mate: res.user });
-          });
-        }
-        if (userSocketMap[params.sender]) {
-          userSocketMap[params.sender].forEach((associatedSocket) => {
-            associatedSocket.emit(SOCKET_ENDPONTS.accept_balloon, {
-              isMatch: true,
-              acceptor: params.user_id
-            } as AcceptBalloonRes);
-          });
-        }
-
-        if (userSocketMap[params.user_id]) {
-          userSocketMap[params.user_id].forEach((associatedSocket) => {
-            associatedSocket.emit(SOCKET_ENDPONTS.accept_balloon, {
-              isMatch: true,
-              acceptor: params.user_id
-            } as AcceptBalloonRes);
-          });
-        }
-        if (res.mate.subscriptions.length > 0)
-          await sendNotification(res.mate.subscriptions, balloonMatchNotification(res.user.name));
-      } else {
-        await sendNotificationUser(params.sender, balloonAcceptNotification());
-        if (userSocketMap[params.sender]) {
-          userSocketMap[params.sender].forEach((associatedSocket) => {
-            associatedSocket.emit(SOCKET_ENDPONTS.accept_balloon, {
-              isMatch: false,
-              acceptor: params.user_id
-            } as AcceptBalloonRes);
-          });
-        }
-        if (userSocketMap[params.user_id]) {
-          userSocketMap[params.user_id].forEach((associatedSocket) => {
-            associatedSocket.emit(SOCKET_ENDPONTS.accept_balloon, {
-              isMatch: false,
-              acceptor: params.user_id
-            } as AcceptBalloonRes);
-          });
-        }
-      }
-    });
-
-    socket.on(SOCKET_ENDPONTS.refuse_balloon, async (params: AcceptBalloonParams) => {
-      const res = await refuseBalloon(params);
-      if (!res) return;
-      const [otherBalloon, balloon] = res;
-
-      await sendNotificationUser(params.sender, balloonRejectNotification());
-      void rejectBalloonCleanUp({ balloon, otherBalloon });
-
-      if (userSocketMap[params.user_id]) {
-        userSocketMap[params.user_id].forEach((associatedSocket) => {
-          associatedSocket.emit(SOCKET_ENDPONTS.refuse_balloon, { refuser: params.user_id } as RejectBalloonRes);
-        });
-      }
-
-      if (userSocketMap[params.sender]) {
-        userSocketMap[params.sender].forEach((associatedSocket) => {
-          associatedSocket.emit(SOCKET_ENDPONTS.refuse_balloon, { refuser: params.user_id } as RejectBalloonRes);
-        });
-      }
-    });
-
-    socket.on(SOCKET_ENDPONTS.cancel_balloon, async (params: CancelBalloonParams) => {
-      const otherBalloon = await cancelBalloon(params);
-      if (!otherBalloon) return;
-
-      await sendNotificationUser(otherBalloon.sender, balloonRejectNotification());
-      if (userSocketMap[otherBalloon.sender]) {
-        userSocketMap[otherBalloon.sender].forEach((associatedSocket) => {
-          associatedSocket.emit(SOCKET_ENDPONTS.refuse_balloon, { refuser: params.user_id });
-        });
-      }
-    });
 
   });
 }

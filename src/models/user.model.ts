@@ -34,7 +34,9 @@ const user_schema = new Schema({
   mate_requests_sent: { type: [String], required: true },
   balloon: {
     sent: { type: Schema.Types.ObjectId, default: null },
-    received: { type: Schema.Types.ObjectId, default: null }
+    received: { type: Schema.Types.ObjectId, default: null }, // @deprecated
+    disabled: { type: Boolean, default: false },
+    last_received_at: { type: Date, default: null }
   },
   date_of_birth: { type: Date, required: false },
   last_seen_version: { type: String, required: false }
