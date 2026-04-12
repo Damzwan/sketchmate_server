@@ -113,38 +113,6 @@ export async function getUserByID(user_id: Schema.Types.ObjectId): Promise<Res<U
   }
 }
 
-export async function getUserMates(params: { user_id: string }): Promise<Res<Mate[]>> {
-  try {
-    const user = await user_model.findOne({ _id: params.user_id }, { mates: 1 }).lean();
-    if (!user) throw new Error('User not found');
-    return user.mates;
-  } catch (e) {
-    console.log(e);
-  }
-}
-
-export async function getLastImgFromUser(params: { friend_id: string, user_id: string }): Promise<Res<{
-  img: string,
-  _id: string
-}>> {
-  try {
-    const inbox = await inbox_model
-      .findOne(
-        {
-          sender: params.friend_id,
-          original_followers: { $in: [params.user_id] }
-        },
-        { thumbnail: 1, original_followers: 1 }
-      )
-      .sort({ _id: -1 })
-      .lean();
-
-    if (!inbox) return undefined;
-    return { img: inbox.thumbnail, _id: inbox._id };
-  } catch (e) {
-    console.log(e);
-  }
-}
 
 export async function getInboxItems(params: GetInboxItemsParams): Promise<GetInboxRes> {
   try {
@@ -404,36 +372,19 @@ export async function onLoginEvent(params: OnLoginEventParams): Promise<Res<void
 
 export async function changeUserName(params: ChangeUserNameParams): Promise<Res<void>> {
   try {
-    const user = await user_model.findById(params._id);
+    const user = await user_model.findById(params._id).lean();
     if (!user) return;
 
-    const updates: any[] = [
-      {
-        updateOne: {
-          filter: { _id: params._id },
-          update: { $set: { name: params.name } }
-        }
-      }
-    ];
+    await user_model.updateOne({ _id: params._id }, { $set: { name: params.name } });
 
-    for (const mate of user.mates) {
-      const mateDocument = await user_model.findById(mate._id);
-      if (!mateDocument) continue;
-      const mateIndex = mateDocument.mates.findIndex(friend => friend._id.toString() === params._id);
+    if (user.mates && user.mates.length > 0) {
+      const mateIds = user.mates.map(m => m._id);
 
-      if (mateIndex !== -1) {
-        updates.push({
-          updateOne: {
-            filter: { _id: mate._id },
-            update: { $set: { 'mates.$[elem].name': params.name } },
-            arrayFilters: [{ 'elem._id': new Types.ObjectId(params._id) }]
-          }
-        });
-      }
+      await user_model.updateMany(
+        { _id: { $in: mateIds }, 'mates._id': params._id },
+        { $set: { 'mates.$.name': params.name } }
+      );
     }
-
-    await user_model.bulkWrite(updates);
-
   } catch (e) {
     throw new Error('Failed to change name');
   }
@@ -457,80 +408,56 @@ export async function uploadProfileImg(params: UploadProfileImgParams): Promise<
   try {
     const url = await s3Creator.uploadFile(params.img.filepath, params.img.mimetype, CONTAINER.account);
 
-    const user = await user_model.findById(params._id);
-    if (!user) return;
-
-    const updates: any[] = [
-      {
-        updateOne: {
-          filter: { _id: params._id },
-          update: { $set: { img: url } }
-        }
-      }
-    ];
-
-    for (const mate of user.mates) {
-      const mateDocument = await user_model.findById(mate._id);
-      if (!mateDocument) continue;
-      const mateIndex = mateDocument.mates.findIndex(friend => friend._id.toString() === params._id);
-
-      if (mateIndex !== -1) {
-        updates.push({
-          updateOne: {
-            filter: { _id: mate._id },
-            update: { $set: { 'mates.$[elem].img': url } },
-            arrayFilters: [{ 'elem._id': new Types.ObjectId(params._id) }]
-          }
-        });
-      }
+    const user = await user_model.findById(params._id).lean();
+    if (!user) {
+      fs.promises.unlink(params.img.filepath).catch(console.error); // Clean up if user is missing!
+      return;
     }
 
-    await user_model.bulkWrite(updates);
+    await user_model.updateOne({ _id: params._id }, { $set: { img: url } });
 
-    if (params.previousImage && !params.previousImage.includes('stock'))
-      s3Creator.deleteBlob(params.previousImage, CONTAINER.account);
-    fs.promises.unlink(params.img.filepath);
+    if (user.mates && user.mates.length > 0) {
+      const mateIds = user.mates.map(m => m._id);
+
+      await user_model.updateMany(
+        { _id: { $in: mateIds }, 'mates._id': params._id },
+        { $set: { 'mates.$.img': url } }
+      );
+    }
+
+    if (params.previousImage && !params.previousImage.includes('stock')) {
+      s3Creator.deleteBlob(params.previousImage, CONTAINER.account).catch(console.error);
+    }
+    fs.promises.unlink(params.img.filepath).catch(console.error);
+
     return url;
   } catch (e) {
-    throw new Error('Failed to change name');
+    if (params.img?.filepath) fs.promises.unlink(params.img.filepath).catch(console.error);
+    throw new Error('Failed to change profile image');
   }
 }
 
 export async function deleteProfileImg(user_id: string, stock_img: string) {
   try {
-    const user = await user_model.findById(user_id);
+    const user = await user_model.findById(user_id).lean();
     if (!user) return;
 
-    const updates: any[] = [
-      {
-        updateOne: {
-          filter: { _id: user_id },
-          update: { $set: { img: stock_img } }
-        }
-      }
-    ];
+    await user_model.updateOne({ _id: user_id }, { $set: { img: stock_img } });
 
-    for (const mate of user.mates) {
-      const mateDocument = await user_model.findById(mate._id);
-      if (!mateDocument) continue;
-      const mateIndex = mateDocument.mates.findIndex(friend => friend._id.toString() === user_id);
+    if (user.mates && user.mates.length > 0) {
+      const mateIds = user.mates.map(m => m._id);
 
-      if (mateIndex !== -1) {
-        updates.push({
-          updateOne: {
-            filter: { _id: mate._id },
-            update: { $set: { 'mates.$[elem].img': stock_img } },
-            arrayFilters: [{ 'elem._id': new Types.ObjectId(user_id) }]
-          }
-        });
-      }
+      await user_model.updateMany(
+        { _id: { $in: mateIds }, 'mates._id': user_id },
+        { $set: { 'mates.$.img': stock_img } }
+      );
     }
 
-    await user_model.bulkWrite(updates);
-
-    if (user && !user.img.includes('stock')) s3Creator.deleteBlob(user.img, CONTAINER.account);
+    if (user.img && !user.img.includes('stock')) {
+      s3Creator.deleteBlob(user.img, CONTAINER.account).catch(console.error);
+    }
   } catch (e) {
-    console.log(e);
+    console.error('Failed to delete profile image:', e);
   }
 }
 
@@ -540,6 +467,9 @@ export async function createSticker(params: CreateStickerParams): Promise<Res<st
     const new_url: string = await removeBackground(url!);
 
     await user_model.updateOne({ _id: params._id }, { $push: { stickers: new_url } });
+
+    fs.promises.unlink(params.img.filepath).catch(console.error);
+
     return new_url;
   } catch (e) {
     throw new Error('Failed to create sticker');
@@ -551,9 +481,12 @@ export async function createEmblem(params: CreateStickerParams): Promise<Res<str
     const img = await imgToEmblem(params.img.filepath);
     const url = await s3Creator.uploadImg(img, CONTAINER.stickers);
     await user_model.updateOne({ _id: params._id }, { $push: { emblems: url } });
+
+    fs.promises.unlink(params.img.filepath).catch(console.error);
+
     return url;
   } catch (e) {
-    throw new Error('Failed to create sticker');
+    throw new Error('Failed to create emblem');
   }
 }
 
@@ -563,14 +496,17 @@ export async function createSaved(params: CreateSavedParams): Promise<Res<Saved>
       s3Creator.uploadFile(params.drawing.filepath, 'application/json', CONTAINER.stickers),
       s3Creator.uploadFile(params.img.filepath, 'image/webp', CONTAINER.stickers)
     ]);
-    const saved: Saved = {
-      img: img_url!,
-      drawing: drawing_url!
-    };
+    const saved: Saved = { img: img_url!, drawing: drawing_url! };
     await user_model.updateOne({ _id: params._id }, { $push: { saved: saved } });
+
+    Promise.all([
+      fs.promises.unlink(params.drawing.filepath).catch(console.error),
+      fs.promises.unlink(params.img.filepath).catch(console.error)
+    ]);
+
     return saved;
   } catch (e) {
-    throw new Error('Failed to create sticker');
+    throw new Error('Failed to create saved');
   }
 }
 

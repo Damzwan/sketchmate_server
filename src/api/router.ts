@@ -31,10 +31,8 @@ import {
   deleteSticker,
   getBalloon,
   getInboxItems,
-  getLastImgFromUser,
   getPartialUsers,
   getUser,
-  getUserMates,
   onLoginEvent,
   removeFromInbox,
   searchMate,
@@ -63,13 +61,6 @@ router.put(`${ENDPOINTS.user}/login`, async (ctx) => {
   ctx.body = await onLoginEvent(parseParams<OnLoginEventParams>(ctx.request.body));
 });
 
-router.get(`${ENDPOINTS.user}/mates`, async (ctx) => {
-  ctx.body = await getUserMates(parseParams<{ user_id: string }>(ctx.query));
-});
-
-router.get(`${ENDPOINTS.user}/drawing`, async (ctx) => {
-  ctx.body = await getLastImgFromUser(parseParams<{ user_id: string, friend_id: string }>(ctx.query));
-});
 
 router.get(`${ENDPOINTS.user}/search_mate`, async (ctx) => {
   const params = parseParams<{ mateName: string, user_id: string }>(ctx.query);
@@ -194,6 +185,11 @@ router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
     fsPromises.readFile(files.drawing.filepath)
   ]);
 
+  await Promise.all([
+    fsPromises.unlink(files.img.filepath).catch(console.error),
+    fsPromises.unlink(files.drawing.filepath).catch(console.error)
+  ]);
+
   params.img = imgBuffer;
 
   const decompressedBuffer = await inflateAsync(compressedBuffer);
@@ -223,6 +219,11 @@ router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
     fsPromises.readFile(files.drawing.filepath)
   ]);
 
+  await Promise.all([
+    fsPromises.unlink(files.img.filepath).catch(console.error),
+    fsPromises.unlink(files.drawing.filepath).catch(console.error)
+  ]);
+
   params.img = imgBuffer;
 
   const decompressedBuffer = await gunzipAsync(compressedBuffer);
@@ -236,6 +237,7 @@ router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
   // 2. Circulation: Immediately start the Hot Potato routing
   const senderId = balloon.sender.toString();
   const balloonId = balloon._id.toString();
+
 
   routeBalloonToOnlineUser(senderId, balloonId, userSocketMap, 0).catch((err: any) => {
     console.error('Error during balloon routing triage:', err);
