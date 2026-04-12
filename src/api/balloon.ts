@@ -143,7 +143,7 @@ export async function routeBalloonToOnlineUser(
       activeBalloonSkips.get(balloonId)!.add(matchedUserId);
 
       // Recurse with the newly updated balloon document
-      routeBalloonToOnlineUser(senderId, balloonId, userSocketMap, attempts + 1, updatedBalloon);
+      routeBalloonToOnlineUser(senderId, balloonId, userSocketMap, attempts + 1, updatedBalloon).catch(err => console.error(`Hot potato reroute failed for ${balloonId}:`, err));
     }
   }, HOT_POTATO_TIMEOUT_MS);
 
@@ -152,116 +152,127 @@ export async function routeBalloonToOnlineUser(
 }
 
 export async function pairBalloons() {
+  console.log('Starting optimized V1 matching cycle...');
+
+  // 1. Bulk Fetch: Get all pending balloons.
+  // Using .lean() strips heavy Mongoose methods and saves massive amounts of RAM.
   const pendingBalloons = await balloon_model
     .find({ status: 'pending', version: { $ne: 2 } })
+    .sort({ createdAt: 1 })
+    .lean();
 
-    .sort({ createdAt: 1 });
+  if (pendingBalloons.length < 2) return;
 
+  // 2. Extract unique sender IDs to avoid fetching the same user twice
+  const senderIds = [...new Set(pendingBalloons.map(b => b.sender.toString()))];
+
+  // 3. Bulk Fetch Users: Ask the database for all these users in a single trip
+  const users = await user_model
+    .find({ _id: { $in: senderIds } })
+    .select('mates') // We only need their mates array to verify constraints
+    .lean();
+
+  // 4. Build a high-speed Memory Dictionary mapping UserID -> User Object
+  const userMap = new Map();
+  for (const user of users) {
+    userMap.set(user._id.toString(), user);
+  }
+
+  // 5. Track who has been matched so we don't double-book them
+  const matchedBalloonIds = new Set<string>();
+  const dbUpdates = []; // Collect DB updates to execute at the very end
+
+  // 6. The In-Memory Match Loop (Lightning Fast)
   for (let i = 0; i < pendingBalloons.length; i++) {
     const balloon1 = pendingBalloons[i];
+    const b1Id = balloon1._id.toString();
 
-    const user1 = await getUserByID(balloon1.sender);
+    if (matchedBalloonIds.has(b1Id)) continue;
+
+    const user1 = userMap.get(balloon1.sender.toString());
     if (!user1) {
-      await balloon_model.findByIdAndDelete(balloon1._id);
+      // Cleanup orphaned balloons if the user was deleted
+      dbUpdates.push(balloon_model.findByIdAndDelete(balloon1._id));
       continue;
     }
 
-    let matched = false;
-
     for (let j = i + 1; j < pendingBalloons.length; j++) {
       const balloon2 = pendingBalloons[j];
+      const b2Id = balloon2._id.toString();
 
-      const user2 = await getUserByID(balloon2.sender);
-      if (!user2) {
-        await balloon_model.findByIdAndDelete(balloon2._id);
-        continue;
-      }
+      if (matchedBalloonIds.has(b2Id)) continue;
+      if (balloon1.sender.toString() === balloon2.sender.toString()) continue;
 
-      if (
-        balloon1.cancelledBalloons?.includes(balloon2._id) ||
-        balloon2.cancelledBalloons?.includes(balloon1._id)
-      ) {
-        continue; // skip cancelled pair
-      }
+      const user2 = userMap.get(balloon2.sender.toString());
+      if (!user2) continue;
 
+      // Check Cancellation History
+      const cancelled1 = balloon1.cancelledBalloons?.map((id: any) => id.toString()) || [];
+      const cancelled2 = balloon2.cancelledBalloons?.map((id: any) => id.toString()) || [];
 
-      // skip if they are already mates
-      if (
-        user1.mates.some(m => m._id.toString() === user2._id.toString()) ||
-        user2.mates.some(m => m._id.toString() === user1._id.toString())
-      ) {
-        continue;
-      }
+      if (cancelled1.includes(b2Id) || cancelled2.includes(b1Id)) continue;
 
-      // ✅ match found
-      await Promise.all([
-        balloon_model.updateOne(
-          { _id: balloon1._id },
-          {
-            $set: {
-              status: 'paired',
-              pairedUser: balloon2.sender,
-              pairedBalloon: balloon2._id,
-              matchedAt: new Date()
+      // Check Friendship Mates
+      const mates1 = user1.mates?.map((m: any) => m._id.toString()) || [];
+      const mates2 = user2.mates?.map((m: any) => m._id.toString()) || [];
+
+      if (mates1.includes(user2._id.toString()) || mates2.includes(user1._id.toString())) continue;
+
+      // ✅ MATCH FOUND
+      matchedBalloonIds.add(b1Id);
+      matchedBalloonIds.add(b2Id);
+
+      // Package all the promises for this match to be executed concurrently later
+      dbUpdates.push((async () => {
+        await Promise.all([
+          balloon_model.updateOne(
+            { _id: balloon1._id },
+            {
+              $set: {
+                status: 'paired',
+                pairedUser: balloon2.sender,
+                pairedBalloon: balloon2._id,
+                matchedAt: new Date()
+              }
             }
-          }
-        ),
-        balloon_model.updateOne(
-          { _id: balloon2._id },
-          {
-            $set: {
-              status: 'paired',
-              pairedUser: balloon1.sender,
-              pairedBalloon: balloon1._id,
-              matchedAt: new Date()
+          ),
+          balloon_model.updateOne(
+            { _id: balloon2._id },
+            {
+              $set: {
+                status: 'paired',
+                pairedUser: balloon1.sender,
+                pairedBalloon: balloon1._id,
+                matchedAt: new Date()
+              }
             }
-          }
-        ),
-        user_model.updateOne(
-          { _id: balloon1.sender },
-          { $set: { 'balloon.received': balloon2._id } }
-        ),
-        user_model.updateOne(
-          { _id: balloon2.sender },
-          { $set: { 'balloon.received': balloon1._id } }
-        ),
-        sendNotificationUser(
-          balloon1.sender.toString(),
-          balloonReceivedNotification()
-        ),
-        sendNotificationUser(
-          balloon2.sender.toString(),
-          balloonReceivedNotification()
-        )
-      ]);
+          ),
+          user_model.updateOne(
+            { _id: balloon1.sender },
+            { $set: { 'balloon.received': balloon2._id } }
+          ),
+          user_model.updateOne(
+            { _id: balloon2.sender },
+            { $set: { 'balloon.received': balloon1._id } }
+          ),
+          sendNotificationUser(balloon1.sender.toString(), balloonReceivedNotification()),
+          sendNotificationUser(balloon2.sender.toString(), balloonReceivedNotification())
+        ]);
 
-      sendSocketNotificationToUser(
-        balloon1.sender.toString(),
-        SOCKET_ENDPONTS.match_balloon,
-        { received_balloon: balloon2 }
-      );
-      sendSocketNotificationToUser(
-        balloon2.sender.toString(),
-        SOCKET_ENDPONTS.match_balloon,
-        { received_balloon: balloon1 }
-      );
+        sendSocketNotificationToUser(balloon1.sender.toString(), SOCKET_ENDPONTS.match_balloon, { received_balloon: balloon2 });
+        sendSocketNotificationToUser(balloon2.sender.toString(), SOCKET_ENDPONTS.match_balloon, { received_balloon: balloon1 });
 
-      trackEvent(balloon1.sender.toString(), mixpanelEvents.balloon_pair);
+        trackEvent(balloon1.sender.toString(), mixpanelEvents.balloon_pair);
+      })());
 
-      // remove both from local array
-      pendingBalloons.splice(j, 1); // remove balloon2 first
-      pendingBalloons.splice(i, 1); // then balloon1
-      i--; // adjust index because we removed the current one
-      matched = true;
-      break;
-    }
-
-    if (!matched) {
-      console.log(`No match found for balloon: ${balloon1._id}`);
+      break; // Match found, break the inner loop and move to the next balloon1
     }
   }
 
-  console.log('Matching cycle complete.');
+  // 7. Fire off all database updates simultaneously at the end
+  await Promise.all(dbUpdates);
+
+  console.log(`Matching cycle complete. Formed ${matchedBalloonIds.size / 2} pairs.`);
 }
 
 export async function unPairBalloons() {
@@ -624,6 +635,10 @@ export async function v2AcceptBalloonCleanUp(balloon: any, acceptorId: string): 
     // Optional: Track the successful operation for your analytics
     trackEvent(balloon.sender.toString(), mixpanelEvents.balloon_match);
     trackEvent(acceptorId, mixpanelEvents.balloon_match);
+
+    activeBalloonSkips.delete(balloon._id.toString());
+    activeBalloonHolders.delete(balloon._id.toString());
+    activeBalloonTimeouts.delete(balloon._id.toString());
 
     return inboxItem;
 

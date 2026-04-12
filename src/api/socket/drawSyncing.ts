@@ -573,24 +573,28 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
 }
 
+let lobbyUpdateTimeout: any | null = null;
 function broadcastLobbyOccupancy(io: Server) {
-  const watchers = io.sockets.adapter.rooms.get('public-lobby-watchers');
+  if (lobbyUpdateTimeout) return;
 
-  // No one is watching → do nothing
-  if (!watchers || watchers.size === 0) return;
+  lobbyUpdateTimeout = setTimeout(() => {
+    lobbyUpdateTimeout = null;
 
-  const lobbies = Array.from(PUBLIC_LOBBY_ROOMS.values()).map(room => {
-    const clients = io.sockets.adapter.rooms.get(room.id);
+    const watchers = io.sockets.adapter.rooms.get('public-lobby-watchers');
+    if (!watchers || watchers.size === 0) return;
 
-    return {
-      id: room.id,
-      name: room.name,
-      users: clients ? clients.size : 0,
-      maxUsers: room.maxUsers
-    };
-  });
+    const lobbies = Array.from(PUBLIC_LOBBY_ROOMS.values()).map(room => {
+      const clients = io.sockets.adapter.rooms.get(room.id);
+      return {
+        id: room.id,
+        name: room.name,
+        users: clients ? clients.size : 0,
+        maxUsers: room.maxUsers
+      };
+    });
 
-  io.to('public-lobby-watchers').emit('public-lobbies-update', lobbies);
+    io.to('public-lobby-watchers').emit('public-lobbies-update', lobbies);
+  }, 1000); // 1-second debounce
 }
 
 function sendLegacyMessage(socket: any, message?: string) {

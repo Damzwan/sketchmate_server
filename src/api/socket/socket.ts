@@ -73,7 +73,8 @@ export function registerSocketHandlers(io: Server) {
 
     // Store the socket id in the socketToUserId map
     socket.on(SOCKET_ENDPONTS.disconnect, () => {
-      const userId = socket.data.userId;
+      const userId = socket.data.user?._id?.toString();
+
       if (userId && userSocketMap[userId]) {
         const index = userSocketMap[userId].indexOf(socket);
         if (index !== -1) userSocketMap[userId].splice(index, 1);
@@ -161,8 +162,17 @@ export function registerSocketHandlers(io: Server) {
     let textChunks: Buffer[] = [];
     let isTextDataCompleted = false;
 
+    const MAX_PAYLOAD_SIZE = 10 * 1024 * 1024; // 10MB safety limit
+    let currentTextSize = 0;
+    let currentImageSize = 0;
+
     socket.on(`${SOCKET_ENDPONTS.send}text_chunk`, (chunk) => {
-      // HEALTHY: Just push to an array. Almost zero CPU/Memory overhead.
+      currentTextSize += chunk.byteLength;
+      if (currentTextSize > MAX_PAYLOAD_SIZE) {
+        textChunks = []; // Drop the data
+        currentTextSize = 0;
+        return socket.emit('error', 'Payload too large');
+      }
       textChunks.push(Buffer.from(chunk));
     });
 
@@ -172,6 +182,12 @@ export function registerSocketHandlers(io: Server) {
     });
 
     socket.on(`${SOCKET_ENDPONTS.send}img_chunk`, (chunk) => {
+      currentImageSize += chunk.byteLength;
+      if (currentImageSize > MAX_PAYLOAD_SIZE) {
+        imageChunks = [];
+        currentImageSize = 0;
+        return socket.emit('error', 'Payload too large');
+      }
       imageChunks.push(Buffer.from(chunk));
     });
 
@@ -227,9 +243,10 @@ export function registerSocketHandlers(io: Server) {
 
       } catch (error) {
         console.error('Data processing failed:', error);
-        // Don't forget to reset state on error!
         textChunks = [];
         imageChunks = [];
+        currentTextSize = 0;
+        currentImageSize = 0;
       }
     }
 
