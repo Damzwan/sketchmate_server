@@ -2,13 +2,11 @@
   "extends": "@tsconfig/node18/tsconfig.json",
   "compilerOptions": {
     "outDir": "dist",
-    "sourceMap": true,
-    "resolveJsonModule": true
+    "sourceMap": false,
+    "resolveJsonModule": true,
+    "incremental": false,
+    "removeComments": true
   },
-  "include": [
-    "src"
-  ],
-  "exclude": [
-    "node_modules"
-  ]
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
 }

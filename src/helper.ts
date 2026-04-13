@@ -5,6 +5,11 @@ import fs from 'fs';
 import path from 'path';
 import * as cron from 'node-cron';
 import { FBNotification } from './types/notification.type';
+import process from 'process';
+import v8 from 'v8';
+import { s3Creator } from './mongodb';
+import { CONTAINER } from './s3';
+import { isDev } from './main';
 
 export function parseParams<T>(params: ParsedUrlQuery | string): T {
   const newParams = typeof params === 'string' ? JSON.parse(params) : params;
@@ -123,4 +128,42 @@ export function compareVersions(currentVersion: string, minimumVersion: string):
   }
 
   return 0; // Exactly the same
+}
+
+// This lock ensures we only ever take ONE snapshot per server lifecycle
+let hasTakenEmergencySnapshot = false;
+
+export function startVitalsMonitor() {
+  if (isDev) return true;
+  setInterval(async () => {
+    const memoryData = process.memoryUsage();
+    const rssMB = Math.round(memoryData.rss / 1024 / 1024);
+
+    console.log(`[Vitals] RAM Usage: ${rssMB}MB`);
+
+    if (rssMB > 450 && !hasTakenEmergencySnapshot) {
+      console.warn('Memory critically high! Taking ONE emergency heap snapshot...');
+      hasTakenEmergencySnapshot = true;
+
+      try {
+        const fileName = `heapdump-${Date.now()}.heapsnapshot`;
+        v8.writeHeapSnapshot(fileName);
+        console.log(`Snapshot saved as ${fileName}. Uploading to lab...`);
+
+
+        // 2. Upload the file using your existing method
+        await s3Creator.uploadFile(
+          fileName,
+          'application/octet-stream',
+          CONTAINER.snapshots
+        );
+
+        console.log('Labs successfully sent to S3!');
+
+      } catch (err) {
+        console.error('Failed to take or upload snapshot:', err);
+        hasTakenEmergencySnapshot = false;
+      }
+    }
+  }, 5000);
 }

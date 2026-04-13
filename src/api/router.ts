@@ -34,7 +34,7 @@ import {
   getPartialUsers,
   getUser,
   onLoginEvent,
-  removeFromInbox,
+  removeFromInbox, s3Creator,
   searchMate,
   seeInbox,
   subscribe,
@@ -250,6 +250,20 @@ router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
 router.get(`${ENDPOINTS.balloon}/:id`, async (ctx) => {
   const balloon_id = ctx.params.id;
   return ctx.body = await getBalloon(balloon_id);
+});
+
+router.get('/admin/latest-vitals', async (ctx) => {
+  const url = await s3Creator.getLatestSnapshotUrl();
+
+  if (url) {
+    ctx.body = {
+      message: "Latest vitals found.",
+      download_url: url
+    };
+  } else {
+    ctx.status = 404;
+    ctx.body = { message: "No snapshots available." };
+  }
 });
 
 

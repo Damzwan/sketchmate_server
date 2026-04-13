@@ -6,7 +6,7 @@
   "scripts": {
     "lint": "eslint . --fix",
     "start": "cross-env NODE_ENV=development nodemon",
-    "start:heroku": "pm2 start dist/src/main.js --no-daemon",
+    "start:heroku": "node dist/src/main.js",
     "build": "tsc",
     "postinstall": "npm run build"
   },
@@ -15,6 +15,7 @@
   "license": "ISC",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.504.0",
+    "@aws-sdk/s3-request-presigner": "^3.1029.0",
     "@koa/cors": "5.0.0",
     "axios": "1.6.0",
     "dotenv": "^16.0.3",
