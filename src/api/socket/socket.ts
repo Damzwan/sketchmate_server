@@ -154,8 +154,6 @@ export function registerSocketHandlers(io: Server) {
       }
     });
 
-    let compressedData = new Uint8Array();
-
     let imageChunks: Buffer[] = [];
     let isImageDataCompleted = false;
 
@@ -201,15 +199,20 @@ export function registerSocketHandlers(io: Server) {
 
       try {
         // 1. Efficiently stitch the buffers together exactly once
-        const compressedData = Buffer.concat(textChunks);
         const imageBuffer = Buffer.concat(imageChunks);
 
         // 2. Native Decompression (Handles V1 Pako and V2 Native effortlessly)
-        const decompressedBuffer = await inflateAsync(compressedData);
+        let compressedData = Buffer.concat(textChunks);
+        textChunks = [];
 
-        // 3. Node Buffers can parse directly to string, no TextDecoder needed!
-        const dataString = decompressedBuffer.toString('utf-8');
+        let decompressedBuffer = await inflateAsync(compressedData);
+        compressedData = null as any;
+
+        let dataString = decompressedBuffer.toString('utf-8');
+        decompressedBuffer = null as any;
+
         const params: SendParams = JSON.parse(dataString);
+        dataString = null as any;
 
         params.img = imageBuffer;
 

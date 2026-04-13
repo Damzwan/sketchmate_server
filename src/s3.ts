@@ -1,4 +1,11 @@
-import { DeleteObjectCommand, PutObjectCommand, PutObjectCommandInput, S3Client } from '@aws-sdk/client-s3';
+import {
+  CreateBucketCommand,
+  DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command,
+  PutObjectCommand,
+  PutObjectCommandInput,
+  S3Client
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 
@@ -6,6 +13,7 @@ export enum CONTAINER {
   drawings = 'sketchmate-drawings',
   account = 'sketchmate-account',
   stickers = 'sketchmate-stickers',
+  snapshots = 'snapshots-diagnostic'
 }
 
 export class S3Creator {
@@ -66,8 +74,12 @@ export class S3Creator {
     bucketName: CONTAINER
   ): Promise<string> {
     try {
-      const extension = fileType.split('/')[1]; // Extract extension
-      const filename = `${uuidv4()}.${extension}`; // Generate filename with extension
+      // Only add an extension if the filename doesn't already have one
+      const hasExtension = filePath.includes('.');
+      const extension = fileType.split('/')[1];
+      const filename = hasExtension
+        ? `${uuidv4()}-${filePath}` // Keep original name + uuid to avoid collisions
+        : `${uuidv4()}.${extension}`;
 
       const params: PutObjectCommandInput = {
         Bucket: bucketName,
@@ -77,6 +89,10 @@ export class S3Creator {
       };
 
       await this.s3Client?.send(new PutObjectCommand(params));
+
+      // Clean up the local file after upload so it doesn't sit on Heroku's disk
+      fs.promises.unlink(filePath).catch(console.error);
+
       return this.getObjectUrl(filename, bucketName);
     } catch (e) {
       console.error(e);
@@ -91,6 +107,55 @@ export class S3Creator {
       Key: blobName
     };
     await this.s3Client?.send(new DeleteObjectCommand(params));
+  }
+
+  async createBucketIfMissing(bucketName: string): Promise<void> {
+    try {
+      await this.s3Client?.send(new CreateBucketCommand({ Bucket: bucketName }));
+      console.log(`Diagnostic bucket '${bucketName}' created successfully.`);
+    } catch (e: any) {
+      // AWS throws these specific errors if the bucket is already there
+      if (e.name === 'BucketAlreadyOwnedByYou' || e.name === 'BucketAlreadyExists') {
+        console.log(`Bucket '${bucketName}' already exists. Proceeding...`);
+      } else {
+        console.error('Failed to create diagnostic bucket:', e);
+        throw e;
+      }
+    }
+  }
+
+  async getLatestSnapshotUrl(): Promise<string | null> {
+    try {
+      // 1. Get list of all files in the diagnostic bucket
+      const listCommand = new ListObjectsV2Command({
+        Bucket: CONTAINER.snapshots
+      });
+      const listResponse = await this.s3Client?.send(listCommand);
+      if (!listResponse) return null;
+
+      if (!listResponse.Contents || listResponse.Contents.length === 0) {
+        console.log('No snapshots found in the lab.');
+        return null;
+      }
+
+      // 2. Sort by date to find the freshest "blood sample"
+      const latest = listResponse.Contents.sort((a, b) =>
+        (b.LastModified?.getTime() || 0) - (a.LastModified?.getTime() || 0)
+      )[0];
+
+      // 3. Generate a signed URL valid for 15 minutes
+      const getCommand = new GetObjectCommand({
+        Bucket: CONTAINER.snapshots,
+        Key: latest.Key
+      });
+
+      // This creates a temporary link you can click to download the file
+      const url = await getSignedUrl(this.s3Client as any, getCommand as any, { expiresIn: 900 });
+      return url;
+    } catch (e) {
+      console.error('Failed to retrieve snapshot URL:', e);
+      return null;
+    }
   }
 
   private getObjectUrl(key: string, bucketName: CONTAINER): string {
