@@ -243,7 +243,8 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       roomId,
       users: updatedSockets.map(s => s.data.user),
       isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0),
-      sessionId: roomState.sessionId
+      sessionId: roomState.sessionId,
+      isPublic: isPublic,
     });
 
     // Only announce "user-joined" if they weren't a ghost.
