@@ -306,7 +306,7 @@ router.get('/user/inbox/latest', async (ctx) => {
     }
 
     // 4. Fetch the sender's info using your existing helper
-    const [mate_info] = await getPartialUsers([item.sender]);
+    const [mate_info] = await getPartialUsers([item.sender.toString()]);
 
     // 5. Return the combined data
     ctx.body = {
