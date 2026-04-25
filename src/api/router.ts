@@ -269,37 +269,56 @@ router.get('/admin/latest-vitals', async (ctx) => {
 });
 
 router.get('/user/inbox/latest', async (ctx) => {
+  if (!ctx.query.offset) {
+    ctx.status = 400;
+    return;
+  }
+
   const userId = ctx.query.user_id;
+  const offset = parseInt(ctx.query.offset as string) || 0; // defaults to 0
 
   if (!userId) {
     ctx.status = 400;
-    ctx.body = { error: 'user_id is required' };
     return;
   }
 
   try {
-    const user = await user_model.findById(userId, { inbox: { $slice: -1 } }).lean();
+    // 1. Fetch the user's inbox array
+    const user = await user_model.findById(userId, { inbox: 1 }).lean();
 
     if (!user || !user.inbox || user.inbox.length === 0) {
       ctx.body = null;
       return;
     }
 
-    const latestInboxId = user.inbox[0];
+    const safeOffset = offset % user.inbox.length;
+    const targetIndex = user.inbox.length - 1 - safeOffset;
+    const targetInboxId = user.inbox[targetIndex];
 
-    const latestItem = await inbox_model.findById(latestInboxId)
-      .select('_id image')
+    // 3. Fetch the actual item
+    const item = await inbox_model.findById(targetInboxId)
+      .select('_id image sender')
       .lean();
 
-    if (!latestItem) {
+    if (!item) {
       ctx.body = null;
       return;
     }
 
-    ctx.body = latestItem;
+    // 4. Fetch the sender's info using your existing helper
+    const [mate_info] = await getPartialUsers([item.sender]);
+
+    // 5. Return the combined data
+    ctx.body = {
+      _id: item._id,
+      image: item.image,
+      senderName: mate_info?.name || 'Unknown',
+      senderImg: mate_info?.img || ''
+    };
+
   } catch (err) {
-    console.error('Widget API Error:', err);
+    console.error(err);
     ctx.status = 500;
-    ctx.body = { error: 'Failed to fetch latest drawing' };
+    ctx.body = { error: 'Database error' };
   }
 });
