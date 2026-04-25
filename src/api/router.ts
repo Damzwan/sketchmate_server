@@ -315,6 +315,8 @@ router.get('/user/inbox/latest', async (ctx) => {
     // 4. Fetch the sender
     const [mate_info] = await getPartialUsers([item.sender.toString()]);
 
+    trackEvent(userId as string, mixpanelEvents.widget);
+
     ctx.body = {
       _id: item._id,
       image: item.thumbnail,
