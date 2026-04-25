@@ -12,7 +12,7 @@ import {
 } from '../config/notification.config';
 import { mixpanelEvents, trackEvent } from '../mixpanel';
 import { sendSocketNotificationToUser, userSocketMap } from './socket/socket';
-import { getUserByID, s3Creator } from '../mongodb';
+import { s3Creator } from '../mongodb';
 import { ObjectId } from 'mongodb';
 import { inbox_model } from '../models/inbox.model';
 import { CONTAINER } from '../s3';
