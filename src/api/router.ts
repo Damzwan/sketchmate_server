@@ -304,7 +304,7 @@ router.get('/user/inbox/latest', async (ctx) => {
 
     const targetInboxId = userWithItem.inbox[0];
 
-    const item = await inbox_model.findById(targetInboxId).select('_id image sender').lean();
+    const item = await inbox_model.findById(targetInboxId).select('_id thumbnail sender').lean();
 
     if (!item) {
       ctx.status = 404;
@@ -317,7 +317,7 @@ router.get('/user/inbox/latest', async (ctx) => {
 
     ctx.body = {
       _id: item._id,
-      image: item.image,
+      image: item.thumbnail,
       senderName: mate_info?.name || 'Unknown',
       senderImg: mate_info?.img || ''
     };
