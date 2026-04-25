@@ -50,6 +50,8 @@ import { mixpanelEvents, trackEvent } from '../mixpanel';
 import zlib from 'zlib';
 import { promisify } from 'util';
 import { promises as fsPromises } from 'fs';
+import { user_model } from '../models/user.model';
+import { inbox_model } from '../models/inbox.model';
 
 export const router = new Router();
 
@@ -257,13 +259,47 @@ router.get('/admin/latest-vitals', async (ctx) => {
 
   if (url) {
     ctx.body = {
-      message: "Latest vitals found.",
+      message: 'Latest vitals found.',
       download_url: url
     };
   } else {
     ctx.status = 404;
-    ctx.body = { message: "No snapshots available." };
+    ctx.body = { message: 'No snapshots available.' };
   }
 });
 
+router.get('/user/inbox/latest', async (ctx) => {
+  const userId = ctx.query.user_id;
 
+  if (!userId) {
+    ctx.status = 400;
+    ctx.body = { error: 'user_id is required' };
+    return;
+  }
+
+  try {
+    const user = await user_model.findById(userId, { inbox: { $slice: -1 } }).lean();
+
+    if (!user || !user.inbox || user.inbox.length === 0) {
+      ctx.body = null;
+      return;
+    }
+
+    const latestInboxId = user.inbox[0];
+
+    const latestItem = await inbox_model.findById(latestInboxId)
+      .select('_id image')
+      .lean();
+
+    if (!latestItem) {
+      ctx.body = null;
+      return;
+    }
+
+    ctx.body = latestItem;
+  } catch (err) {
+    console.error('Widget API Error:', err);
+    ctx.status = 500;
+    ctx.body = { error: 'Failed to fetch latest drawing' };
+  }
+});
