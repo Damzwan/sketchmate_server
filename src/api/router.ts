@@ -52,6 +52,7 @@ import { promisify } from 'util';
 import { promises as fsPromises } from 'fs';
 import { user_model } from '../models/user.model';
 import { inbox_model } from '../models/inbox.model';
+import { ObjectId } from 'mongodb';
 
 export const router = new Router();
 
@@ -269,13 +270,8 @@ router.get('/admin/latest-vitals', async (ctx) => {
 });
 
 router.get('/user/inbox/latest', async (ctx) => {
-  if (!ctx.query.offset) {
-    ctx.status = 400;
-    return;
-  }
-
   const userId = ctx.query.user_id;
-  const offset = parseInt(ctx.query.offset as string) || 0; // defaults to 0
+  const offset = parseInt(ctx.query.offset as string) || 0;
 
   if (!userId) {
     ctx.status = 400;
@@ -283,42 +279,59 @@ router.get('/user/inbox/latest', async (ctx) => {
   }
 
   try {
-    // 1. Fetch the user's inbox array
-    const user = await user_model.findById(userId, { inbox: 1 }).lean();
+    const userAgg = await user_model.aggregate([
+      // Ensure userId is parsed correctly depending on your schema (ObjectId vs String)
+      { $match: { _id: new ObjectId(userId as string) } },
+      { $project: { inboxCount: { $size: { $ifNull: ["$inbox", []] } } } }
+    ]);
 
-    if (!user || !user.inbox || user.inbox.length === 0) {
+    if (!userAgg || userAgg.length === 0 || userAgg[0].inboxCount === 0) {
       ctx.body = null;
       return;
     }
 
-    const safeOffset = offset % user.inbox.length;
-    const targetIndex = user.inbox.length - 1 - safeOffset;
-    const targetInboxId = user.inbox[targetIndex];
+    const count = userAgg[0].inboxCount;
+    const safeOffset = offset % count;
 
-    // 3. Fetch the actual item
-    const item = await inbox_model.findById(targetInboxId)
-      .select('_id image sender')
-      .lean();
+    // We want the item from the end of the array
+    const targetIndex = count - 1 - safeOffset;
 
+    // 2. Fetch exactly ONE item ID from the array using $slice
+    const userWithItem = await user_model.findById(userId, {
+      inbox: { $slice: [targetIndex, 1] }
+    }).lean();
+
+    if (!userWithItem){
+      ctx.status = 404;
+      ctx.body = { error: "Image no longer exists" };
+      return;
+    }
+
+    const targetInboxId = userWithItem.inbox[0];
+
+    // 3. Fetch the actual drawing
+    const item = await inbox_model.findById(targetInboxId).select('_id image sender').lean();
+
+    // If an item was deleted but the ID is still in the user's array, tell the widget it's missing
     if (!item) {
-      ctx.body = null;
+      ctx.status = 404;
+      ctx.body = { error: "Image no longer exists" };
       return;
     }
 
-    // 4. Fetch the sender's info using your existing helper
+    // 4. Fetch the sender
     const [mate_info] = await getPartialUsers([item.sender.toString()]);
 
-    // 5. Return the combined data
     ctx.body = {
       _id: item._id,
       image: item.image,
-      senderName: mate_info?.name || 'Unknown',
-      senderImg: mate_info?.img || ''
+      senderName: mate_info?.name || "Unknown",
+      senderImg: mate_info?.img || ""
     };
 
   } catch (err) {
-    console.error(err);
+    console.error("Widget API Error:", err);
     ctx.status = 500;
-    ctx.body = { error: 'Database error' };
+    ctx.body = { error: "Database error" };
   }
 });
