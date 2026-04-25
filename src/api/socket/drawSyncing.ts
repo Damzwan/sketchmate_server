@@ -5,8 +5,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { sendNotificationUser } from '../../notifications';
 import { lobbyInvitationNotification } from '../../config/notification.config';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
-import fs from 'fs';
-import path from 'path';
 
 type PublicLobby = {
   id: string;
@@ -243,8 +241,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       roomId,
       users: updatedSockets.map(s => s.data.user),
       isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0),
-      sessionId: roomState.sessionId,
-      isPublic: isPublic,
+      sessionId: roomState.sessionId
     });
 
     // Only announce "user-joined" if they weren't a ghost.
