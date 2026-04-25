@@ -22,6 +22,7 @@ export enum mixpanelEvents {
   inviteLobby = 'invite_lobby',
   messageLobby = 'message_lobby',
   canvasSize = 'canvas_size',
+  widget = 'widget',
 
   // Balloon v2 (Hot Potato) Events
   balloon_v2_receive = 'balloon_v2_receive',   // Triggered when a balloon floats onto a screen
