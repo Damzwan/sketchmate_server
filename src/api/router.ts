@@ -43,7 +43,6 @@ import {
   uploadProfileImg
 } from '../mongodb';
 import { parseParams } from '../helper';
-import fs from 'fs';
 import { routeBalloonToOnlineUser } from './balloon';
 import { userSocketMap } from './socket/socket';
 import { mixpanelEvents, trackEvent } from '../mixpanel';
@@ -52,7 +51,7 @@ import { promisify } from 'util';
 import { promises as fsPromises } from 'fs';
 import { user_model } from '../models/user.model';
 import { inbox_model } from '../models/inbox.model';
-import { ObjectId } from 'mongodb';
+import mongoose from 'mongoose';
 
 export const router = new Router();
 
@@ -280,9 +279,8 @@ router.get('/user/inbox/latest', async (ctx) => {
 
   try {
     const userAgg = await user_model.aggregate([
-      // Ensure userId is parsed correctly depending on your schema (ObjectId vs String)
-      { $match: { _id: new ObjectId(userId as string) } },
-      { $project: { inboxCount: { $size: { $ifNull: ["$inbox", []] } } } }
+      { $match: { _id: new mongoose.Types.ObjectId(userId as string) } },
+      { $project: { inboxCount: { $size: { $ifNull: ['$inbox', []] } } } }
     ]);
 
     if (!userAgg || userAgg.length === 0 || userAgg[0].inboxCount === 0) {
@@ -292,30 +290,25 @@ router.get('/user/inbox/latest', async (ctx) => {
 
     const count = userAgg[0].inboxCount;
     const safeOffset = offset % count;
-
-    // We want the item from the end of the array
     const targetIndex = count - 1 - safeOffset;
 
-    // 2. Fetch exactly ONE item ID from the array using $slice
     const userWithItem = await user_model.findById(userId, {
       inbox: { $slice: [targetIndex, 1] }
     }).lean();
 
-    if (!userWithItem){
+    if (!userWithItem || !userWithItem.inbox || userWithItem.inbox.length === 0) {
       ctx.status = 404;
-      ctx.body = { error: "Image no longer exists" };
+      ctx.body = { error: 'Item index out of bounds' };
       return;
     }
 
     const targetInboxId = userWithItem.inbox[0];
 
-    // 3. Fetch the actual drawing
     const item = await inbox_model.findById(targetInboxId).select('_id image sender').lean();
 
-    // If an item was deleted but the ID is still in the user's array, tell the widget it's missing
     if (!item) {
       ctx.status = 404;
-      ctx.body = { error: "Image no longer exists" };
+      ctx.body = { error: 'Image no longer exists' };
       return;
     }
 
@@ -325,13 +318,14 @@ router.get('/user/inbox/latest', async (ctx) => {
     ctx.body = {
       _id: item._id,
       image: item.image,
-      senderName: mate_info?.name || "Unknown",
-      senderImg: mate_info?.img || ""
+      senderName: mate_info?.name || 'Unknown',
+      senderImg: mate_info?.img || ''
     };
 
   } catch (err) {
-    console.error("Widget API Error:", err);
+    // This will now catch and log any remaining BSON issues
+    console.error('Widget API Error:', err);
     ctx.status = 500;
-    ctx.body = { error: "Database error" };
+    ctx.body = { error: 'Internal Server Error' };
   }
 });
