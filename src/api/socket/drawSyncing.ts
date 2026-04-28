@@ -103,7 +103,8 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
           socket.emit('room-joined', {
             roomId,
             users: [],
-            isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0)
+            isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0),
+            isPublic
           });
           setTimeout(() => {
             sendLegacyMessage(socket, `⚠️ Compatibility Check: This room is running a newer version of the
@@ -241,7 +242,8 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       roomId,
       users: updatedSockets.map(s => s.data.user),
       isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0),
-      sessionId: roomState.sessionId
+      sessionId: roomState.sessionId,
+      isPublic
     });
 
     // Only announce "user-joined" if they weren't a ghost.
