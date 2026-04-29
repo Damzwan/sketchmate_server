@@ -16,6 +16,13 @@ export enum CONTAINER {
   snapshots = 'snapshots-diagnostic'
 }
 
+const CDN_URL = 'https://d5xw0rxlv2zqt.cloudfront.net';
+
+export const getCdnUrl = (path: string) => {
+  if (!path) return '';
+  return `${CDN_URL}/${path}`;
+};
+
 export class S3Creator {
   private s3Client: S3Client | undefined;
 
@@ -122,6 +129,28 @@ export class S3Creator {
         throw e;
       }
     }
+  }
+
+  async uploadLobbyThumbnail(
+    buffer: Buffer,
+    roomId: string,
+    bucketName = CONTAINER.drawings
+  ): Promise<string> {
+    const key = `public-lobbies/${roomId}.webp`;
+
+    await this.upload(
+      buffer,
+      {
+        Bucket: bucketName,
+        Key: key,
+        ContentType: 'image/webp',
+        CacheControl: 'no-cache, no-store, must-revalidate'
+      },
+      bucketName
+    );
+
+    // Return the CDN URL instead of the S3 URL
+    return `${CDN_URL}/${key}`;
   }
 
   async getLatestSnapshotUrl(): Promise<string | null> {

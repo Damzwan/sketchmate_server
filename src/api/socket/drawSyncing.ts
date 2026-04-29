@@ -5,12 +5,15 @@ import { v4 as uuidv4 } from 'uuid';
 import { sendNotificationUser } from '../../notifications';
 import { lobbyInvitationNotification } from '../../config/notification.config';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
+import { s3Creator } from '../../mongodb';
+import { CONTAINER } from '../../s3';
 
-type PublicLobby = {
+interface PublicLobby {
   id: string;
   name: string;
   maxUsers: number;
-};
+  thumbnailUrl?: string; // Add this
+}
 
 const PUBLIC_LOBBY_ROOMS = new Map<string, PublicLobby>([
   ['lobby-1', { id: 'lobby-1', name: 'Pizza', maxUsers: 4 }],
@@ -385,12 +388,33 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     }
   });
 
-  // TODO for later
-  socket.on('send-lobby-thumbnail', ({ thumbnailBuffer, aspectRatio, roomId }) => {
+  socket.on('send-lobby-thumbnail', async ({ thumbnailBuffer, roomId }) => {
     if (!roomId) return;
 
     const roomState = getOrCreateRoomState(roomId);
-    roomState.lastThumbnailTime = Date.now();
+
+    try {
+      const cdnUrl = await s3Creator.uploadLobbyThumbnail(thumbnailBuffer, roomId);
+
+      roomState.lastThumbnailTime = Date.now();
+      roomState.lastThumbnailSequenceId = roomState.currentSequenceId;
+
+      const cacheBustedUrl = `${cdnUrl}?t=${Date.now()}`;
+
+      const room = PUBLIC_LOBBY_ROOMS.get(roomId);
+      if (room) {
+        room.thumbnailUrl = cacheBustedUrl;
+        io.to('public-lobby-watchers').emit('lobby-thumbnail-pulsed', {
+          roomId: roomId,
+          thumbnailUrl: cacheBustedUrl
+        });
+      }
+
+    } catch (e) {
+      console.error('Failed to process lobby thumbnail:', e);
+    } finally {
+      roomState.isRequestingThumbnail = false;
+    }
   });
 
   socket.on('draw-event', async ({ roomId, action }) => {
@@ -428,31 +452,30 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     }
 
     // --- 2. THE THUMBNAIL TRIGGER (Time & Public-lobby based) ---
-    // TODO next update
-    // const isPublic = PUBLIC_LOBBY_ROOMS.has(roomId);
-    //
-    // if (isPublic && !roomState.isRequestingThumbnail) {
-    //   const now = Date.now();
-    //   const timeSinceLastThumbnail = now - roomState.lastThumbnailTime;
-    //   const actionsSinceLastThumbnail = roomState.currentSequenceId - roomState.lastThumbnailSequenceId;
-    //
-    //   // Only trigger if enough time has passed AND the canvas actually changed
-    //   if (timeSinceLastThumbnail >= THUMBNAIL_UPDATE_INTERVAL_MS && actionsSinceLastThumbnail > 0) {
-    //     roomState.isRequestingThumbnail = true;
-    //     roomState.lastThumbnailTime = now;
-    //     roomState.lastThumbnailSequenceId = roomState.currentSequenceId;
-    //
-    //     const clients = await io.in(roomId).fetchSockets();
-    //
-    //     if (clients.length > 0) {
-    //       // Load balance: pick the second client if available
-    //       const thumbnailClient = clients.length > 1 ? clients[1] : clients[0];
-    //       io.to(thumbnailClient.id).emit('request-lobby-thumbnail');
-    //     } else {
-    //       roomState.isRequestingThumbnail = false;
-    //     }
-    //   }
-    // }
+    const isPublic = PUBLIC_LOBBY_ROOMS.has(roomId);
+
+    if (isPublic && !roomState.isRequestingThumbnail) {
+      const now = Date.now();
+      const timeSinceLastThumbnail = now - roomState.lastThumbnailTime;
+      const actionsSinceLastThumbnail = roomState.currentSequenceId - roomState.lastThumbnailSequenceId;
+
+      // Only trigger if enough time has passed AND the canvas actually changed
+      if (timeSinceLastThumbnail >= THUMBNAIL_UPDATE_INTERVAL_MS && actionsSinceLastThumbnail > 0) {
+        roomState.isRequestingThumbnail = true;
+        roomState.lastThumbnailTime = now;
+        roomState.lastThumbnailSequenceId = roomState.currentSequenceId;
+
+        const clients = await io.in(roomId).fetchSockets();
+
+        if (clients.length > 0) {
+          // Load balance: pick the second client if available
+          const thumbnailClient = clients.length > 1 ? clients[1] : clients[0];
+          io.to(thumbnailClient.id).emit('request-lobby-thumbnail');
+        } else {
+          roomState.isRequestingThumbnail = false;
+        }
+      }
+    }
   });
 
 
@@ -493,18 +516,27 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
   });
 
 
-  function scheduleRoomCleanup(roomId: any) {
+  function scheduleRoomCleanup(roomId: string) {
     const roomState = ROOM_STATES.get(roomId);
     if (!roomState) return;
 
-    // Clear any existing timeout just in case it was already ticking
     if (roomState.cleanupTimeout) {
       clearTimeout(roomState.cleanupTimeout);
     }
 
-    // Start the countdown to destruction
     roomState.cleanupTimeout = setTimeout(() => {
+      const publicLobby = PUBLIC_LOBBY_ROOMS.get(roomId);
+      if (publicLobby) {
+        publicLobby.thumbnailUrl = undefined;
+        io.to('public-lobby-watchers').emit('lobby-thumbnail-pulsed', {
+          roomId: roomId,
+          thumbnailUrl: undefined
+        });
+      }
+
       ROOM_STATES.delete(roomId);
+
+      console.log(`Lobby ${roomId} cleared from memory. S3 file left for overwrite.`);
     }, ROOM_CLEANUP_TIMEOUT_MS);
   }
 
@@ -559,7 +591,8 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
         id: room.id,
         name: room.name,
         users: clients ? clients.size : 0,
-        maxUsers: room.maxUsers
+        maxUsers: room.maxUsers,
+        thumbnailUrl: room.thumbnailUrl
       };
     });
 
@@ -574,6 +607,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 }
 
 let lobbyUpdateTimeout: any | null = null;
+
 function broadcastLobbyOccupancy(io: Server) {
   if (lobbyUpdateTimeout) return;
 
@@ -589,7 +623,8 @@ function broadcastLobbyOccupancy(io: Server) {
         id: room.id,
         name: room.name,
         users: clients ? clients.size : 0,
-        maxUsers: room.maxUsers
+        maxUsers: room.maxUsers,
+        thumbnailUrl: room.thumbnailUrl
       };
     });
 
