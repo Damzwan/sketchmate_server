@@ -31,7 +31,7 @@ import {
   User
 } from './types/types';
 import { CONTAINER, S3Creator } from './s3';
-import mongoose, { Schema, Types } from 'mongoose';
+import mongoose, { Schema } from 'mongoose';
 import { user_model } from './models/user.model';
 import { createThumbnail, imgToEmblem, removeBackground } from './helper';
 import { ObjectId } from 'mongodb';
