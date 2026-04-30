@@ -30,7 +30,7 @@ import {
   deleteSaved,
   deleteSticker,
   getBalloon,
-  getInboxItems,
+  getInboxItems, getInboxItemsV2,
   getPartialUsers,
   getUser,
   onLoginEvent,
@@ -330,4 +330,13 @@ router.get('/user/inbox/latest', async (ctx) => {
     ctx.status = 500;
     ctx.body = { error: 'Internal Server Error' };
   }
+});
+
+router.get('/v2/inbox', async (ctx) => {
+  const { user_id, limit, lastDate } = ctx.query as any;
+  ctx.body = await getInboxItemsV2({
+    user_id,
+    limit: parseInt(limit) || 20,
+    lastDate: lastDate ? new Date(lastDate) : undefined
+  });
 });
