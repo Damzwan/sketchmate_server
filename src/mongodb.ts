@@ -724,3 +724,33 @@ export async function searchMate(
   }
 }
 
+export async function getInboxItemsV2(params: {
+  user_id: string,
+  limit: number,
+  lastDate?: Date
+}): Promise<GetInboxRes> {
+  try {
+    const query: any = { followers: params.user_id };
+
+    if (params.lastDate) {
+      query.date = { $lt: params.lastDate };
+    }
+
+    const inboxItems = await inbox_model
+      .find(query)
+      .sort({ date: -1 }) // Newest first
+      .limit(params.limit)
+      .lean() as any as InboxItem[];
+
+    const uniqueUserIds = Array.from(new Set(
+      inboxItems.reduce((acc: string[], curr) => acc.concat(curr.original_followers), [])
+    ));
+
+    const userInfo = await getPartialUsers(uniqueUserIds);
+
+    return { inboxItems, userInfo };
+  } catch (e) {
+    throw new Error('Failed to fetch inbox batch');
+  }
+}
+
