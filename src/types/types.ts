@@ -46,7 +46,7 @@ export interface User {
   name: string;
   img: string;
   mates: Mate[];
-  inbox: string[];
+  inbox: string[]; // @deprecated
   stickers: string[];
   emblems: string[];
   saved: Saved[];
@@ -61,6 +61,8 @@ export interface User {
   };
   date_of_birth?: Date;
   last_seen_version?: string;
+  following: string[];
+  followers: string[];
 }
 
 export type BalloonStatus = 'pending' | 'paired' | 'accepted';
@@ -289,6 +291,38 @@ export interface OnLoginEventParams {
 export interface SearchMateParams {
   mateName: string;
   user_id: string;
+}
+
+export interface Post {
+  _id: string;
+  author_id: string; // The user who drew it
+  description?: string;
+  drawing_url: string; // S3 Key
+  image_url: string;
+  thumbnail_url: string;
+  aspect_ratio: number;
+  created_at: Date;
+  reactions: Record<string, string[]>;
+  comment_count: number;
+  reports_count: number;
+  status: 'active' | 'under_review' | 'removed';
+}
+
+export interface PostComment {
+  _id: string;
+  post_id: string;
+  author_id: string;
+  message: string;
+  created_at: Date;
+}
+
+export interface Report {
+  _id: string;
+  reporter_id: string;
+  target_id: string; // ID of the Post or Comment
+  target_type: 'post' | 'comment' | 'user';
+  reason: 'spam' | 'nsfw' | 'harassment';
+  created_at: Date;
 }
 
 

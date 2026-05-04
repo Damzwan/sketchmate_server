@@ -153,6 +153,33 @@ export class S3Creator {
     return `${CDN_URL}/${key}`;
   }
 
+  async getPresignedUploadUrl(
+    contentType: string,
+    bucketName = CONTAINER.drawings
+  ): Promise<{ signedUrl: string; key: string; publicUrl: string }> {
+    try {
+      const extension = contentType.split('/')[1] || 'bin';
+      const key = `public-posts/${uuidv4()}.${extension}`;
+
+      const command = new PutObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+        ContentType: contentType
+      });
+
+      const signedUrl = await getSignedUrl(this.s3Client as any, command as any, { expiresIn: 300 });
+
+      return {
+        signedUrl,
+        key,
+        publicUrl: getCdnUrl(key)
+      };
+    } catch (error) {
+      console.error('Error generating pre-signed URL:', error);
+      throw new Error('Could not generate upload URL');
+    }
+  }
+
   async getLatestSnapshotUrl(): Promise<string | null> {
     try {
       // 1. Get list of all files in the diagnostic bucket
@@ -186,6 +213,7 @@ export class S3Creator {
       return null;
     }
   }
+
 
   private getObjectUrl(key: string, bucketName: CONTAINER): string {
     return `https://${bucketName}.s3.${process.env.AWS_REGION!}.amazonaws.com/${key}`;

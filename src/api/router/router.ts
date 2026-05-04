@@ -18,7 +18,7 @@ import {
   UnRegisterNotificationParams,
   UpdateUserParams,
   UploadProfileImgParams
-} from '../types/types';
+} from '../../types/types';
 import {
   changeUserName,
   createBalloon,
@@ -41,19 +41,22 @@ import {
   unsubscribe,
   updateUser,
   uploadProfileImg
-} from '../mongodb';
-import { parseParams } from '../helper';
-import { routeBalloonToOnlineUser } from './balloon';
-import { userSocketMap } from './socket/socket';
-import { mixpanelEvents, trackEvent } from '../mixpanel';
+} from '../../mongodb';
+import { parseParams } from '../../helper';
+import { routeBalloonToOnlineUser } from '../balloon';
+import { userSocketMap } from '../socket/socket';
+import { mixpanelEvents, trackEvent } from '../../mixpanel';
 import zlib from 'zlib';
 import { promisify } from 'util';
 import { promises as fsPromises } from 'fs';
-import { user_model } from '../models/user.model';
-import { inbox_model } from '../models/inbox.model';
+import { user_model } from '../../models/user.model';
+import { inbox_model } from '../../models/inbox.model';
 import mongoose from 'mongoose';
+import postRouter from './post';
 
 export const router = new Router();
+
+router.use('/post', postRouter.routes(), postRouter.allowedMethods());
 
 router.get(ENDPOINTS.user, async (ctx) => {
   ctx.body = await getUser(parseParams<GetUserParams>(ctx.query));
