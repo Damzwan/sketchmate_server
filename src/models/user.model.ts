@@ -39,7 +39,9 @@ const user_schema = new Schema({
     last_received_at: { type: Date, default: null }
   },
   date_of_birth: { type: Date, required: false },
-  last_seen_version: { type: String, required: false }
+  last_seen_version: { type: String, required: false },
+  following: { type: [String], default: [] },
+  followers: { type: [String], default: [] },
 }) as mongoose.Schema<User>;
 
 export const user_model = mongoose.model('users', user_schema);

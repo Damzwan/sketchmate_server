@@ -10,13 +10,19 @@ import conditional from 'koa-conditional-get';
 
 import { Server } from 'socket.io';
 import { connectDb } from './mongodb';
-import { router } from './api/router';
+import { router } from './api/router/router';
 import { registerSocketHandlers } from './api/socket/socket';
 import { errorHandler } from './middleware/error_handler';
 import * as fs from 'fs';
 import { scheduleResetUploadFolder, startVitalsMonitor } from './helper';
 import cron from 'node-cron';
 import { pairBalloons, removeExpiredBalloons, unPairBalloons } from './api/balloon';
+import * as admin from 'firebase-admin';
+import serviceAccount from '../fcm.json';
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount as any)
+});
 
 const app = new Koa();
 export const isDev = process.env.NODE_ENV === 'development';
@@ -41,6 +47,7 @@ const uploadDir = './uploads';
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
+
 
 app
   .use(errorHandler())
@@ -73,7 +80,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection:', reason);
 });
 
-startVitalsMonitor()
+startVitalsMonitor();
 
 // Every hour hours (at :00)
 cron.schedule('0 */1 * * *', async () => {
