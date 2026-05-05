@@ -147,7 +147,6 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
       const postIdStr = post._id.toString();
       const latestComment = commentsByPostId[postIdStr];
 
-      console.log(latestComment);
 
       return {
         ...post,

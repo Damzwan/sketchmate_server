@@ -30,7 +30,7 @@ userRouter.put('/follow/:target_id', requireAuth, async (ctx) => {
   ctx.status = 200;
   ctx.body = { success: true };
 });
-
+``
 /**
  * USER POSTS: Get all active posts for a specific user
  */
@@ -95,7 +95,6 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
       };
     });
 
-    console.log(hydratedPosts);
 
     ctx.status = 200;
     ctx.body = { posts: hydratedPosts };
