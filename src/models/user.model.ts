@@ -30,6 +30,7 @@ const user_schema = new Schema({
   subscriptions: { type: [notificationSchema], required: true },
   name: { type: String, required: true },
   img: { type: String, required: true },
+  description: { type: String, required: false },
   mate_requests_received: { type: [String], required: true },
   mate_requests_sent: { type: [String], required: true },
   balloon: {
@@ -41,7 +42,7 @@ const user_schema = new Schema({
   date_of_birth: { type: Date, required: false },
   last_seen_version: { type: String, required: false },
   following: { type: [String], default: [] },
-  followers: { type: [String], default: [] },
+  followers: { type: [String], default: [] }
 }) as mongoose.Schema<User>;
 
 export const user_model = mongoose.model('users', user_schema);

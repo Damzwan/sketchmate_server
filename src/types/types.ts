@@ -44,6 +44,7 @@ export interface User {
   _id: string;
   auth_id: string;
   name: string;
+  description?: string;
   img: string;
   mates: Mate[];
   inbox: string[]; // @deprecated
@@ -293,27 +294,59 @@ export interface SearchMateParams {
   user_id: string;
 }
 
-export interface Post {
+
+export interface BasePost {
   _id: string;
-  author_id: string; // The user who drew it
+  author_id: string;
   description?: string;
-  drawing_url: string; // S3 Key
+  drawing_url: string;
   image_url: string;
   thumbnail_url: string;
   aspect_ratio: number;
-  created_at: Date;
-  reactions: Record<string, string[]>;
   comment_count: number;
   reports_count: number;
   status: 'active' | 'under_review' | 'removed';
+  reaction_counts: Record<string, number>;
 }
 
-export interface PostComment {
+export interface BasePostComment {
   _id: string;
   post_id: string;
   author_id: string;
   message: string;
-  created_at: Date;
+}
+
+export interface BasePostReaction {
+  _id: string;
+  post_id: string;
+  user_id: string;
+  reaction_type: string;
+}
+
+export interface PostDocument extends BasePost {
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface PostCommentDocument extends BasePostComment {
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface PostReactionDocument extends BasePostReaction {
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// --- Frontend Types (Hydrated versions) ---
+
+export type FeedPost = Omit<BasePost, 'createdAt' | 'updatedAt'> & {
+  author: { _id: string; name: string; img: string };
+  user_reaction: string | null;
+  comments: any[];
+  createdAt: string;
+  updatedAt: string;
+  commentsLoaded?: boolean;
 }
 
 export interface Report {
