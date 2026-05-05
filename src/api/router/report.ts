@@ -1,8 +1,10 @@
-import { router } from './router';
 import { report_model } from '../../models/report.model';
 import { post_model } from '../../models/post.model';
+import Router from 'koa-router';
 
-router.post('/report', async (ctx) => {
+export const reportRouter = new Router();
+
+reportRouter.post('/', async (ctx) => {
   const { target_id, target_type, reason } = ctx.request.body;
   const reporter_id = ctx.state.user._id;
 

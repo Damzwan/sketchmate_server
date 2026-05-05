@@ -1,6 +1,6 @@
 import {
   CreateBucketCommand,
-  DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command,
+  DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command,
   PutObjectCommand,
   PutObjectCommandInput,
   S3Client
@@ -114,6 +114,19 @@ export class S3Creator {
       Key: blobName
     };
     await this.s3Client?.send(new DeleteObjectCommand(params));
+  }
+
+  async deleteObjects(keys: string[], bucketName: CONTAINER) {
+    if (!keys || keys.length === 0) return;
+
+    const params = {
+      Bucket: bucketName,
+      Delete: {
+        Objects: keys.map(key => ({ Key: key })),
+        Quiet: true
+      }
+    };
+    await this.s3Client?.send(new DeleteObjectsCommand(params));
   }
 
   async createBucketIfMissing(bucketName: string): Promise<void> {

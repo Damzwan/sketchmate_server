@@ -53,10 +53,14 @@ import { user_model } from '../../models/user.model';
 import { inbox_model } from '../../models/inbox.model';
 import mongoose from 'mongoose';
 import postRouter from './post';
+import { userRouter } from './user';
+import { reportRouter } from './report';
 
 export const router = new Router();
 
 router.use('/post', postRouter.routes(), postRouter.allowedMethods());
+router.use('/user', userRouter.routes(), userRouter.allowedMethods());
+router.use('/report', reportRouter.routes(), reportRouter.allowedMethods());
 
 router.get(ENDPOINTS.user, async (ctx) => {
   ctx.body = await getUser(parseParams<GetUserParams>(ctx.query));

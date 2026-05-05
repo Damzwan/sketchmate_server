@@ -1,20 +1,20 @@
 import Router from 'koa-router';
 import { s3Creator } from '../../mongodb';
-import { post_comment_model, post_model } from '../../models/post.model';
+import { post_comment_model, post_model, post_reaction_model } from '../../models/post.model';
 import { requireAuth } from '../../middleware/auth';
 import { user_model } from '../../models/user.model';
+import { FeedPost } from '../../types/types';
+import { CONTAINER } from '../../s3';
 
 const postRouter = new Router();
 
 /**
  * STEP 1: Generate S3 Presigned URLs
- * This allows the client to upload directly to S3.
  */
 postRouter.post('/upload-urls', requireAuth, async (ctx) => {
   try {
-    // Firing all three URL generations concurrently
     const [drawingUrls, imageUrls, thumbnailUrls] = await Promise.all([
-      s3Creator.getPresignedUploadUrl('application/gzip'), // Updated for Gzipped JSON
+      s3Creator.getPresignedUploadUrl('application/gzip'),
       s3Creator.getPresignedUploadUrl('image/webp'),
       s3Creator.getPresignedUploadUrl('image/webp')
     ]);
@@ -33,7 +33,6 @@ postRouter.post('/upload-urls', requireAuth, async (ctx) => {
 
 /**
  * STEP 2: Publish the Post
- * Called after the client successfully uploads files to S3.
  */
 postRouter.post('/publish', requireAuth, async (ctx) => {
   const { drawing_url, image_url, thumbnail_url, aspect_ratio, description } = ctx.request.body;
@@ -59,12 +58,11 @@ postRouter.post('/publish', requireAuth, async (ctx) => {
 });
 
 /**
- * FEED: Get personalized/global feed
- * Uses hydration to attach author metadata efficiently.
+ * FEED: Paginated and Hydrated
  */
 postRouter.get('/feed', requireAuth, async (ctx) => {
   const limit = parseInt(ctx.query.limit as string) || 20;
-  const user_id = ctx.state.user._id;
+  const user_id = ctx.state.user._id.toString();
 
   try {
     // 1. Get user's following list
@@ -73,10 +71,10 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
 
     let feedPosts: any[] = [];
 
-    // 2. Fetch posts from people the user follows
+    // 2. Fetch posts from people the user follows (EXCLUDING self)
     if (followingIds.length > 0) {
       feedPosts = await post_model.find({
-        author_id: { $in: followingIds },
+        author_id: { $in: followingIds, $ne: user_id },
         status: 'active'
       })
         .sort({ createdAt: -1 })
@@ -84,11 +82,13 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
         .lean();
     }
 
-    // 3. Fallback/Padding: Global posts if feed is small
+    // 3. Fallback/Padding: Global posts (EXCLUDING self and already fetched following)
     if (feedPosts.length < limit) {
       const remainingSlots = limit - feedPosts.length;
+      const excludedIds = [...followingIds, user_id];
+
       const globalPosts = await post_model.find({
-        author_id: { $nin: [...followingIds, user_id] },
+        author_id: { $nin: excludedIds },
         status: 'active'
       })
         .sort({ createdAt: -1 })
@@ -98,42 +98,42 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
       feedPosts = [...feedPosts, ...globalPosts];
     }
 
-    // --- NEW: Fetch the latest comment for each post ---
     const postIds = feedPosts.map(p => p._id);
 
-    // Promise.all runs these queries simultaneously
-    const latestCommentsRaw = await Promise.all(
-      postIds.map(id =>
-        post_comment_model.findOne({ post_id: id })
-          .sort({ createdAt: -1 })
-          .lean()
-      )
-    );
-    // Filter out nulls (posts with no comments)
+    // 4. Batch Hydration: Comments and Reactions
+    const [latestCommentsRaw, userReactions] = await Promise.all([
+      Promise.all(
+        postIds.map(id =>
+          post_comment_model.findOne({ post_id: id }).sort({ createdAt: -1 }).lean()
+        )
+      ),
+      post_reaction_model.find({
+        user_id,
+        post_id: { $in: postIds }
+      }).lean()
+    ]);
+
     const validComments = latestCommentsRaw.filter(c => c !== null);
 
-
-    // 4. Hydration: Batch fetch author AND commenter profile info
+    // Collect all authors (post authors + commenters)
     const postAuthorIds = feedPosts.map(post => post.author_id.toString());
     const commentAuthorIds = validComments.map((c: any) => c.author_id.toString());
-
-    // Combine IDs and remove duplicates
     const allUserIdsToFetch = [...new Set([...postAuthorIds, ...commentAuthorIds])];
 
-    // Fetch all needed users in ONE query
     const users = await user_model.find({
       _id: { $in: allUserIdsToFetch }
     }).select('_id name img').lean();
 
-    // Map users for O(1) lookup
     const userMap = users.reduce((acc, user) => {
       acc[user._id.toString()] = user;
       return acc;
     }, {} as Record<string, any>);
 
+    const userReactionMap = userReactions.reduce((acc, rx: any) => {
+      acc[rx.post_id.toString()] = rx.reaction_type;
+      return acc;
+    }, {} as Record<string, string>);
 
-    // 5. Assembly
-    // First, hydrate the comments with their authors
     const commentsByPostId = validComments.reduce((acc, comment: any) => {
       acc[comment.post_id.toString()] = {
         ...comment,
@@ -142,15 +142,22 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
       return acc;
     }, {} as Record<string, any>);
 
-    // Second, attach authors and comments to the posts
-    const hydratedFeed = feedPosts.map(post => {
-      const latestComment = commentsByPostId[post._id.toString()];
+    // 5. Final Assembly
+    const hydratedFeed: FeedPost[] = feedPosts.map(post => {
+      const postIdStr = post._id.toString();
+      const latestComment = commentsByPostId[postIdStr];
+
+      console.log(latestComment);
 
       return {
         ...post,
+        _id: postIdStr,
         author: userMap[post.author_id.toString()] || { name: 'Unknown Sketcher', img: '' },
-        // We pass it as an array so your frontend logic `(currItem.comments || []).slice(0,4)` works seamlessly!
-        comments: latestComment ? [latestComment] : []
+        reaction_counts: post.reaction_counts || {},
+        user_reaction: userReactionMap[postIdStr] || null,
+        comments: latestComment ? [latestComment] : [],
+        createdAt: post.createdAt instanceof Date ? post.createdAt.toISOString() : post.createdAt,
+        updatedAt: post.updatedAt instanceof Date ? post.updatedAt.toISOString() : post.updatedAt
       };
     });
 
@@ -164,14 +171,14 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
 });
 
 /**
- * COMMENTS: Add a comment to a post
+ * COMMENTS & REACTIONS
  */
 postRouter.post('/:post_id/comment', requireAuth, async (ctx) => {
   const { post_id } = ctx.params;
   const { message } = ctx.request.body;
   const author_id = ctx.state.user._id;
 
-  if (!message || message.trim() === '') {
+  if (!message?.trim()) {
     ctx.status = 400;
     ctx.body = { error: 'Comment message cannot be empty' };
     return;
@@ -181,36 +188,133 @@ postRouter.post('/:post_id/comment', requireAuth, async (ctx) => {
     const post = await post_model.findOne({ _id: post_id, status: 'active' });
     if (!post) {
       ctx.status = 404;
-      ctx.body = { error: 'Post not found or unavailable' };
+      ctx.body = { error: 'Post not found' };
       return;
     }
 
-    const newComment = await post_comment_model.create({
-      post_id,
-      author_id,
-      message
-    });
-
-    // Update post metadata
-    await post_model.updateOne(
-      { _id: post_id },
-      { $inc: { comment_count: 1 } }
-    );
+    const newComment = await post_comment_model.create({ post_id, author_id, message });
+    await post_model.updateOne({ _id: post_id }, { $inc: { comment_count: 1 } });
 
     ctx.status = 201;
     ctx.body = { comment: newComment };
   } catch (error) {
-    console.error('Comment error:', error);
     ctx.status = 500;
     ctx.body = { error: 'Failed to post comment' };
   }
 });
 
+postRouter.post('/:post_id/react', requireAuth, async (ctx) => {
+  const { post_id } = ctx.params;
+  const { reaction_type } = ctx.request.body; // e.g., 'fire' or null
+  const user_id = ctx.state.user._id.toString();
+
+  try {
+    const post = await post_model.findOne({ _id: post_id, status: 'active' });
+    if (!post) {
+      ctx.status = 404;
+      ctx.body = { error: 'Post not found' };
+      return;
+    }
+
+    const existing = await post_reaction_model.findOne({ post_id, user_id });
+
+    const isRemoving = !reaction_type || (existing && existing.reaction_type === reaction_type);
+
+    if (isRemoving) {
+      if (existing) {
+        await Promise.all([
+          post_reaction_model.deleteOne({ _id: existing._id }),
+          post_model.updateOne(
+            { _id: post_id },
+            { $inc: { [`reaction_counts.${existing.reaction_type}`]: -1 } }
+          )
+        ]);
+      }
+      ctx.body = { current_reaction: null };
+      return;
+    }
+
+    if (existing) {
+      await Promise.all([
+        post_reaction_model.updateOne({ _id: existing._id }, { reaction_type }),
+        post_model.updateOne(
+          { _id: post_id },
+          {
+            $inc: {
+              [`reaction_counts.${existing.reaction_type}`]: -1,
+              [`reaction_counts.${reaction_type}`]: 1
+            }
+          }
+        )
+      ]);
+    } else {
+      await Promise.all([
+        post_reaction_model.create({ post_id, user_id, reaction_type }),
+        post_model.updateOne(
+          { _id: post_id },
+          { $inc: { [`reaction_counts.${reaction_type}`]: 1 } }
+        )
+      ]);
+    }
+
+    ctx.body = { current_reaction: reaction_type };
+  } catch (error) {
+    console.error('Reaction Error:', error);
+    ctx.status = 500;
+    ctx.body = { error: 'Failed to process reaction' };
+  }
+});
+
+postRouter.delete('/:post_id', requireAuth, async (ctx) => {
+  const { post_id } = ctx.params;
+  const user_id = ctx.state.user._id.toString();
+
+  try {
+    const post = await post_model.findById(post_id);
+
+    if (!post) {
+      ctx.status = 404;
+      ctx.body = { error: 'Post not found' };
+      return;
+    }
+
+    if (post.author_id.toString() !== user_id) {
+      ctx.status = 403;
+      ctx.body = { error: 'You are not authorized to delete this post' };
+      return;
+    }
+
+    await Promise.all([
+      post_model.deleteOne({ _id: post_id }),
+      post_comment_model.deleteMany({ post_id }),
+      post_reaction_model.deleteMany({ post_id })
+    ]);
+
+    const extractKey = (url: string) => url.split('/').pop();
+
+    const keysToDelete = [
+      extractKey(post.drawing_url),
+      extractKey(post.image_url),
+      extractKey(post.thumbnail_url)
+    ].filter(Boolean) as string[];
+
+    if (keysToDelete.length > 0) {
+      s3Creator.deleteObjects(keysToDelete, CONTAINER.drawings).catch(err =>
+        console.error('S3 Batch Deletion Error:', err)
+      );
+    }
+
+    ctx.status = 200;
+    ctx.body = { message: 'Post and associated data deleted successfully' };
+  } catch (error) {
+    console.error('Delete post error:', error);
+    ctx.status = 500;
+    ctx.body = { error: 'Failed to delete post' };
+  }
+});
+
 /**
- * GET COMMENTS: Paginated comments for a post
- */
-/**
- * GET COMMENTS: Hydrated and Paginated
+ * GET COMMENTS
  */
 postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
   const { post_id } = ctx.params;
@@ -219,7 +323,6 @@ postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
   const skip = (page - 1) * limit;
 
   try {
-    // 1. Fetch raw comments
     const comments = await post_comment_model.find({ post_id })
       .sort({ createdAt: 1 })
       .skip(skip)
@@ -231,7 +334,6 @@ postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
       return;
     }
 
-    // 2. Hydrate Commenters
     const authorIds = [...new Set(comments.map(c => c.author_id))];
     const authors = await user_model.find({
       _id: { $in: authorIds }
