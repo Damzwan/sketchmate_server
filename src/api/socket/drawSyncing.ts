@@ -6,7 +6,6 @@ import { sendNotificationUser } from '../../notifications';
 import { lobbyInvitationNotification } from '../../config/notification.config';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
 import { s3Creator } from '../../mongodb';
-import { CONTAINER } from '../../s3';
 
 interface PublicLobby {
   id: string;
@@ -181,20 +180,23 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
         if (roomState.cachedSnapshot) {
           // If we have a snapshot (from a V1 creator or previous V2 sync), use it!
           sendFullSnapshot(socket, roomId, roomState, v2Hosts, true);
+        } else if (intent === 'create' && !isPublic) {
+          io.to(socket.id).emit('request-canvas-state', {
+            snapshotSequenceId: roomState.currentSequenceId,
+            isBackgroundUpdate: true
+          });
         } else if (v1Hosts.length > 0) {
           // BRIDGE: V1 user is here, but hasn't finished 'Genius Idea' upload yet
           const legacyHost = v1Hosts[0];
           console.log(`[Bridge] Asking V1 Host ${legacyHost.id} for state for V2 Joiner`);
           requestSnapshotWithTimeout(socket, roomId, roomState, [legacyHost], 0);
         } else if (effectiveLastSeq >= oldestAvailableSeq - 1) {
-          // FAST SYNC: They just blipped, give them the delta
           const missedActions = roomState.actionBuffer.filter((a: any) => a.sequenceId > effectiveLastSeq);
           socket.emit('missed-actions', {
             actions: missedActions,
             isInitialSync: true
           });
         } else {
-          // Truly empty room, tell client to stop loading
           socket.emit('missed-actions', { actions: [], isInitialSync: true });
         }
       }
