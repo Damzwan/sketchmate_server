@@ -31,6 +31,7 @@ import { registerV2BalloonHandlers } from './balloon.socket';
 import { user_model } from '../../models/user.model';
 import zlib from 'zlib';
 import { promisify } from 'util';
+import { registerChatHandlers } from './chat.socket';
 
 const inflateAsync = promisify(zlib.inflate);
 
@@ -45,33 +46,50 @@ export function registerSocketHandlers(io: Server) {
   io.on('connection', (socket) => {
     registerDrawSyncingHandlers(io, socket);
     registerV2BalloonHandlers(io, socket);
+    registerChatHandlers(io, socket);
 
     socket.on(SOCKET_ENDPONTS.login, async (params: { _id: string, version: string }) => {
-      // Initialize array if not exists
+      // 1. Your legacy map logic
       if (!userSocketMap[params._id]) {
         userSocketMap[params._id] = [];
       }
-      // Add the new socket to the array
       userSocketMap[params._id].push(socket);
 
+      // 2. Fetch User
+      // IMPORTANT: Make sure to fetch friends/mates so we can notify them!
       const user = await user_model.findById(params._id, {
-        _id: 1,
-        img: 1,
-        name: 1,
-        date_of_birth: 1
+        _id: 1, img: 1, name: 1, date_of_birth: 1, friends: 1, mates: 1
       }).lean();
+
       if (!user) return;
+
       socket.data.user = {
-        _id: user._id,
+        _id: user._id.toString(),
         name: user.name,
         img: user.img,
         date_of_birth: user.date_of_birth,
         version: params.version || null
       };
-      socket.emit(SOCKET_ENDPONTS.login);
+
+      // 3. Socket.io Room Logic
+      socket.join(user._id.toString());
+
+      // 4. Notify Watchers (Friends)
+      const watcherRooms = [
+        ...(user.friends || []).map(id => id.toString()),
+        ...(user.mates || []).map(m => typeof m === 'string' ? m : (m as any)._id.toString())
+      ];
+
+      if (watcherRooms.length > 0) {
+        socket.to(watcherRooms).emit('friend:online', {
+          user_id: user._id.toString(),
+          status: 'online'
+        });
+      }
+
+      socket.emit(SOCKET_ENDPONTS.login, { status: 'success' });
     });
 
-    // Store the socket id in the socketToUserId map
     socket.on(SOCKET_ENDPONTS.disconnect, () => {
       const userId = socket.data.user?._id?.toString();
 
@@ -79,11 +97,16 @@ export function registerSocketHandlers(io: Server) {
         const index = userSocketMap[userId].indexOf(socket);
         if (index !== -1) userSocketMap[userId].splice(index, 1);
 
+        // If this was their LAST active socket, tell friends they are offline
         if (userSocketMap[userId].length === 0) {
           delete userSocketMap[userId];
+
+          // Emit offline status
+          socket.broadcast.emit('friend:offline', { user_id: userId });
         }
       }
 
+      // Your cleanup logic...
       textChunks = [];
       imageChunks = [];
       isTextDataCompleted = false;
@@ -329,4 +352,10 @@ export function sendSocketNotificationToUser(userId: string, socketEndpoint: str
   userSocketMap[userId].forEach((associatedSocket) => {
     associatedSocket.emit(socketEndpoint, data);
   });
+}
+
+export async function isUserOnline(io: Server, userId: string): Promise<boolean> {
+  if (!io) return false;
+  const sockets = await io.in(userId.toString()).fetchSockets();
+  return sockets.length > 0;
 }

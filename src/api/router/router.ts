@@ -52,18 +52,39 @@ import { promises as fsPromises } from 'fs';
 import { user_model } from '../../models/user.model';
 import { inbox_model } from '../../models/inbox.model';
 import mongoose from 'mongoose';
-import postRouter from './post';
-import { userRouter } from './user';
-import { reportRouter } from './report';
+import postRouter from './post.router';
+import { userRouter } from './user.router';
+import { reportRouter } from './report.router';
+import { chatRouter } from './chat.router';
 
 export const router = new Router();
 
 router.use('/post', postRouter.routes(), postRouter.allowedMethods());
 router.use('/user', userRouter.routes(), userRouter.allowedMethods());
 router.use('/report', reportRouter.routes(), reportRouter.allowedMethods());
+router.use('/chats', chatRouter.routes(), chatRouter.allowedMethods());
 
 router.get(ENDPOINTS.user, async (ctx) => {
-  ctx.body = await getUser(parseParams<GetUserParams>(ctx.query));
+  const res = await getUser(parseParams<GetUserParams>(ctx.query));
+
+  if (!res?.user) return ctx.throw(404, 'User not found');
+
+  // Lazy Migration Logic
+  if (res.user.mates?.length > 0 && (!res.user.friends || res.user.friends.length === 0)) {
+    try {
+      const friendIds = res.user.mates.map(m => typeof m === 'string' ? m : (m as any)._id);
+
+      // Fire and forget DB update
+      user_model.findByIdAndUpdate(res.user._id, { $set: { friends: friendIds } }).exec();
+
+      // Patch local object for immediate frontend use
+      res.user.friends = friendIds;
+    } catch (err) {
+      console.error('Migration error:', err);
+    }
+  }
+
+  ctx.body = res;
 });
 
 router.put(`${ENDPOINTS.user}/login`, async (ctx) => {

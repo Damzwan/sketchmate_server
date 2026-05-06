@@ -70,9 +70,12 @@ export async function createUser(auth_id: string): Promise<Res<User>> {
       mate_requests_received: [],
       notifications: []
     });
-    if (user._id) trackEvent(user._id, mixpanelEvents.create_account);
+    if (user._id) trackEvent(user._id.toString(), mixpanelEvents.create_account);
 
-    return user;
+    return {
+      ...user,
+      _id: user._id.toString()
+    };
   } catch (e) {
     console.log(e);
   }
@@ -100,14 +103,6 @@ export async function getUser(params: GetUserParams): Promise<Res<GetUserRes>> {
     user = await createUser(params.auth_id);
     return { user, new_account: true, minimum_supported_version };
 
-  } catch (e) {
-    throw new Error('User not found');
-  }
-}
-
-export async function getUserByID(user_id: Schema.Types.ObjectId): Promise<Res<User>> {
-  try {
-    return await user_model.findById(user_id).lean();
   } catch (e) {
     throw new Error('User not found');
   }
@@ -218,7 +213,7 @@ export async function match(params: MatchParams) {
 
 
     mate.mates.push({
-      _id: user._id,
+      _id: user._id.toString(),
       name: user.name,
       img: user.img
     });
@@ -353,17 +348,17 @@ export async function unsubscribe(params: UnRegisterNotificationParams): Promise
 }
 
 
-export async function onLoginEvent(params: OnLoginEventParams): Promise<Res<void>> {
+export async function onLoginEvent(params: OnLoginEventParams): Promise<any> {
   try {
     trackEvent(params.user_id, mixpanelEvents.login);
-    await user_model.updateOne(
+
+    const user = await user_model.findOneAndUpdate(
       { _id: params.user_id, 'subscriptions.fingerprint': params.fingerprint },
-      {
-        $set: {
-          'subscriptions.$.logged_in': params.loggedIn
-        }
-      }
-    );
+      { $set: { 'subscriptions.$.logged_in': params.loggedIn } },
+      { new: true } // Return the updated document
+    ).lean();
+
+    return user;
   } catch (e) {
     throw new Error('Failed to update subscriptions');
   }
@@ -662,8 +657,6 @@ export async function cancelSendMateRequest(params: SendMateRequestParams): Prom
   }
 }
 
-// the sender is the one cancelling the friendship request
-// the receiver is the one that originally send the request
 export async function refuseSendMateRequest(params: SendMateRequestParams): Promise<void> {
   try {
     await Promise.all([
@@ -685,19 +678,34 @@ export async function refuseSendMateRequest(params: SendMateRequestParams): Prom
 
 export async function getPartialUsers(user_ids: string[]): Promise<Mate[]> {
   try {
-    return await user_model
+    const docs = await user_model
       .find({
         _id: { $in: user_ids }
-      }, { _id: 1, img: 1, name: 1 })
+      }, { _id: 1, img: 1, name: 1, last_seen_version: 1 })
       .lean();
+
+    // Map to convert ObjectId to string
+    return docs.map(doc => ({
+      ...doc,
+      _id: doc._id.toString()
+    })) as unknown as Mate[];
   } catch (e: any) {
     throw new Error(e);
   }
 }
 
-export async function getPartialUser(user_id: string): Promise<Res<Mate>> {
+export async function getPartialUser(user_id: string): Promise<Mate | null> {
   try {
-    return await user_model.findById(user_id, { _id: 1, img: 1, name: 1 }).lean();
+    const doc = await user_model
+      .findById(user_id, { _id: 1, img: 1, name: 1 })
+      .lean();
+
+    if (!doc) return null;
+
+    return {
+      ...doc,
+      _id: doc._id.toString()
+    } as unknown as Mate;
   } catch (e: any) {
     throw new Error(e);
   }
@@ -709,16 +717,21 @@ export async function searchMate(
   limit = 10
 ): Promise<Mate[]> {
   try {
-    return await user_model
+    const docs = await user_model
       .find(
         {
           _id: { $ne: userId },
-          name: { $regex: `^${mateName}`, $options: 'i' }    // starts with search (case-insensitive)
+          name: { $regex: `^${mateName}`, $options: 'i' }
         },
         { _id: 1, img: 1, name: 1 }
       )
       .limit(limit)
       .lean();
+
+    return docs.map(doc => ({
+      ...doc,
+      _id: doc._id.toString()
+    })) as unknown as Mate[];
   } catch (e: any) {
     throw new Error(e.message || e);
   }

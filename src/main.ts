@@ -37,6 +37,7 @@ const io = new Server(server, {
     credentials: true
   }
 });
+app.context.io = io;
 
 const port = process.env.PORT || 4000;
 export const minimum_supported_version = '0.2.0';
