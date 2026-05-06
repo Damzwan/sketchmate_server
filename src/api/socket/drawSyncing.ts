@@ -135,6 +135,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
     // Join the room
     socket.join(roomId);
+    socket.data.currentLobbyId = roomId;
     if (isPublic) broadcastLobbyOccupancy(io);
 
     const roomState = getOrCreateRoomState(roomId);
@@ -291,46 +292,46 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
 
   socket.on('disconnecting', () => {
-    const rooms = Array.from(socket.rooms);
-    const userId = socket.data.user._id.toString();
+    const roomId = socket.data.currentLobbyId;
+    const userId = socket.data.user?._id.toString();
 
-    rooms.forEach((roomId) => {
-      if (roomId === socket.id) return;
+    console.log(roomId);
 
-      const roomState = getOrCreateRoomState(roomId);
+    if (!roomId) return;
 
-      // 1. Start the countdown for the delayed broadcast
-      const timeoutId = setTimeout(() => {
-        // Time is up! They didn't reconnect. Announce they left.
-        roomState.ghostUsers.delete(userId);
+    const roomState = ROOM_STATES.get(roomId);
+    if (!roomState) return;
 
-        io.to(roomId).emit('user-left', {
-          user: socket.data.user,
-          timestamp: new Date().toISOString(),
-          id: uuidv4()
-        });
+    const timeoutId = setTimeout(() => {
+      roomState.ghostUsers.delete(userId);
 
-        if (PUBLIC_LOBBY_ROOMS.has(roomId)) {
-          broadcastLobbyOccupancy(io);
-        }
-      }, DISCONNECT_GRACE_PERIOD_MS);
+      io.to(roomId).emit('user-left', {
+        user: socket.data.user,
+        timestamp: new Date().toISOString(),
+        id: uuidv4()
+      });
 
-      // 2. Save them as a Ghost so we can rescue them if they rejoin
+      if (PUBLIC_LOBBY_ROOMS.has(roomId)) {
+        broadcastLobbyOccupancy(io);
+      }
+    }, DISCONNECT_GRACE_PERIOD_MS);
+
+    if (userId) {
       roomState.ghostUsers.set(userId, {
         disconnectTimeMs: Date.now(),
         timeoutId: timeoutId
       });
+    }
 
-      // 3. Room Cleanup check (still valid, but respects your 5-minute timeout)
-      const room = io.sockets.adapter.rooms.get(roomId);
-      if (room && room.size === 1) {
-        scheduleRoomCleanup(roomId);
-      }
-    });
+    const room = io.sockets.adapter.rooms.get(roomId);
+    if (room && room.size === 1) {
+      scheduleRoomCleanup(roomId);
+    }
   });
 
   socket.on('leave-room', async ({ roomId }) => {
     socket.leave(roomId);
+    socket.data.currentLobbyId = null;
 
     socket.to(roomId).emit('user-left', {
       user: socket.data.user,
