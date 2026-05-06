@@ -295,8 +295,6 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     const roomId = socket.data.currentLobbyId;
     const userId = socket.data.user?._id.toString();
 
-    console.log(roomId);
-
     if (!roomId) return;
 
     const roomState = ROOM_STATES.get(roomId);
@@ -351,11 +349,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
   });
 
   socket.on('send-canvas-state', ({ targetSocketId, canvasState, snapshotSequenceId, isBackgroundUpdate }) => {
-    // Filter out the socket's own ID AND the lobby watcher room
-    // should just pass as param in v2...
-    const roomId = Array.from(socket.rooms).find(r =>
-      r !== socket.id && r !== 'public-lobby-watchers'
-    );
+    const roomId = socket.data.currentLobbyId;
 
     if (!roomId) return;
 
