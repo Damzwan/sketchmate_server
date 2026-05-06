@@ -6,6 +6,8 @@ import { FeedPost } from '../../types/types';
 import { s3Creator } from '../../mongodb';
 import { CONTAINER } from '../../s3';
 import fs from 'fs';
+import { conversation_model } from '../../models/conversation.model';
+import { isUserOnline } from '../socket/socket';
 
 export const userRouter = new Router();
 
@@ -30,7 +32,7 @@ userRouter.put('/follow/:target_id', requireAuth, async (ctx) => {
   ctx.status = 200;
   ctx.body = { success: true };
 });
-``
+``;
 /**
  * USER POSTS: Get all active posts for a specific user
  */
@@ -72,13 +74,24 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
     }, {} as Record<string, string>);
 
     // 3. Final Assembly
+
+    const formattedAuthor = authorInfo ? {
+      _id: authorInfo._id.toString(),
+      name: authorInfo.name,
+      img: authorInfo.img
+    } : {
+      _id: targetUserId,
+      name: 'Unknown',
+      img: ''
+    };
+
     const hydratedPosts: FeedPost[] = posts.map(post => {
       const postIdStr = post._id.toString();
 
       return {
         _id: postIdStr,
         author_id: post.author_id.toString(),
-        author: authorInfo || { _id: targetUserId, name: 'Unknown', img: '' },
+        author: formattedAuthor,
         drawing_url: post.drawing_url,
         image_url: post.image_url,
         thumbnail_url: post.thumbnail_url,
@@ -164,4 +177,64 @@ userRouter.post('/upload-image', requireAuth, async (ctx) => {
     ctx.status = 500;
     ctx.body = { error: 'Failed to upload profile image' };
   }
+});
+
+
+userRouter.post('/block', requireAuth, async (ctx) => {
+  const current_user_id = ctx.state.user._id; // Assuming auth middleware
+  const { block_id } = ctx.request.body;
+
+  if (!block_id) {
+    return ctx.throw(400, 'block_id is required');
+  }
+
+  // 1. Add to blocked_users array using $addToSet (prevents duplicates)
+  await user_model.findByIdAndUpdate(current_user_id, {
+    $addToSet: { blocked_users: block_id }
+  });
+
+  // 2. Remove them from friends/mates arrays if they exist
+  await user_model.findByIdAndUpdate(current_user_id, {
+    $pull: {
+      friends: block_id,
+      // If using legacy string array for mates:
+      mates: block_id
+    }
+  });
+
+  // 3. (Optional) Prevent existing pending chats from showing up
+  // If you added a 'blocked' status to your conversation model, do this:
+  await conversation_model.updateMany(
+    { participants: { $all: [current_user_id, block_id] } },
+    { status: 'blocked' } // Only do this if 'blocked' is in your schema's enum!
+  );
+
+  ctx.status = 200;
+  ctx.body = { success: true, message: 'User blocked successfully' };
+});
+
+userRouter.get('/online-friends', requireAuth, async (ctx) => {
+  const user_id = ctx.state.user._id;
+
+  const user = await user_model.findById(user_id).lean();
+  if (!user) return ctx.throw(404);
+
+  // Combine new friends and legacy mates
+  const friendsToCheck = [
+    ...(user.friends || []),
+  ].map(id => id.toString());
+
+  // Use Promise.all to check all friends in parallel
+  const onlineStatusResults = await Promise.all(
+    friendsToCheck.map(async (friendId) => {
+      const online = await isUserOnline(ctx.app.context.io, friendId);
+      return online ? friendId : null;
+    })
+  );
+
+  // Filter out the nulls (offline users)
+  const onlineIds = onlineStatusResults.filter((id): id is string => id !== null);
+
+  ctx.status = 200;
+  ctx.body = onlineIds;
 });

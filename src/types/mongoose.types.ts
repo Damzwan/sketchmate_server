@@ -1,7 +1,7 @@
-import { Document } from 'mongoose';
+import { Document, Types } from 'mongoose';
 
 export type AsDocument<T, O extends keyof T = never> =
   Omit<T, O | '_id'> &
-  { _id: any } &
-  { [K in O]: any } &
+  { _id: Types.ObjectId } &
+  { [K in O]: T[K] extends Array<any> ? any[] : any } &
   Document;
