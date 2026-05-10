@@ -51,12 +51,12 @@ export interface User {
   stickers: string[];
   emblems: string[];
   saved: Saved[];
-  mate_requests_sent: string[];
-  mate_requests_received: string[];
+  mate_requests_sent: string[]; // @deprecated
+  mate_requests_received: string[]; // @deprecated
   subscriptions: NotificationSubscription[];
   balloon?: {
     sent?: string,
-    received?: string,
+    received?: string, // @deprecated
     disabled?: boolean,
     last_received_at?: Date,
   };
@@ -387,6 +387,30 @@ export interface BaseConversation {
 export interface PopulatedConversation extends Omit<BaseConversation, 'participants' | 'last_message'> {
   participants: Mate[];
   last_message?: BaseMessage;
+}
+
+export interface UserProfileData {
+  profile: {
+    _id: string;
+    name: string;
+    description: string;
+    img: string;
+    stats: {
+      followers: number;
+      following: number;
+      friends: number;
+      posts: number;
+    };
+    relationship: {
+      isFollowing: boolean;
+      isFriend: boolean;
+    };
+  };
+  posts: Array<{
+    _id: string;
+    thumbnail_url: string;
+    aspect_ratio: number;
+  }>;
 }
 
 

@@ -188,12 +188,10 @@ userRouter.post('/block', requireAuth, async (ctx) => {
     return ctx.throw(400, 'block_id is required');
   }
 
-  // 1. Add to blocked_users array using $addToSet (prevents duplicates)
   await user_model.findByIdAndUpdate(current_user_id, {
     $addToSet: { blocked_users: block_id }
   });
 
-  // 2. Remove them from friends/mates arrays if they exist
   await user_model.findByIdAndUpdate(current_user_id, {
     $pull: {
       friends: block_id,
@@ -202,11 +200,9 @@ userRouter.post('/block', requireAuth, async (ctx) => {
     }
   });
 
-  // 3. (Optional) Prevent existing pending chats from showing up
-  // If you added a 'blocked' status to your conversation model, do this:
   await conversation_model.updateMany(
     { participants: { $all: [current_user_id, block_id] } },
-    { status: 'blocked' } // Only do this if 'blocked' is in your schema's enum!
+    { status: 'blocked' }
   );
 
   ctx.status = 200;
@@ -221,7 +217,7 @@ userRouter.get('/online-friends', requireAuth, async (ctx) => {
 
   // Combine new friends and legacy mates
   const friendsToCheck = [
-    ...(user.friends || []),
+    ...(user.friends || [])
   ].map(id => id.toString());
 
   // Use Promise.all to check all friends in parallel
@@ -237,4 +233,60 @@ userRouter.get('/online-friends', requireAuth, async (ctx) => {
 
   ctx.status = 200;
   ctx.body = onlineIds;
+});
+
+userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
+  const { user_id: targetId } = ctx.params;
+  const viewer_id = ctx.state.user._id.toString();
+
+  try {
+    const user = await user_model.findById(targetId).lean();
+    if (!user) {
+      ctx.status = 404;
+      ctx.body = { error: 'User not found' };
+      return;
+    }
+
+    // Get the first few posts for the profile grid preview
+    const posts = await post_model.find({
+      author_id: targetId,
+      status: 'active'
+    })
+      .sort({ createdAt: -1 })
+      .limit(9)
+      .select('_id thumbnail_url image_url aspect_ratio')
+      .lean();
+
+    const stats = {
+      followers: user.followers?.length || 0,
+      following: user.following?.length || 0,
+      friends: user.friends?.length || 0,
+      posts: await post_model.countDocuments({ author_id: targetId, status: 'active' })
+    };
+
+    const relationship = {
+      isFollowing: user.followers?.some(id => id.toString() === viewer_id),
+      isFriend: user.friends?.some(id => id.toString() === viewer_id)
+    };
+
+    ctx.status = 200;
+    ctx.body = {
+      profile: {
+        _id: user._id,
+        name: user.name,
+        description: user.description || '',
+        img: user.img,
+        stats,
+        relationship
+      },
+      posts: posts.map(p => ({
+        _id: p._id.toString(),
+        thumbnail_url: p.thumbnail_url || p.image_url,
+        aspect_ratio: p.aspect_ratio
+      }))
+    };
+  } catch (error) {
+    console.error('Fetch profile error:', error);
+    ctx.status = 500;
+  }
 });
