@@ -51,8 +51,8 @@ export interface User {
   stickers: string[];
   emblems: string[];
   saved: Saved[];
-  mate_requests_sent: string[]; // @deprecated
-  mate_requests_received: string[]; // @deprecated
+  mate_requests_sent: string[];
+  mate_requests_received: string[];
   subscriptions: NotificationSubscription[];
   balloon?: {
     sent?: string,
@@ -372,16 +372,26 @@ export interface BaseMessage {
 }
 
 // 2. The Raw Conversation (Unpopulated)
+export type ConversationStatus =
+  | 'active'
+  | 'pending'
+  | 'blocked'
+  | 'temporary'
+  | 'mate_pending'
+  | 'expired';
+
 export interface BaseConversation {
   _id: string;
   participants: string[];
-  status: 'active' | 'pending' | 'blocked';
+  status: ConversationStatus;
   initiator_id?: string;
   last_message?: string;
-  // IMPORTANT: Mongoose Maps become standard JSON objects over HTTP
   unread_counts: Record<string, number>;
-  createdAt: string; // Added
-  updatedAt: string; // Added
+  createdAt: string;
+  updatedAt: string;
+  trial_expires_at?: string;
+  cooldown_until?: string; // 48h re-match lock
+  deleted_at?: string;     // 30-day cleanup timer
 }
 
 export interface PopulatedConversation extends Omit<BaseConversation, 'participants' | 'last_message'> {

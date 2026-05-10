@@ -28,7 +28,7 @@ const PUBLIC_LOBBY_ROOMS = new Map<string, PublicLobby>([
 ]);
 
 const ROOM_STATES = new Map();
-const MAX_BUFFER_SIZE = 100;
+const MAX_BUFFER_SIZE = 5;
 const DISCONNECT_GRACE_PERIOD_MS = 15000;
 const MAX_MESSAGE_BUFFER = 50;
 const ROOM_CLEANUP_TIMEOUT_MS = 30000;
@@ -419,7 +419,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
     roomState.currentSequenceId += 1;
 
-    roomState.actionBuffer.push({ sequenceId: roomState.currentSequenceId, ...action });
+    roomState.actionBuffer.push({ sequenceId: roomState.currentSequenceId, ...action, userId: socket.data.user._id });
     if (roomState.actionBuffer.length > MAX_BUFFER_SIZE) {
       roomState.actionBuffer.shift();
     }

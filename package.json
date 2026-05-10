@@ -17,6 +17,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1029.0",
     "@koa/cors": "5.0.0",
     "axios": "1.6.0",
+    "dayjs": "^1.11.20",
     "dotenv": "^16.0.3",
     "firebase-admin": "^11.7.0",
     "koa": "^2.14.1",
