@@ -32,6 +32,7 @@ import { user_model } from '../../models/user.model';
 import zlib from 'zlib';
 import { promisify } from 'util';
 import { registerChatHandlers } from './chat.socket';
+import { conversation_model } from '../../models/conversation.model';
 
 const inflateAsync = promisify(zlib.inflate);
 
@@ -49,40 +50,67 @@ export function registerSocketHandlers(io: Server) {
     registerChatHandlers(io, socket);
 
     socket.on(SOCKET_ENDPONTS.login, async (params: { _id: string, version: string }) => {
-      // 1. Your legacy map logic
-      if (!userSocketMap[params._id]) {
-        userSocketMap[params._id] = [];
+      const userIdString = params._id;
+
+      // 1. Manage Socket Mapping (Multi-device support)
+      if (!userSocketMap[userIdString]) {
+        userSocketMap[userIdString] = [];
       }
-      userSocketMap[params._id].push(socket);
+      userSocketMap[userIdString].push(socket);
 
-      // 2. Fetch User
-      // IMPORTANT: Make sure to fetch friends/mates so we can notify them!
-      const user = await user_model.findById(params._id, {
-        _id: 1, img: 1, name: 1, date_of_birth: 1, friends: 1, mates: 1
-      }).lean();
+      // 2. Fetch User & Identify Active Social Links
+      // We fetch the user and their active conversations in parallel for performance
+      const [user, activeConversations] = await Promise.all([
+        user_model.findById(userIdString, {
+          _id: 1, img: 1, name: 1, date_of_birth: 1, friends: 1, mates: 1
+        }).lean(),
+        conversation_model.find({
+          participants: userIdString,
+          status: { $in: ['active', 'temporary', 'mate_pending', 'expired'] }
+        }).select('participants').lean()
+      ]);
 
-      if (!user) return;
+      if (!user) {
+        socket.emit(SOCKET_ENDPONTS.login, { status: 'error', message: 'User not found' });
+        return;
+      }
 
+      // 3. Set Socket Data & Join Personal Room
       socket.data.user = {
-        _id: user._id.toString(),
+        _id: userIdString,
         name: user.name,
         img: user.img,
         date_of_birth: user.date_of_birth,
         version: params.version || null
       };
+      socket.join(userIdString);
 
-      // 3. Socket.io Room Logic
-      socket.join(user._id.toString());
+      // 4. Calculate "Watcher" Rooms (Who needs to know I'm online?)
+      const watcherSet = new Set<string>();
 
-      // 4. Notify Watchers (Friends)
-      const watcherRooms = [
-        ...(user.friends || []).map(id => id.toString()),
-        ...(user.mates || []).map(m => typeof m === 'string' ? m : (m as any)._id.toString())
-      ];
+      // A. Add Permanent Friends/Mates
+      if (user.friends) user.friends.forEach(id => watcherSet.add(id.toString()));
+      if (user.mates) {
+        user.mates.forEach((m: any) => {
+          const mId = typeof m === 'string' ? m : m._id.toString();
+          watcherSet.add(mId);
+        });
+      }
+
+      // B. Add Temporary & Expired Partners from Active Conversations
+      activeConversations.forEach(convo => {
+        convo.participants.forEach(p => {
+          const pId = p.toString();
+          if (pId !== userIdString) watcherSet.add(pId);
+        });
+      });
+
+      // 5. Emit Online Status to the unique list of watchers
+      const watcherRooms = Array.from(watcherSet);
 
       if (watcherRooms.length > 0) {
         socket.to(watcherRooms).emit('friend:online', {
-          user_id: user._id.toString(),
+          user_id: userIdString,
           status: 'online'
         });
       }
