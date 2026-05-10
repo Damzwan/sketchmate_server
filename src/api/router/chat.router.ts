@@ -23,28 +23,22 @@ chatRouter.get('/active', async (ctx) => {
 chatRouter.get('/requests', async (ctx) => {
   const user_id = ctx.state.user._id.toString();
 
-  ctx.body = await conversation_model.find({
-    participants: user_id,
-    status: 'pending',
-    initiator_id: { $ne: user_id }
-  })
-    .populate('last_message')
-    .populate('participants', 'name img _id')
-    .lean();
-});
+  try {
+    const requests = await conversation_model.find({
+      participants: user_id,
+      status: 'pending'
+    })
+      .populate('last_message')
+      .populate('participants', 'name img _id')
+      .sort({ updatedAt: -1 })
+      .lean();
 
-chatRouter.get('/requests', async (ctx) => {
-  const user_id = ctx.state.user._id.toString();
-
-  const requests = await conversation_model.find({
-    participants: user_id,
-    status: 'pending'
-  })
-    .populate('last_message')
-    .populate('participants', 'name img _id')
-    .lean();
-
-  ctx.body = requests;
+    ctx.body = requests;
+  } catch (error) {
+    console.error('Failed to fetch chat requests:', error);
+    ctx.status = 500;
+    ctx.body = { error: 'Internal server error' };
+  }
 });
 
 chatRouter.get('/:id/messages', async (ctx) => {
