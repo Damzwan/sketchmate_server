@@ -65,6 +65,10 @@
     "onlyBuiltDependencies": [
       "protobufjs",
       "sharp"
+    ],
+    "approveBuildsFor": [
+      "protobufjs",
+      "sharp"
     ]
   }
 }
