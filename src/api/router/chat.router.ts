@@ -46,7 +46,10 @@ chatRouter.get('/requests', async (ctx) => {
 
 chatRouter.get('/:id/messages', async (ctx) => {
   const { id } = ctx.params;
-  const { before } = ctx.query; // A timestamp to fetch messages older than this
+  const { before, limit } = ctx.query;
+
+  // Dynamic limit with a safety cap of 100 (so users can't crash your DB)
+  const parsedLimit = Math.min(parseInt(limit as string, 10) || 20, 100);
 
   const query: any = { conversation_id: id };
   if (before) {
@@ -56,10 +59,14 @@ chatRouter.get('/:id/messages', async (ctx) => {
   const messages = await message_model
     .find(query)
     .sort({ createdAt: -1 })
-    .limit(50)
+    .limit(parsedLimit)
     .lean();
 
-  ctx.body = messages.reverse();
+  ctx.body = {
+    data: messages.reverse(),
+    hasMore: messages.length === parsedLimit,
+    limit: parsedLimit
+  };
 });
 
 

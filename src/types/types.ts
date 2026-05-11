@@ -369,6 +369,7 @@ export interface BaseMessage {
   is_invite: boolean;
   createdAt: string;
   updatedAt: string;
+  status?: string
 }
 
 // 2. The Raw Conversation (Unpopulated)

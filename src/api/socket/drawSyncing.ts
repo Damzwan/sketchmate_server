@@ -489,14 +489,14 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     trackEvent(socket.data.user._id, mixpanelEvents.inviteLobby);
   });
 
-  socket.on('lobby-message', ({ roomId, message }) => {
+  socket.on('lobby-message', ({ roomId, message, tempId }) => {
     const roomState = getOrCreateRoomState(roomId);
 
     const payload = {
       message,
       member: socket.data.user,
       timestamp: new Date().toISOString(),
-      id: uuidv4()
+      id: tempId ? tempId : uuidv4()
     };
 
     // Add to buffer and enforce size limit
