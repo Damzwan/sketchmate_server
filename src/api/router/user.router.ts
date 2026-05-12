@@ -121,15 +121,36 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
 /**
  * UPDATE PROFILE: Name and description
  */
+/**
+ * UPDATE PROFILE: Name, Description, and Customization
+ */
 userRouter.put('/profile', requireAuth, async (ctx) => {
-  const { name, description } = ctx.request.body;
+  const { name, description, customization } = ctx.request.body;
   const user_id = ctx.state.user._id;
 
-  try {
-    await user_model.updateOne({ _id: user_id }, { $set: { name, description } });
+  const updateQuery: any = { $set: {} };
+
+  if (name !== undefined) updateQuery.$set.name = name;
+  if (description !== undefined) updateQuery.$set.description = description;
+
+  if (customization !== undefined) {
+    for (const [key, value] of Object.entries(customization)) {
+      updateQuery.$set[`customization.${key}`] = value;
+    }
+  }
+
+  if (Object.keys(updateQuery.$set).length === 0) {
     ctx.status = 200;
-    ctx.body = { message: 'Profile updated' };
+    ctx.body = { message: 'No changes provided' };
+    return;
+  }
+
+  try {
+    await user_model.updateOne({ _id: user_id }, updateQuery);
+    ctx.status = 200;
+    ctx.body = { message: 'Profile updated successfully' };
   } catch (error) {
+    console.error('Update profile error:', error);
     ctx.status = 500;
     ctx.body = { error: 'Failed to update profile' };
   }

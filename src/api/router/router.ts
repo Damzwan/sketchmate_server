@@ -83,6 +83,7 @@ router.get(ENDPOINTS.user, async (ctx) => {
       console.error('Migration error:', err);
     }
   }
+  if (!res.user.customization) res.user.customization = {}
 
   ctx.body = res;
 });
