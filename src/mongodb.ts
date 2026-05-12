@@ -711,17 +711,24 @@ export async function getPartialUser(user_id: string): Promise<Mate | null> {
   }
 }
 
+function escapeRegExp(string: string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export async function searchMate(
   mateName: string,
   userId: string,
   limit = 10
 ): Promise<Mate[]> {
   try {
+    // 1. Sanitize the input for safe regex searching
+    const safeSearchTerm = escapeRegExp(mateName);
+
     const docs = await user_model
       .find(
         {
           _id: { $ne: userId },
-          name: { $regex: `^${mateName}`, $options: 'i' }
+          name: { $regex: safeSearchTerm, $options: 'i' }
         },
         { _id: 1, img: 1, name: 1 }
       )
