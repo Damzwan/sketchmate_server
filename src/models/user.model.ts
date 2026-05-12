@@ -98,6 +98,8 @@ const user_schema = new Schema<AsDocument<User, 'friends' | 'blocked_users' | 'f
   stickers: { type: [String], default: [] },
   emblems: { type: [String], default: [] },
   saved: { type: [savedSchema], default: [] },
+  last_name_change: { type: Date, default: null },
+  subscription_tier: { type: String, default: 'free' },
 
 }, { timestamps: true });
 

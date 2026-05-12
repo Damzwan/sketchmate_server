@@ -118,42 +118,69 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
   }
 });
 
-/**
- * UPDATE PROFILE: Name and description
- */
-/**
- * UPDATE PROFILE: Name, Description, and Customization
- */
+
+// TODO: Move to shared config between FE and BE
+const NAME_CHANGE_COOLDOWN_DAYS = 31;
 userRouter.put('/profile', requireAuth, async (ctx) => {
-  const { name, description, customization } = ctx.request.body;
+  const { name, description, customization, subscription_tier } = ctx.request.body;
   const user_id = ctx.state.user._id;
 
-  const updateQuery: any = { $set: {} };
+  // 1. Fetch User and handle potential null (TS18047)
+  const user = await user_model.findById(user_id);
 
-  if (name !== undefined) updateQuery.$set.name = name;
-  if (description !== undefined) updateQuery.$set.description = description;
-
-  if (customization !== undefined) {
-    for (const [key, value] of Object.entries(customization)) {
-      updateQuery.$set[`customization.${key}`] = value;
-    }
-  }
-
-  if (Object.keys(updateQuery.$set).length === 0) {
-    ctx.status = 200;
-    ctx.body = { message: 'No changes provided' };
+  if (!user) {
+    ctx.status = 404;
+    ctx.body = { error: 'User not found' };
     return;
   }
 
-  try {
-    await user_model.updateOne({ _id: user_id }, updateQuery);
-    ctx.status = 200;
-    ctx.body = { message: 'Profile updated successfully' };
-  } catch (error) {
-    console.error('Update profile error:', error);
-    ctx.status = 500;
-    ctx.body = { error: 'Failed to update profile' };
+  const updateData: any = {};
+
+  if (subscription_tier && ['free', 'pro'].includes(subscription_tier)) {
+    updateData.subscription_tier = subscription_tier;
   }
+
+  // --- NAME CHANGE LOGIC ---
+  if (name && name !== user.name) {
+    const isPro = user.subscription_tier === 'pro';
+    const lastChange = user.last_name_change;
+    const daysSinceChange = lastChange ? dayjs().diff(dayjs(lastChange), 'day') : 999;
+
+    // Use constant for logic
+    if (!isPro && daysSinceChange < NAME_CHANGE_COOLDOWN_DAYS) {
+      ctx.status = 403;
+      ctx.body = {
+        error: 'Name change locked',
+        daysLeft: NAME_CHANGE_COOLDOWN_DAYS - daysSinceChange
+      };
+      return;
+    }
+
+    updateData.name = name;
+    updateData.last_name_change = new Date();
+  }
+
+  // --- BIO & CUSTOMIZATION ---
+  if (description !== undefined) updateData.description = description;
+
+  if (customization) {
+    // Dot notation update to preserve fields like unlocked_items
+    Object.keys(customization).forEach(key => {
+      updateData[`customization.${key}`] = customization[key];
+    });
+  }
+
+  // If no data to update, avoid unnecessary DB call
+  if (Object.keys(updateData).length === 0) {
+    ctx.status = 200;
+    ctx.body = { message: 'No changes to update' };
+    return;
+  }
+
+  await user_model.updateOne({ _id: user_id }, { $set: updateData });
+
+  ctx.status = 200;
+  ctx.body = { message: 'Profile updated' };
 });
 
 /**
