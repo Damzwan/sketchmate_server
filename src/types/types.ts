@@ -68,6 +68,7 @@ export interface User {
   friends: string[];
   blocked_users: string[];
   customization: UserCustomization;
+  last_name_change?: string;
 }
 
 export interface UserCustomization {
@@ -96,6 +97,7 @@ export interface UpdateProfilePayload {
   name?: string;
   description?: string;
   customization?: UserCustomization;
+  subscription_tier?: string;
 }
 
 export type BalloonStatus = 'pending' | 'paired' | 'accepted';
@@ -399,7 +401,7 @@ export interface BaseMessage {
   is_invite: boolean;
   createdAt: string;
   updatedAt: string;
-  status?: string
+  status?: string;
 }
 
 // 2. The Raw Conversation (Unpopulated)
