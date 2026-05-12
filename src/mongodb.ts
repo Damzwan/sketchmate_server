@@ -33,7 +33,7 @@ import {
 import { CONTAINER, S3Creator } from './s3';
 import mongoose, { Schema } from 'mongoose';
 import { user_model } from './models/user.model';
-import { createThumbnail, imgToEmblem, removeBackground } from './helper';
+import { createThumbnail, escapeRegExp, imgToEmblem, removeBackground } from './helper';
 import { ObjectId } from 'mongodb';
 import { inbox_model } from './models/inbox.model';
 import * as fs from 'fs';
@@ -709,10 +709,6 @@ export async function getPartialUser(user_id: string): Promise<Mate | null> {
   } catch (e: any) {
     throw new Error(e);
   }
-}
-
-function escapeRegExp(string: string) {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export async function searchMate(

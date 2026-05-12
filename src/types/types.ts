@@ -73,24 +73,24 @@ export interface User {
 
 export interface UserCustomization {
   // Selection IDs
-  titleId?: string;       // ID from the TITLES array
-  fontFamily?: string;    // ID from the FONTS array
-  fontEffect?: string;    // ID from the EFFECTS array
-  cardBg?: string;        // ID for the Tailwind class (frost, blush, etc.)
+  titleId?: string;
+  fontFamily?: string;
+  fontEffect?: string;
+  cardBg?: string;
 
   // Raw Values (Hex/Paths)
-  cardBgColor?: string;       // Custom hex for canvas
-  nameColor?: string;         // Custom hex for text
-  descColor?: string;         // Custom hex for bio
-  avatarBorderColor?: string; // Custom hex for avatar ring
-  cardBorderColor?: string;   // Custom hex for card border
-  signatureColor?: string;    // Custom hex for ink
+  cardBgColor?: string;
+  nameColor?: string;
+  descColor?: string;
+  avatarBorderColor?: string;
+  cardBorderColor?: string;
+  signatureColor?: string;
 
-  signaturePath?: string;     // The SVG "d" attribute string
-  signatureViewBox?: string;  // The original canvas dimensions for scaling
+  signaturePath?: string;
+  signatureViewBox?: string;
 
   // Inventory
-  unlocked_items?: string[];  // List of IDs user has purchased or earned
+  unlocked_items?: string[];
 }
 
 export interface UpdateProfilePayload {

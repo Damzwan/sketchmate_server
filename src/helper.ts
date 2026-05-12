@@ -167,3 +167,7 @@ export function startVitalsMonitor() {
     }
   }, 5000);
 }
+
+export function escapeRegExp(string: string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
