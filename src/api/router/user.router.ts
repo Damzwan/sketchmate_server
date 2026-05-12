@@ -9,6 +9,7 @@ import { s3Creator } from '../../mongodb';
 import { CONTAINER } from '../../s3';
 import { FeedPost } from '../../types/types';
 import { isUserOnline } from '../socket/socket';
+import { escapeRegExp } from '../../helper';
 
 export const userRouter = new Router();
 
@@ -413,6 +414,7 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
         name: user.name,
         description: user.description || '',
         img: user.img,
+        last_seen_version: user.last_seen_version,
         stats,
         relationship
       },
@@ -478,5 +480,43 @@ userRouter.put('/unfriend/:target_id', requireAuth, async (ctx) => {
     console.error('Unfriend error:', error);
     ctx.status = 500;
     ctx.body = { error: 'Failed to unfriend' };
+  }
+});
+
+userRouter.get('/:user_id/network/:type', requireAuth, async (ctx) => {
+  const { user_id, type } = ctx.params;
+  const { search, page = 1, limit = 20 } = ctx.query;
+  const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
+
+  try {
+    const user = await user_model.findById(user_id).select('friends following followers');
+    if (!user) return ctx.throw(404, 'User not found');
+
+    // 1. Determine which ID array to look in
+    let targetIds: string[] = [];
+    if (type === 'mates') targetIds = user.friends || [];
+    else if (type === 'following') targetIds = user.following || [];
+    else if (type === 'followers') targetIds = user.followers || [];
+
+    // 2. Build Query
+    const query: any = { _id: { $in: targetIds } };
+
+    if (search && (search as string).length >= 2) {
+      const safeSearch = escapeRegExp(search as string);
+      query.name = { $regex: safeSearch, $options: 'i' };
+    }
+
+    // 3. Execute with Pagination
+    const members = await user_model
+      .find(query)
+      .select('_id name img description last_seen_version')
+      .skip(skip)
+      .limit(parseInt(limit as string))
+      .lean();
+
+    ctx.body = members;
+  } catch (error) {
+    ctx.status = 500;
+    ctx.body = { error: 'Failed to fetch network' };
   }
 });
