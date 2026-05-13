@@ -1,11 +1,11 @@
 import mongoose, { Schema } from 'mongoose';
-import { Balloon } from '../types/types';
+import { BalloonDocument } from '../types/mongoose.types';
 
-const balloon_schema = new Schema<Omit<Balloon, 'sender'> & {
-  sender: Schema.Types.ObjectId,
-}>(
+const { ObjectId } = Schema.Types;
+
+const balloon_schema = new Schema<BalloonDocument>(
   {
-    sender: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    sender: { type: ObjectId, ref: 'users', required: true },
     message: { type: String, default: '' },
     drawingJsonUrl: { type: String, required: true },
     img: { type: String, required: true },
@@ -19,15 +19,21 @@ const balloon_schema = new Schema<Omit<Balloon, 'sender'> & {
     createdAt: { type: Date, default: Date.now },
     matchedAt: { type: Date, default: Date.now, required: false }, // @deprecated
     lastActivityAt: { type: Date, default: Date.now },
-    pairedUser: { type: Schema.Types.ObjectId, default: null, required: false }, // @deprecated
-    pairedBalloon: { type: Schema.Types.ObjectId, default: null, required: false }, // @deprecated
+
+    pairedUser: { type: ObjectId, ref: 'users', default: null, required: false }, // @deprecated
+    pairedBalloon: { type: ObjectId, ref: 'balloon', default: null, required: false }, // @deprecated
+
     cancelledBalloons: [
-      { type: Schema.Types.ObjectId, ref: 'balloon', default: [] }
+      { type: ObjectId, ref: 'balloon', default: [] }
     ],
     version: { type: Number, default: 1 },
-    rejected_by: [{ type: Schema.Types.ObjectId, ref: 'User' }]
+    rejected_by: [{ type: ObjectId, ref: 'users' }]
   },
   { collection: 'balloon' }
 );
 
-export const balloon_model = mongoose.model('balloon', balloon_schema);
+// Indexing for the "Hot Potato" matching or general search
+balloon_schema.index({ status: 1, lastActivityAt: -1 });
+balloon_schema.index({ sender: 1 });
+
+export const balloon_model = mongoose.model<BalloonDocument>('balloon', balloon_schema);

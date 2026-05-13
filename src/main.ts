@@ -89,4 +89,3 @@ cron.schedule('0 */1 * * *', async () => {
   await unPairBalloons();
   await removeExpiredBalloons();
 });
-

@@ -1,11 +1,13 @@
 import { Server, Socket } from 'socket.io';
 import {
   AcceptBalloonParams,
-  AcceptBalloonRes, Balloon,
+  AcceptBalloonRes,
+  Balloon,
   CancelBalloonParams,
   RejectBalloonRes,
   SOCKET_ENDPONTS
 } from '../../types/types';
+import { BalloonDocument } from '../../types/mongoose.types';
 import { user_model } from '../../models/user.model';
 import {
   acceptBalloon,
@@ -32,9 +34,9 @@ import { balloon_model } from '../../models/balloon.model';
 import { userSocketMap } from './socket';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
 
-
 export function registerV2BalloonHandlers(io: Server, socket: Socket) {
 
+  // --- V2 REFUSE BALLOON ---
   socket.on(SOCKET_ENDPONTS.v2_refuse_balloon, async (params: {
     balloon_id: string,
     sender_id: string,
@@ -60,10 +62,10 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
     const balloon = await balloon_model.findByIdAndUpdate(
       params.balloon_id,
       { $addToSet: { rejected_by: params.user_id } },
-      { new: true } // Returns the updated document
-    );
+      { new: true }
+    ).lean() as unknown as BalloonDocument | null;
 
-    // 4. Reroute (The skip list in RAM is optional now, but good for speed)
+    // 4. Reroute
     if (!activeBalloonSkips.has(params.balloon_id)) {
       activeBalloonSkips.set(params.balloon_id, new Set());
     }
@@ -76,10 +78,12 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
     else trackEvent(params.user_id, mixpanelEvents.balloon_v2_refuse);
   });
 
+  // --- BALLOON WAITING ROOM CHECK ---
   socket.on(SOCKET_ENDPONTS.balloon_check, async (params: { user_id: string }) => {
     void triageWaitingRoom(params.user_id, socket);
   });
 
+  // --- V2 ACCEPT BALLOON ---
   socket.on(SOCKET_ENDPONTS.v2_accept_balloon, async (params: {
     balloon_id: string,
     sender_id: string,
@@ -108,16 +112,16 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
         matchedAt: new Date(),
         pairedUser: params.user_id
       }
-    }, { new: true });
+    }, { new: true }).lean() as unknown as BalloonDocument | null;
 
     if (!balloon) return;
 
-    // 4. Execute the Match Procedure
+    // 4. Execute the Match Procedure (Creates Relationship, Conversation, updates Mates)
     const matchRes = await match({ _id: params.user_id, mate_id: params.sender_id });
     if (!matchRes) return;
 
     // 5. Fetch the acceptor to extract their name for the notification
-    const acceptor = await user_model.findById(params.user_id);
+    const acceptor: any = await user_model.findById(params.user_id).lean();
     if (!acceptor) return;
 
     // 6. Perform the Inbox Transplant (Cleanup)
@@ -128,7 +132,6 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
       params.sender_id,
       balloonMatchNotification(`${acceptor.name} caught your balloon!`)
     );
-
 
     // -> Alert the SENDER
     if (userSocketMap[params.sender_id]) {
@@ -147,26 +150,31 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
     trackEvent(params.user_id, mixpanelEvents.balloon_v2_accept);
   });
 
-
+  // --- V1 ACCEPT BALLOON (LEGACY) ---
   socket.on(SOCKET_ENDPONTS.accept_balloon, async (params: AcceptBalloonParams) => {
     const res = await acceptBalloon(params);
     if (!res) return;
+
     const [otherBalloon, balloon] = res;
+
     if (otherBalloon && otherBalloon.status == 'accepted') {
-      await acceptBalloonCleanUp({ balloon, otherBalloon });
+      await acceptBalloonCleanUp({
+        balloon: balloon as unknown as Balloon,
+        otherBalloon: otherBalloon as unknown as Balloon
+      });
 
-      const res = await match({ _id: params.user_id, mate_id: params.sender });
-      if (!res) return;
+      const matchRes = await match({ _id: params.user_id, mate_id: params.sender });
+      if (!matchRes) return;
 
       if (userSocketMap[params.user_id]) {
         userSocketMap[params.user_id].forEach((associatedSocket) => {
-          associatedSocket.emit(SOCKET_ENDPONTS.match, { mate: res.mate });
+          associatedSocket.emit(SOCKET_ENDPONTS.match, { mate: matchRes.mate });
         });
       }
 
       if (userSocketMap[params.sender]) {
         userSocketMap[params.sender].forEach((associatedSocket) => {
-          associatedSocket.emit(SOCKET_ENDPONTS.match, { mate: res.user });
+          associatedSocket.emit(SOCKET_ENDPONTS.match, { mate: matchRes.user });
         });
       }
       if (userSocketMap[params.sender]) {
@@ -186,8 +194,9 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
           } as AcceptBalloonRes);
         });
       }
-      if (res.mate.subscriptions.length > 0)
-        await sendNotification(res.mate.subscriptions, balloonMatchNotification(res.user.name));
+      if (matchRes.mate.subscriptions && matchRes.mate.subscriptions.length > 0) {
+        await sendNotification(matchRes.mate.subscriptions, balloonMatchNotification(matchRes.user.name));
+      }
     } else {
       await sendNotificationUser(params.sender, balloonAcceptNotification());
       if (userSocketMap[params.sender]) {
@@ -209,13 +218,19 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
     }
   });
 
+  // --- V1 REFUSE BALLOON (LEGACY) ---
   socket.on(SOCKET_ENDPONTS.refuse_balloon, async (params: AcceptBalloonParams) => {
     const res = await refuseBalloon(params);
     if (!res) return;
+
     const [otherBalloon, balloon] = res;
 
     await sendNotificationUser(params.sender, balloonRejectNotification());
-    void rejectBalloonCleanUp({ balloon, otherBalloon });
+
+    void rejectBalloonCleanUp({
+      balloon: balloon as unknown as Balloon,
+      otherBalloon: otherBalloon as unknown as Balloon
+    });
 
     if (userSocketMap[params.user_id]) {
       userSocketMap[params.user_id].forEach((associatedSocket) => {
@@ -230,6 +245,7 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
     }
   });
 
+  // --- V1 CANCEL BALLOON (LEGACY) ---
   socket.on(SOCKET_ENDPONTS.cancel_balloon, async (params: CancelBalloonParams) => {
     const otherBalloon = await cancelBalloon(params);
     if (!otherBalloon) return;
@@ -242,6 +258,7 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
     }
   });
 
+  // --- V2 CANCEL BALLOON ---
   socket.on(SOCKET_ENDPONTS.v2_cancel_balloon, async (params: { balloon_id: string, user_id: string }) => {
     if (activeBalloonTimeouts.has(params.balloon_id)) {
       clearTimeout(activeBalloonTimeouts.get(params.balloon_id)!);
@@ -258,19 +275,18 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
       activeBalloonSkips.delete(params.balloon_id);
     }
 
-    const balloonToDelete: Balloon | null = await balloon_model.findOne({ _id: params.balloon_id, sender: params.user_id });
+    const balloonToDelete = await balloon_model.findOne({ _id: params.balloon_id, sender: params.user_id }).lean() as unknown as BalloonDocument | null;
+
     await Promise.all([
       user_model.updateOne(
         { _id: params.user_id },
         { $set: { 'balloon.sent': null } }
       ),
       ...(balloonToDelete
-        ? [deleteBalloonS3(balloonToDelete), balloon_model.findByIdAndDelete(balloonToDelete._id)]
+        ? [deleteBalloonS3(balloonToDelete as unknown as Balloon), balloon_model.findByIdAndDelete(balloonToDelete._id)]
         : [])
     ]);
 
     trackEvent(params.user_id, mixpanelEvents.balloon_v2_cancel);
-
   });
 }
-

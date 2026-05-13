@@ -1,73 +1,95 @@
-import { user_model } from '../../models/user.model';
-import { conversation_model } from '../../models/conversation.model';
+import { Types } from 'mongoose';
 import { message_model } from '../../models/message.model';
+import { relationship_model } from '../../models/relationship.model';
+import { conversation_model } from '../../models/conversation.model';
+import { RelationshipDocument } from '../../types/mongoose.types';
 
-export const saveMessageLogic = async (sender_id: string, receiver_id: string, content: string) => {
-  // 1. Fetch both users in a single round-trip to the DB
-  const [sender, receiver] = await Promise.all([
-    user_model.findById(sender_id),
-    user_model.findById(receiver_id)
+export const saveMessageLogic = async (
+  sender_id: string,
+  receiver_id: string,
+  content: string,
+  rel: RelationshipDocument | null  // pass the full rel, not just the status string
+) => {
+  const sorted = [sender_id, receiver_id].sort();
+  const sortedUsers = sorted;
+  const senderOID = new Types.ObjectId(sender_id);
+
+  const sortedParticipants = sorted.map(id => new Types.ObjectId(id));
+
+
+  const conversation = await conversation_model.findOneAndUpdate(
+    { participants: sortedParticipants },  // exact match on sorted array
+    {
+      $setOnInsert: {
+        participants: sortedParticipants,
+        unread_counts: new Map([[receiver_id, 0], [sender_id, 0]])
+      }
+    },
+    { upsert: true, new: true }
+  );
+
+  // 2. Message + conversation meta update — run in parallel
+  const [message] = await Promise.all([
+    message_model.create({
+      conversation_id: conversation._id,
+      sender_id: senderOID,
+      content
+    }),
+    conversation_model.updateOne(
+      { _id: conversation._id },
+      {
+        $set: { last_message: conversation._id }, // will be overwritten below after create
+        $inc: { [`unread_counts.${receiver_id}`]: 1 }
+      }
+    )
   ]);
 
-  if (!receiver) throw new Error('User not found');
-  if (receiver.blocked_users.includes(sender_id as any)) {
-    throw new Error('Cannot send message to this user');
+  // 3. Now that we have the message _id, set last_message correctly
+  await conversation_model.updateOne(
+    { _id: conversation._id },
+    { $set: { last_message: message._id } }
+  );
+
+  // 4. Social graph: only on first contact
+  let updatedRel = rel;
+  if (!rel || rel.chat_status === 'none') {
+    updatedRel = await relationship_model.findOneAndUpdate(
+      { users: sortedUsers },
+      {
+        $setOnInsert: { users: sortedUsers },
+        $set: {
+          chat_status: 'pending_invite',
+          action_user_id: senderOID,
+          conversation_id: conversation._id
+        }
+      },
+      { upsert: true, new: true }
+    ).lean();
   }
 
-  let conversation = await conversation_model.findOne({
-    participants: { $all: [sender_id, receiver_id], $size: 2 }
-  });
-
-  // Backward compatible friend check
-  const isFriend = sender?.friends.some(id => id.toString() === receiver_id) ||
-    sender?.mates.some(m => (typeof m === 'string' ? m === receiver_id : (m as any)._id.toString() === receiver_id));
-
-  if (conversation) {
-    // Lock logic for pending requests
-    if (conversation.status === 'pending' && conversation.initiator_id?.toString() === sender_id) {
-      throw new Error('You can only send one message until they accept your invite.');
-    }
-    // If they were pending and you reply, they become "active" (or "temporary" based on your preference)
-    if (conversation.status === 'pending' && conversation.initiator_id?.toString() !== sender_id) {
-      conversation.status = 'active';
-    }
-  } else {
-    // NEW CONVERSATION
-    conversation = new conversation_model({
-      participants: [sender_id, receiver_id],
-      status: isFriend ? 'active' : 'pending',
-      initiator_id: sender_id,
-      unread_counts: { [receiver_id]: 1 }
-    });
-  }
-
-  const message = new message_model({
-    conversation_id: conversation._id,
-    sender_id,
-    content,
-    is_invite: !isFriend && conversation.status === 'pending'
-  });
-
-  await message.save();
-  conversation.last_message = message._id as any;
-
-  // Handle Unreads
-  const unreadMap = conversation.unread_counts as any;
-  const currentUnread = (unreadMap.get ? unreadMap.get(receiver_id) : unreadMap[receiver_id]) || 0;
-  if (unreadMap.set) unreadMap.set(receiver_id, currentUnread + 1);
-  else {
-    unreadMap[receiver_id] = currentUnread + 1;
-    conversation.markModified('unread_counts');
-  }
-
-  await conversation.save();
-
-  // 5. THE CRITICAL PART: Return a populated object for the Frontend
-  // This ensures resolvePartnerInfo(convoId) works instantly without a refresh.
-  const finalConvo = await conversation_model.findById(conversation._id)
-    .populate('participants', 'name img _id')
+  // 5. Single hydrated fetch — populate here instead of two separate queries
+  const finalConvo = await conversation_model
+    .findById(conversation._id)
+    .populate('participants', 'name img _id last_seen_version')
     .populate('last_message')
-    .lean();
+    .lean() as any;
 
-  return { message, conversation: finalConvo };
+  // 6. Merge rel data — no extra DB call, we already have it
+  if (updatedRel) {
+    finalConvo.status = updatedRel.chat_status;
+    finalConvo.initiator_id = updatedRel.action_user_id?.toString();
+    finalConvo.trial_expires_at = updatedRel.expires_at;
+    finalConvo.cooldown_until = updatedRel.cooldown_until;
+    finalConvo.relationship_id = updatedRel._id?.toString();
+
+    console.log('sender:', sender_id)
+    console.log('action_user_id from rel:', updatedRel.action_user_id?.toString())
+    console.log('initiator_id on finalConvo:', finalConvo.initiator_id)
+    console.log('participants order:', finalConvo.participants.map((p: any) => p._id.toString()))
+  }
+
+  return {
+    message: { ...message.toObject(), isOptimistic: false },
+    conversation: finalConvo
+  };
 };

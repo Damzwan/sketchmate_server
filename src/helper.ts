@@ -10,6 +10,11 @@ import v8 from 'v8';
 import { s3Creator } from './mongodb';
 import { CONTAINER } from './s3';
 import { isDev } from './main';
+import { user_model } from './models/user.model';
+import { relationship_model } from './models/relationship.model';
+import { AnyBulkWriteOperation, Types } from 'mongoose';
+import { RelationshipDocument, UserDocument } from './types/mongoose.types';
+import { post_model } from './models/post.model';
 
 export function parseParams<T>(params: ParsedUrlQuery | string): T {
   const newParams = typeof params === 'string' ? JSON.parse(params) : params;
@@ -170,4 +175,88 @@ export function startVitalsMonitor() {
 
 export function escapeRegExp(string: string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export async function migrateMatesToRelationships(userId: string, legacyMates: any[]) {
+  if (!legacyMates || legacyMates.length === 0) return;
+
+  const userOID = new Types.ObjectId(userId);
+
+  const uniqueMateIds = [...new Set(legacyMates.map(m =>
+    typeof m === 'string' ? m : m._id.toString()
+  ))];
+
+  const operations: any[] = uniqueMateIds.map(mateIdStr => {
+    const mateOID = new Types.ObjectId(mateIdStr);
+
+    const sortedOIDs = [userOID, mateOID].sort((a, b) =>
+      a.toString().localeCompare(b.toString())
+    );
+
+    return {
+      updateOne: {
+        filter: {
+          // Match the unique compound index exactly
+          'users.0': sortedOIDs[0],
+          'users.1': sortedOIDs[1]
+        },
+        update: {
+          $setOnInsert: {
+            users: sortedOIDs, // Only set on creation to avoid "matched twice"
+            createdAt: new Date()
+          },
+          $set: {
+            chat_status: 'mate',
+            updatedAt: new Date()
+          },
+          $addToSet: {
+            follows: {
+              $each: [
+                { follower: userOID, followed: mateOID },
+                { follower: mateOID, followed: userOID }
+              ]
+            }
+          }
+        },
+        upsert: true
+      }
+    };
+  });
+
+  try {
+    // We use (relationship_model as any) to bypass strict BulkWrite types if needed
+    await (relationship_model as any).bulkWrite(operations, { ordered: false });
+  } catch (error: any) {
+    console.warn(`Migration completed with some skips for ${userId}:`, error.message);
+  }
+}
+
+export async function syncAndFinalizeMigrationStats(user: UserDocument) {
+  const legacyMatesCount = user.mates?.length || 0;
+
+  // Get post count synchronously for the response
+  const postsCount = await post_model.countDocuments({
+    author_id: user._id,
+    status: 'active'
+  });
+
+  const initialStats = {
+    mates: legacyMatesCount,
+    followers: legacyMatesCount,
+    following: legacyMatesCount,
+    posts: postsCount
+  };
+
+  // Atomic update: Mark as migrated, set stats, and clear legacy array
+  await user_model.updateOne(
+    { _id: user._id },
+    {
+      $set: {
+        migration_version: 1,
+        stats: initialStats
+      }
+    }
+  );
+
+  return initialStats;
 }
