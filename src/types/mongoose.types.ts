@@ -1,7 +1,152 @@
-import { Document, Types } from 'mongoose';
+import { Types } from 'mongoose';
+import {
+  Balloon,
+  BaseConversation,
+  BaseMessage,
+  BasePost,
+  BasePostComment,
+  BasePostReaction,
+  BaseRelationship, Comment, InboxItem,
+  User
+} from './types';
+import { Document } from 'mongodb';
 
-export type AsDocument<T, O extends keyof T = never> =
-  Omit<T, O | '_id'> &
-  { _id: Types.ObjectId } &
-  { [K in O]: T[K] extends Array<any> ? any[] : any } &
-  Document;
+export interface PostDocument extends Document, Omit<BasePost, '_id' | 'author_id' | 'reaction_counts' | 'createdAt' | 'updatedAt'> {
+  _id: Types.ObjectId;
+  author_id: Types.ObjectId;
+  reaction_counts: Map<string, number>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface LeanPost extends Omit<PostDocument, 'reaction_counts'> {
+  reaction_counts: Record<string, number>;
+}
+
+export interface PostCommentDocument extends Document, Omit<BasePostComment, '_id' | 'post_id' | 'author_id' | 'createdAt' | 'updatedAt'> {
+  _id: Types.ObjectId;
+  post_id: Types.ObjectId;
+  author_id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface PostReactionDocument extends Document, Omit<BasePostReaction, '_id' | 'post_id' | 'user_id'> {
+  _id: Types.ObjectId;
+  post_id: Types.ObjectId;
+  user_id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface UserDocument extends Omit<User, '_id' | 'date_of_birth' | 'last_name_change' | 'balloon'> {
+  _id: Types.ObjectId;
+  date_of_birth?: Date;
+  last_name_change?: Date;
+  balloon?: {
+    sent?: Types.ObjectId;
+    received?: Types.ObjectId;
+    last_received_at?: Date;
+    disabled?: boolean;
+  };
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ConversationDocument extends Document, Omit<BaseConversation,
+  | '_id'
+  | 'participants'
+  | 'last_message'
+  | 'unread_counts'
+  | 'createdAt'
+  | 'updatedAt'
+> {
+  _id: Types.ObjectId;
+  participants: Types.ObjectId[];
+  last_message?: Types.ObjectId;
+  unread_counts: Map<string, number>; // Live Mongoose Map
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface LeanConversation extends Omit<ConversationDocument,
+  | 'unread_counts'
+  | 'last_message'
+  | 'participants'
+> {
+  unread_counts: Record<string, number>;
+  participants: Types.ObjectId[];
+  last_message?: Types.ObjectId;
+}
+
+export interface PopulatedConversation extends Omit<LeanConversation,
+  | 'participants'
+  | 'last_message'
+> {
+  participants: {
+    _id: string;
+    name: string;
+    img: string;
+  }[];
+  last_message?: {
+    _id: string;
+    sender_id: string;
+    content: string;
+    createdAt: string;
+  };
+}
+
+export interface RelationshipDocument extends Omit<BaseRelationship, '_id' | 'users' | 'conversation_id' | 'action_user_id' | 'expires_at' | 'cooldown_until' | 'follows' | 'deleted_at' | 'createdAt' | 'updatedAt' | 'blocked_by'> {
+  _id: Types.ObjectId;
+  users: [Types.ObjectId, Types.ObjectId];
+  conversation_id?: Types.ObjectId;
+  action_user_id?: Types.ObjectId;
+  expires_at?: Date;
+  cooldown_until?: Date;
+  follows: {
+    follower: Types.ObjectId;
+    followed: Types.ObjectId;
+  }[];
+  deleted_at?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+  blocked_by?: Types.ObjectId;
+}
+
+export interface MessageDocument extends Document, Omit<BaseMessage, '_id' | 'sender_id' | 'conversation_id' | 'createdAt' | 'updatedAt'> {
+  _id: Types.ObjectId;
+  sender_id: Types.ObjectId;
+  conversation_id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface InboxCommentDocument extends Omit<Comment, '_id' | 'date'> {
+  date: Date;
+}
+
+export interface InboxDocument extends Omit<InboxItem, '_id' | 'sender' | 'reply' | 'comments' | 'date' | 'seen_by' | 'comments_seen_by'> {
+  _id: Types.ObjectId;
+  sender: Types.ObjectId;
+  reply?: Types.ObjectId;
+  comments: InboxCommentDocument[];
+  seen_by: Types.ObjectId[];
+  comments_seen_by: Types.ObjectId[];
+  date: Date;
+}
+
+export interface BalloonDocument extends Omit<Balloon, '_id' | 'sender' | 'pairedUser' | 'pairedBalloon' | 'cancelledBalloons' | 'rejected_by' | 'createdAt' | 'matchedAt' | 'lastActivityAt'> {
+  _id: Types.ObjectId;
+  sender: Types.ObjectId;
+
+  // Timestamps
+  createdAt: Date;
+  matchedAt?: Date; // @deprecated
+  lastActivityAt: Date;
+
+  // Matching / Legacy
+  pairedUser?: Types.ObjectId; // @deprecated
+  pairedBalloon?: Types.ObjectId; // @deprecated
+  cancelledBalloons: Types.ObjectId[];
+  rejected_by: Types.ObjectId[];
+}

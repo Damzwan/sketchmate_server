@@ -30,11 +30,16 @@ import {
   UploadProfileImgParams,
   User
 } from './types/types';
+import {
+  UserDocument,
+  InboxDocument,
+  BalloonDocument,
+  InboxCommentDocument
+} from './types/mongoose.types';
 import { CONTAINER, S3Creator } from './s3';
-import mongoose, { Schema } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { user_model } from './models/user.model';
 import { createThumbnail, escapeRegExp, imgToEmblem, removeBackground } from './helper';
-import { ObjectId } from 'mongodb';
 import { inbox_model } from './models/inbox.model';
 import * as fs from 'fs';
 import { minimum_supported_version } from './main';
@@ -59,23 +64,25 @@ export async function createUser(auth_id: string): Promise<Res<User>> {
   try {
     const user = await user_model.create({
       auth_id,
-      inbox: [],
       stickers: [],
       emblems: [],
       saved: [],
       name: 'Anonymous',
       img: s3Creator.getRandomStockProfileImg(),
-      mates: [],
-      mate_requests_sent: [],
-      mate_requests_received: [],
-      notifications: []
+      migration_version: 1,
+      subscriptions: [],
+      mates: [], // @deprecated
+      inbox: [], // @deprecated
+      mate_requests_sent: [], // @deprecated
+      mate_requests_received: [], // @deprecated
     });
+
     if (user._id) trackEvent(user._id.toString(), mixpanelEvents.create_account);
 
     return {
-      ...user,
+      ...user.toObject(),
       _id: user._id.toString()
-    };
+    } as unknown as User;
   } catch (e) {
     console.log(e);
   }
@@ -84,40 +91,55 @@ export async function createUser(auth_id: string): Promise<Res<User>> {
 export async function getUser(params: GetUserParams): Promise<Res<GetUserRes>> {
   try {
     if (!params._id && !params.auth_id) return undefined;
-    let user: any;
+    let user: UserDocument | null = null;
 
-    // // normal case, login through auth user id
-    user = await user_model.findOne({ auth_id: params.auth_id }).lean();
-    if (user) return { user, new_account: false, minimum_supported_version };
+    user = await user_model.findOne({ auth_id: params.auth_id }).lean() as UserDocument | null;
 
-    // we sync an old account with its auth_id
+    if (user) {
+      return {
+        user: { ...user, _id: user._id.toString() } as unknown as User,
+        new_account: false,
+        minimum_supported_version
+      };
+    }
+
     if (params._id) {
-      user = await user_model.findById(params._id).lean();
+      user = await user_model.findById(params._id).lean() as UserDocument | null;
       if (user) {
-        user.auth_id = params.auth_id;
-        await user_model.updateOne({ _id: user._id }, user); // set auth_id of user
-        return { user, new_account: false, minimum_supported_version };
+        await user_model.updateOne({ _id: user._id }, { $set: { auth_id: params.auth_id } });
+        return {
+          user: { ...user, _id: user._id.toString(), auth_id: params.auth_id } as unknown as User,
+          new_account: false,
+          minimum_supported_version
+        };
       }
     }
 
-    user = await createUser(params.auth_id);
-    return { user, new_account: true, minimum_supported_version };
+    const newUser = await createUser(params.auth_id);
+    return { user: newUser!, new_account: true, minimum_supported_version };
 
   } catch (e) {
     throw new Error('User not found');
   }
 }
 
-
 export async function getInboxItems(params: GetInboxItemsParams): Promise<GetInboxRes> {
   try {
-    const inboxItems = await inbox_model
+    const docs = await inbox_model
       .find({
         _id: { $in: params._ids }
       })
-      .lean() as any as InboxItem[]; // TODO fix
-    const uniqueUserIds = Array.from(new Set(inboxItems.reduce((acc: string[], curr) => acc.concat(curr.original_followers), [])));
+      .lean() as InboxDocument[];
 
+    const inboxItems: InboxItem[] = docs.map(doc => ({
+      ...doc,
+      _id: doc._id.toString(),
+      sender: doc.sender.toString(),
+      date: doc.date.toISOString(),
+      reply: doc.reply ? (doc.reply as any) : undefined // Maintain current reply logic
+    })) as unknown as InboxItem[];
+
+    const uniqueUserIds = Array.from(new Set(inboxItems.reduce((acc: string[], curr) => acc.concat(curr.original_followers), [])));
     const userInfo = await getPartialUsers(uniqueUserIds);
 
     return { inboxItems, userInfo };
@@ -128,27 +150,32 @@ export async function getInboxItems(params: GetInboxItemsParams): Promise<GetInb
 
 export async function comment(params: CommentParams) {
   try {
-    const comment: Comment = {
+    const commentId = new Types.ObjectId();
+    const commentData: InboxCommentDocument = {
       date: new Date(),
-      _id: new ObjectId().toString(),
       message: params.message,
       sender: params.sender
     };
+
     await inbox_model.updateOne(
-      {
-        _id: params.inbox_id
-      },
+      { _id: params.inbox_id },
       {
         $set: {
-          comments_seen_by: [params.sender]
+          comments_seen_by: [new Types.ObjectId(params.sender)]
         },
         $push: {
-          comments: comment
+          comments: commentData
         }
       }
     );
+
     trackEvent(params.sender, mixpanelEvents.drawing_comment);
-    return comment;
+
+    return {
+      ...commentData,
+      _id: commentId.toString(),
+      date: commentData.date.toISOString()
+    } as Comment;
   } catch (e) {
     console.log(e);
     throw new Error('Cannot place comment');
@@ -158,34 +185,42 @@ export async function comment(params: CommentParams) {
 export async function removeFromInbox(params: RemoveFromInboxParams) {
   try {
     trackEvent(params.user_id, mixpanelEvents.drawing_deleted);
-    const [inboxItem] = await Promise.all([
-      inbox_model.findByIdAndUpdate(
-        params.inbox_id,
-        { $pull: { followers: params.user_id } }, // Use $pull with a query for _id
-        { new: true }
-      ),
-      user_model.findByIdAndUpdate(
-        params.user_id,
-        {
-          $pull: {
-            inbox: params.inbox_id
-          }
-        }
-      )
-    ]);
 
-    if (inboxItem?.followers.length === 0) {
-      await Promise.all([s3Creator.deleteBlob(inboxItem.thumbnail, CONTAINER.drawings), s3Creator.deleteBlob(inboxItem.image, CONTAINER.drawings), s3Creator.deleteBlob(inboxItem.drawing, CONTAINER.drawings), inbox_model.deleteOne({ _id: params.inbox_id })]);
+    const inboxItem = await inbox_model.findByIdAndUpdate(
+      params.inbox_id,
+      { $pull: { followers: params.user_id } },
+      { new: true }
+    ).lean() as InboxDocument | null;
+
+    // Legacy support for user document inbox array
+    await user_model.findByIdAndUpdate(
+      params.user_id,
+      { $pull: { inbox: params.inbox_id } }
+    );
+
+    if (inboxItem && inboxItem.followers.length === 0) {
+      await Promise.all([
+        s3Creator.deleteBlob(inboxItem.thumbnail, CONTAINER.drawings),
+        s3Creator.deleteBlob(inboxItem.image, CONTAINER.drawings),
+        s3Creator.deleteBlob(inboxItem.drawing, CONTAINER.drawings),
+        inbox_model.deleteOne({ _id: params.inbox_id })
+      ]);
     }
   } catch (e) {
     throw new Error('Cannot remove');
   }
 }
 
-
 export async function getUserSubscription(params: { _id: string }): Promise<Res<User>> {
   try {
-    return await user_model.findById(params._id, { subscriptions: 1, mate: 1, _id: 1, img: 1 }).lean() as Res<User>;
+    const user = await user_model.findById(params._id, {
+      subscriptions: 1,
+      mates: 1,
+      _id: 1,
+      img: 1
+    }).lean() as UserDocument | null;
+    if (!user) return undefined;
+    return { ...user, _id: user._id.toString() } as unknown as User;
   } catch (e) {
     throw new Error('User not found');
   }
@@ -194,42 +229,35 @@ export async function getUserSubscription(params: { _id: string }): Promise<Res<
 export async function match(params: MatchParams) {
   try {
     if (params._id === params.mate_id) throw new Error('Cannot match to oneself');
+
     const [user, mate] = await Promise.all([
-      user_model.findById(params._id).lean(),
-      user_model.findById(params.mate_id).lean()
+      user_model.findById(params._id).lean() as Promise<UserDocument | null>,
+      user_model.findById(params.mate_id).lean() as Promise<UserDocument | null>
     ]);
+
     if (!user || !mate) throw new Error('One of the users not found');
+
+    // Legacy mate logic
     if (user.mates.some(m => m._id.toString() == mate._id.toString()) || mate.mates.some(m => m._id.toString() == user._id.toString()))
       throw new Error('Already matched');
 
-    user.mates.push({
-      _id: params.mate_id,
-      name: mate.name,
-      img: mate.img
-    });
+    const newMatesForUser = [...user.mates, { _id: params.mate_id, name: mate.name, img: mate.img }];
+    const newMatesForMate = [...mate.mates, { _id: user._id.toString(), name: user.name, img: user.img }];
 
-    user.mate_requests_received = user.mate_requests_received.filter(m => m.toString() != mate._id.toString());
-    user.mate_requests_sent = user.mate_requests_sent.filter(m => m.toString() != mate._id.toString());
+    const filteredReceivedUser = user.mate_requests_received.filter(m => m.toString() != mate._id.toString());
+    const filteredSentUser = user.mate_requests_sent.filter(m => m.toString() != mate._id.toString());
 
-
-    mate.mates.push({
-      _id: user._id.toString(),
-      name: user.name,
-      img: user.img
-    });
-
-    mate.mate_requests_received = mate.mate_requests_received.filter(m => m.toString() != user._id.toString());
-    mate.mate_requests_sent = mate.mate_requests_sent.filter(m => m.toString() != user._id.toString());
-
+    const filteredReceivedMate = mate.mate_requests_received.filter(m => m.toString() != user._id.toString());
+    const filteredSentMate = mate.mate_requests_sent.filter(m => m.toString() != user._id.toString());
 
     await Promise.all([
       user_model.updateOne(
         { _id: params._id },
         {
           $set: {
-            mates: user.mates,
-            mate_requests_received: user.mate_requests_received,
-            mate_requests_sent: user.mate_requests_sent
+            mates: newMatesForUser,
+            mate_requests_received: filteredReceivedUser,
+            mate_requests_sent: filteredSentUser
           }
         }
       ),
@@ -237,17 +265,20 @@ export async function match(params: MatchParams) {
         { _id: params.mate_id },
         {
           $set: {
-            mates: mate.mates,
-            mate_requests_received: mate.mate_requests_received,
-            mate_requests_sent: mate.mate_requests_sent
-
+            mates: newMatesForMate,
+            mate_requests_received: filteredReceivedMate,
+            mate_requests_sent: filteredSentMate
           }
         }
       )
     ]);
+
     trackEvent(params._id, mixpanelEvents.match);
 
-    return { user: user, mate: mate };
+    return {
+      user: { ...user, _id: user._id.toString() } as unknown as User,
+      mate: { ...mate, _id: mate._id.toString() } as unknown as User
+    };
   } catch (e) {
     throw new Error('Cannot match with mate');
   }
@@ -255,8 +286,6 @@ export async function match(params: MatchParams) {
 
 export async function storeMessage(params: SendParams): Promise<Res<InboxItem>> {
   try {
-    // const imgBuffer = dataUrlToBuffer(params.img);
-
     const [blobUrl, imgUrl, thumbnailUrl] = await Promise.all([
       s3Creator.upload(params.drawing),
       s3Creator.uploadImg(params.img),
@@ -264,27 +293,36 @@ export async function storeMessage(params: SendParams): Promise<Res<InboxItem>> 
     ]);
 
     const date = new Date();
-    const inboxItem: InboxItem = {
-      _id: new ObjectId().toString(),
+    const inboxItemId = new Types.ObjectId();
+
+    const inboxItemData: Partial<InboxDocument> = {
+      _id: inboxItemId,
       drawing: blobUrl,
       image: imgUrl,
       thumbnail: thumbnailUrl,
       date: date,
-      sender: params._id,
+      sender: new Types.ObjectId(params._id),
       followers: params.followers,
       aspect_ratio: params.aspect_ratio,
       original_followers: params.followers,
-      seen_by: [params._id],
-      comments_seen_by: [params._id],
+      seen_by: [new Types.ObjectId(params._id)],
+      comments_seen_by: [new Types.ObjectId(params._id)],
       comments: []
     };
 
     await Promise.all([
-      inbox_model.create(inboxItem),
-      ...params.followers.map(follower => user_model.updateOne({ _id: follower }, { $push: { inbox: inboxItem._id } }))
+      inbox_model.create(inboxItemData),
+      ...params.followers.map(follower => user_model.updateOne({ _id: follower }, { $push: { inbox: inboxItemId.toString() } }))
     ]);
+
     trackEvent(params._id, mixpanelEvents.drawing_sent);
-    return inboxItem;
+
+    return {
+      ...inboxItemData,
+      _id: inboxItemId.toString(),
+      sender: params._id,
+      date: date.toISOString()
+    } as unknown as InboxItem;
   } catch (e) {
     console.log(e);
     throw new Error('Failed sending to mate');
@@ -311,19 +349,18 @@ export async function unMatch(params: UnMatchParams): Promise<Res<void>> {
 
 export async function subscribe(params: RegisterNotificationParams): Promise<Res<void>> {
   try {
-    // TODO we should be able to combine these but somehow not working...
     await user_model.updateOne(
       { _id: params.user_id },
       {
         $pull: {
-          subscriptions: { fingerprint: params.subscription.fingerprint }  // Target the specific subscription to remove
+          subscriptions: { fingerprint: params.subscription.fingerprint }
         }
       }
     );
     await user_model.updateOne(
       { _id: params.user_id },
       {
-        $push: { subscriptions: params.subscription } // Add the new subscription
+        $push: { subscriptions: params.subscription }
       }
     );
   } catch (e) {
@@ -331,14 +368,13 @@ export async function subscribe(params: RegisterNotificationParams): Promise<Res
   }
 }
 
-
 export async function unsubscribe(params: UnRegisterNotificationParams): Promise<Res<void>> {
   try {
     await user_model.updateOne(
       { _id: params.user_id },
       {
         $pull: {
-          subscriptions: { fingerprint: params.fingerprint }  // Target the specific subscription to remove
+          subscriptions: { fingerprint: params.fingerprint }
         }
       }
     );
@@ -347,7 +383,6 @@ export async function unsubscribe(params: UnRegisterNotificationParams): Promise
   }
 }
 
-
 export async function onLoginEvent(params: OnLoginEventParams): Promise<any> {
   try {
     trackEvent(params.user_id, mixpanelEvents.login);
@@ -355,19 +390,18 @@ export async function onLoginEvent(params: OnLoginEventParams): Promise<any> {
     const user = await user_model.findOneAndUpdate(
       { _id: params.user_id, 'subscriptions.fingerprint': params.fingerprint },
       { $set: { 'subscriptions.$.logged_in': params.loggedIn } },
-      { new: true } // Return the updated document
-    ).lean();
+      { new: true }
+    ).lean() as UserDocument | null;
 
-    return user;
+    return user ? { ...user, _id: user._id.toString() } : null;
   } catch (e) {
     throw new Error('Failed to update subscriptions');
   }
 }
 
-
 export async function changeUserName(params: ChangeUserNameParams): Promise<Res<void>> {
   try {
-    const user = await user_model.findById(params._id).lean();
+    const user = await user_model.findById(params._id).lean() as UserDocument | null;
     if (!user) return;
 
     await user_model.updateOne({ _id: params._id }, { $set: { name: params.name } });
@@ -388,24 +422,20 @@ export async function changeUserName(params: ChangeUserNameParams): Promise<Res<
 export async function updateUser(params: UpdateUserParams): Promise<Res<void>> {
   try {
     const { _id, ...updates } = params;
-
     if (!_id) throw new Error('User _id is required');
-
     await user_model.updateOne({ _id }, { $set: updates });
-
   } catch (e) {
     throw new Error('Failed to update user: ' + (e as Error).message);
   }
 }
 
-
 export async function uploadProfileImg(params: UploadProfileImgParams): Promise<Res<string>> {
   try {
     const url = await s3Creator.uploadFile(params.img.filepath, params.img.mimetype, CONTAINER.account);
 
-    const user = await user_model.findById(params._id).lean();
+    const user = await user_model.findById(params._id).lean() as UserDocument | null;
     if (!user) {
-      fs.promises.unlink(params.img.filepath).catch(console.error); // Clean up if user is missing!
+      fs.promises.unlink(params.img.filepath).catch(console.error);
       return;
     }
 
@@ -434,7 +464,7 @@ export async function uploadProfileImg(params: UploadProfileImgParams): Promise<
 
 export async function deleteProfileImg(user_id: string, stock_img: string) {
   try {
-    const user = await user_model.findById(user_id).lean();
+    const user = await user_model.findById(user_id).lean() as UserDocument | null;
     if (!user) return;
 
     await user_model.updateOne({ _id: user_id }, { $set: { img: stock_img } });
@@ -464,7 +494,6 @@ export async function createSticker(params: CreateStickerParams): Promise<Res<st
     await user_model.updateOne({ _id: params._id }, { $push: { stickers: new_url } });
 
     fs.promises.unlink(params.img.filepath).catch(console.error);
-
     return new_url;
   } catch (e) {
     throw new Error('Failed to create sticker');
@@ -478,7 +507,6 @@ export async function createEmblem(params: CreateStickerParams): Promise<Res<str
     await user_model.updateOne({ _id: params._id }, { $push: { emblems: url } });
 
     fs.promises.unlink(params.img.filepath).catch(console.error);
-
     return url;
   } catch (e) {
     throw new Error('Failed to create emblem');
@@ -509,9 +537,7 @@ export async function deleteSticker(params: DeleteStickerParams): Promise<void> 
   try {
     await s3Creator.deleteBlob(params.sticker_url, CONTAINER.stickers);
     await user_model.findByIdAndUpdate(params.user_id, {
-      $pull: {
-        stickers: params.sticker_url
-      }
+      $pull: { stickers: params.sticker_url }
     });
   } catch (e) {
     throw new Error('Failed to delete sticker');
@@ -522,9 +548,7 @@ export async function deleteEmblem(params: DeleteEmblemParams): Promise<void> {
   try {
     await s3Creator.deleteBlob(params.emblem_url, CONTAINER.stickers);
     await user_model.findByIdAndUpdate(params.user_id, {
-      $pull: {
-        emblems: params.emblem_url
-      }
+      $pull: { emblems: params.emblem_url }
     });
   } catch (e) {
     throw new Error('Failed to delete emblem');
@@ -533,17 +557,12 @@ export async function deleteEmblem(params: DeleteEmblemParams): Promise<void> {
 
 export async function deleteSaved(params: DeleteSavedParams): Promise<void> {
   try {
-    const saved: Saved = {
-      img: params.img_url,
-      drawing: params.drawing_url
-    };
+    const saved: Saved = { img: params.img_url, drawing: params.drawing_url };
     await Promise.all([
       s3Creator.deleteBlob(params.img_url, CONTAINER.stickers),
       s3Creator.deleteBlob(params.drawing_url, CONTAINER.stickers),
-      await user_model.findByIdAndUpdate(params.user_id, {
-        $pull: {
-          saved: saved
-        }
+      user_model.findByIdAndUpdate(params.user_id, {
+        $pull: { saved: saved }
       })
     ]);
   } catch (e) {
@@ -555,8 +574,8 @@ export async function seeInbox(params: SeeInboxParams) {
   try {
     await inbox_model.findByIdAndUpdate(params.inbox_id, {
       $addToSet: {
-        seen_by: params.user_id,
-        comments_seen_by: params.user_id
+        seen_by: new Types.ObjectId(params.user_id),
+        comments_seen_by: new Types.ObjectId(params.user_id)
       }
     });
   } catch (e) {
@@ -565,7 +584,7 @@ export async function seeInbox(params: SeeInboxParams) {
 }
 
 export async function createBalloon(params: CreateBalloonPostParams): Promise<Res<Balloon>> {
-  const alreadyExistingBalloon = await balloon_model.findOne({ sender: params.sender });
+  const alreadyExistingBalloon = await balloon_model.findOne({ sender: new Types.ObjectId(params.sender) });
 
   if (alreadyExistingBalloon) {
     throw new Error('Balloon already exists');
@@ -577,8 +596,8 @@ export async function createBalloon(params: CreateBalloonPostParams): Promise<Re
     s3Creator.uploadImg(await createThumbnail(params.img))
   ]);
 
-  const balloonId = new ObjectId().toString();
-  const balloonToCreate: Balloon = {
+  const balloonId = new Types.ObjectId();
+  const balloonToCreate: Partial<BalloonDocument> = {
     _id: balloonId,
     status: 'pending',
     createdAt: new Date(),
@@ -587,7 +606,7 @@ export async function createBalloon(params: CreateBalloonPostParams): Promise<Re
     img,
     thumbnail,
     aspect_ratio: params.aspect_ratio,
-    sender: params.sender,
+    sender: new Types.ObjectId(params.sender),
     message: params.message,
     cancelledBalloons: [],
     version: params.version,
@@ -603,10 +622,15 @@ export async function createBalloon(params: CreateBalloonPostParams): Promise<Re
       )
     ]);
 
-
     trackEvent(params.sender, mixpanelEvents.balloon_create);
 
-    return balloonToCreate;
+    return {
+      ...balloonToCreate,
+      _id: balloonId.toString(),
+      sender: params.sender,
+      createdAt: balloonToCreate.createdAt!.toISOString(),
+      lastActivityAt: balloonToCreate.lastActivityAt!.toISOString()
+    } as unknown as Balloon;
   } catch (e) {
     throw new Error(`Failed to create balloon: ${(e as Error).message}`);
   }
@@ -614,28 +638,35 @@ export async function createBalloon(params: CreateBalloonPostParams): Promise<Re
 
 export async function getBalloon(balloonId: string): Promise<Balloon | null> {
   try {
-    return await balloon_model.findById(balloonId).lean<Balloon | null>();
+    const doc = await balloon_model.findById(balloonId).lean() as BalloonDocument | null;
+    if (!doc) return null;
+    return {
+      ...doc,
+      _id: doc._id.toString(),
+      sender: doc.sender.toString(),
+      createdAt: doc.createdAt.toISOString(),
+      lastActivityAt: doc.lastActivityAt.toISOString()
+    } as unknown as Balloon;
   } catch (error) {
     throw new Error(`Failed to get balloon: ${(error as Error).message}`);
   }
 }
-
 
 export async function sendMateRequest(params: SendMateRequestParams): Promise<void> {
   try {
     await Promise.all([
       user_model.updateOne(
         { _id: params.sender },
-        { $addToSet: { mate_requests_sent: { $each: [params.receiver] } } }
+        { $addToSet: { mate_requests_sent: new Types.ObjectId(params.receiver) } }
       ),
       user_model.updateOne(
         { _id: params.receiver },
-        { $addToSet: { mate_requests_received: { $each: [params.sender] } } }
+        { $addToSet: { mate_requests_received: new Types.ObjectId(params.sender) } }
       )
     ]);
   } catch (e) {
-    console.error('Error sending mate request:', e); // Log error for debugging
-    throw new Error('Failed to send mate request'); // Throw user-friendly error
+    console.error('Error sending mate request:', e);
+    throw new Error('Failed to send mate request');
   }
 }
 
@@ -675,20 +706,20 @@ export async function refuseSendMateRequest(params: SendMateRequestParams): Prom
   }
 }
 
-
 export async function getPartialUsers(user_ids: string[]): Promise<Mate[]> {
   try {
     const docs = await user_model
       .find({
         _id: { $in: user_ids }
       }, { _id: 1, img: 1, name: 1, last_seen_version: 1 })
-      .lean();
+      .lean() as any[];
 
-    // Map to convert ObjectId to string
     return docs.map(doc => ({
-      ...doc,
-      _id: doc._id.toString()
-    })) as unknown as Mate[];
+      _id: doc._id.toString(),
+      name: doc.name,
+      img: doc.img,
+      last_seen_version: doc.last_seen_version
+    })) as Mate[];
   } catch (e: any) {
     throw new Error(e);
   }
@@ -698,14 +729,15 @@ export async function getPartialUser(user_id: string): Promise<Mate | null> {
   try {
     const doc = await user_model
       .findById(user_id, { _id: 1, img: 1, name: 1 })
-      .lean();
+      .lean() as UserDocument | null;
 
     if (!doc) return null;
 
     return {
-      ...doc,
-      _id: doc._id.toString()
-    } as unknown as Mate;
+      _id: doc._id.toString(),
+      name: doc.name,
+      img: doc.img
+    } as Mate;
   } catch (e: any) {
     throw new Error(e);
   }
@@ -717,7 +749,6 @@ export async function searchMate(
   limit = 10
 ): Promise<Mate[]> {
   try {
-    // 1. Sanitize the input for safe regex searching
     const safeSearchTerm = escapeRegExp(mateName);
 
     const docs = await user_model
@@ -729,17 +760,17 @@ export async function searchMate(
         { _id: 1, img: 1, name: 1 }
       )
       .limit(limit)
-      .lean();
+      .lean() as any[];
 
     return docs.map(doc => ({
-      ...doc,
-      _id: doc._id.toString()
-    })) as unknown as Mate[];
+      _id: doc._id.toString(),
+      name: doc.name,
+      img: doc.img
+    })) as Mate[];
   } catch (e: any) {
     throw new Error(e.message || e);
   }
 }
-
 export async function getInboxItemsV2(params: {
   user_id: string,
   limit: number,
@@ -752,11 +783,18 @@ export async function getInboxItemsV2(params: {
       query.date = { $lt: params.lastDate };
     }
 
-    const inboxItems = await inbox_model
+    const docs = await inbox_model
       .find(query)
-      .sort({ date: -1 }) // Newest first
+      .sort({ date: -1 })
       .limit(params.limit)
-      .lean() as any as InboxItem[];
+      .lean() as InboxDocument[];
+
+    const inboxItems: InboxItem[] = docs.map(doc => ({
+      ...doc,
+      _id: doc._id.toString(),
+      sender: doc.sender.toString(),
+      date: doc.date.toISOString()
+    })) as unknown as InboxItem[];
 
     const uniqueUserIds = Array.from(new Set(
       inboxItems.reduce((acc: string[], curr) => acc.concat(curr.original_followers), [])
@@ -769,4 +807,3 @@ export async function getInboxItemsV2(params: {
     throw new Error('Failed to fetch inbox batch');
   }
 }
-

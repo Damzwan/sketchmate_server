@@ -42,7 +42,7 @@ import {
   updateUser,
   uploadProfileImg
 } from '../../mongodb';
-import { parseParams } from '../../helper';
+import { migrateMatesToRelationships, parseParams, syncAndFinalizeMigrationStats } from '../../helper';
 import { routeBalloonToOnlineUser } from '../balloon';
 import { userSocketMap } from '../socket/socket';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
@@ -56,6 +56,8 @@ import postRouter from './post.router';
 import { userRouter } from './user.router';
 import { reportRouter } from './report.router';
 import { chatRouter } from './chat.router';
+import { relationshipRouter } from './relationship.router';
+import { InboxDocument } from '../../types/mongoose.types';
 
 export const router = new Router();
 
@@ -63,28 +65,26 @@ router.use('/post', postRouter.routes(), postRouter.allowedMethods());
 router.use('/user', userRouter.routes(), userRouter.allowedMethods());
 router.use('/report', reportRouter.routes(), reportRouter.allowedMethods());
 router.use('/chats', chatRouter.routes(), chatRouter.allowedMethods());
+router.use('/relationship', relationshipRouter.routes(), relationshipRouter.allowedMethods());
 
 router.get(ENDPOINTS.user, async (ctx) => {
   const res = await getUser(parseParams<GetUserParams>(ctx.query));
-
   if (!res?.user) return ctx.throw(404, 'User not found');
 
-  // Lazy Migration Logic
-  if (res.user.mates?.length > 0 && (!res.user.friends || res.user.friends.length === 0)) {
-    try {
-      const friendIds = res.user.mates.map(m => typeof m === 'string' ? m : (m as any)._id);
+  const user = res.user as any;
 
-      // Fire and forget DB update
-      user_model.findByIdAndUpdate(res.user._id, { $set: { friends: friendIds } }).exec();
+  if ((user.migration_version || 0) < 1) {
+    const newStats = await syncAndFinalizeMigrationStats(user);
 
-      // Patch local object for immediate frontend use
-      res.user.friends = friendIds;
-    } catch (err) {
-      console.error('Migration error:', err);
-    }
+    migrateMatesToRelationships(user._id, user.mates)
+      .catch(err => console.error('Mates migration failed:', err));
+
+    user.stats = newStats;
+    user.mates = [];
+    user.migration_version = 1;
   }
-  if (!res.user.customization) res.user.customization = {}
 
+  if (!user.customization) user.customization = {};
   ctx.body = res;
 });
 
@@ -298,63 +298,38 @@ router.get('/admin/latest-vitals', async (ctx) => {
 });
 
 router.get('/user/inbox/latest', async (ctx) => {
-  const userId = ctx.query.user_id;
+  const userId = ctx.query.user_id as string;
   const offset = parseInt(ctx.query.offset as string) || 0;
 
   if (!userId) {
-    ctx.status = 400;
-    return;
+    return ctx.throw(400, 'user_id is required');
   }
 
   try {
-    const userAgg = await user_model.aggregate([
-      { $match: { _id: new mongoose.Types.ObjectId(userId as string) } },
-      { $project: { inboxCount: { $size: { $ifNull: ['$inbox', []] } } } }
-    ]);
+    const item = await inbox_model
+      .findOne({ followers: userId })
+      .sort({ date: -1 })
+      .skip(offset)
+      .select('_id thumbnail sender')
+      .lean() as InboxDocument | null;
 
-    if (!userAgg || userAgg.length === 0 || userAgg[0].inboxCount === 0) {
+    if (!item) {
       ctx.body = null;
       return;
     }
 
-    const count = userAgg[0].inboxCount;
-    const safeOffset = offset % count;
-    const targetIndex = count - 1 - safeOffset;
-
-    const userWithItem = await user_model.findById(userId, {
-      inbox: { $slice: [targetIndex, 1] }
-    }).lean();
-
-    if (!userWithItem || !userWithItem.inbox || userWithItem.inbox.length === 0) {
-      ctx.status = 404;
-      ctx.body = { error: 'Item index out of bounds' };
-      return;
-    }
-
-    const targetInboxId = userWithItem.inbox[0];
-
-    const item = await inbox_model.findById(targetInboxId).select('_id thumbnail sender').lean();
-
-    if (!item) {
-      ctx.status = 404;
-      ctx.body = { error: 'Image no longer exists' };
-      return;
-    }
-
-    // 4. Fetch the sender
     const [mate_info] = await getPartialUsers([item.sender.toString()]);
 
-    trackEvent(userId as string, mixpanelEvents.widget);
+    trackEvent(userId, mixpanelEvents.widget);
 
     ctx.body = {
-      _id: item._id,
+      _id: item._id.toString(),
       image: item.thumbnail,
       senderName: mate_info?.name || 'Unknown',
       senderImg: mate_info?.img || ''
     };
 
   } catch (err) {
-    // This will now catch and log any remaining BSON issues
     console.error('Widget API Error:', err);
     ctx.status = 500;
     ctx.body = { error: 'Internal Server Error' };
