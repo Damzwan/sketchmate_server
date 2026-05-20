@@ -4,6 +4,7 @@ import { relationship_model } from '../../models/relationship.model';
 import { requireAuth } from '../../middleware/auth';
 import { message_model } from '../../models/message.model';
 import { Types } from 'mongoose';
+import { PUBLIC_USER_FIELDS } from '../../types/projections';
 
 export const chatRouter = new Router();
 chatRouter.use(requireAuth);
@@ -11,12 +12,13 @@ chatRouter.use(requireAuth);
 chatRouter.get('/active', async (ctx) => {
   const user_id = ctx.state.user._id.toString();
 
-  // 1. Find ALL conversations where the user is a participant
   const conversations = await conversation_model.find({
     participants: user_id
   })
     .populate('last_message')
-    .populate('participants', 'name img _id last_seen_version')
+    // Now includes lightweight customization + stats so chat list items
+    // can render with decorations/titles without an extra fetch.
+    .populate('participants', PUBLIC_USER_FIELDS)
     .sort({ updatedAt: -1 })
     .lean();
 
@@ -25,20 +27,15 @@ chatRouter.get('/active', async (ctx) => {
     return;
   }
 
-  // 2. Fetch the user's relationships
   const relationships = await relationship_model.find({
     users: user_id
   }).lean();
 
-  // 3. Allowed statuses to show in the inbox
   const activeStatuses = ['temporary', 'mate', 'pending_mate', 'pending_invite', 'expired'];
 
-  // 4. Merge them securely
   const activeConvos = conversations.map(c => {
-    // Find the partner's ID
     const partnerId = c.participants.find((p: any) => p._id.toString() !== user_id)?._id.toString();
 
-    // Find the matching relationship
     const rel = relationships.find(r =>
       r.users.some(u => u.toString() === partnerId)
     );
@@ -46,12 +43,12 @@ chatRouter.get('/active', async (ctx) => {
     return {
       ...c,
       status: rel?.chat_status || 'none',
-      trial_expires_at: rel?.expires_at,  // Map backend expires_at to frontend trial_expires_at
+      trial_expires_at: rel?.expires_at,
       cooldown_until: rel?.cooldown_until,
       initiator_id: rel?.action_user_id?.toString(),
       relationship_id: rel?._id?.toString()
     };
-  }).filter(c => activeStatuses.includes(c.status)); // Only return active ones
+  }).filter(c => activeStatuses.includes(c.status));
 
   ctx.body = activeConvos;
 });
@@ -74,12 +71,11 @@ chatRouter.get('/requests', async (ctx) => {
     r.users.find(u => u.toString() !== user_id)
   ).filter(Boolean) as Types.ObjectId[];
 
-  // Fixed: was using invalid $all + $in combo
   const conversations = await conversation_model.find({
-    participants: { $in: partnerIds }  // user_id is implied since rel already scoped to them
+    participants: { $in: partnerIds }
   })
     .populate('last_message')
-    .populate('participants', 'name img _id last_seen_version')
+    .populate('participants', PUBLIC_USER_FIELDS)
     .sort({ updatedAt: -1 })
     .lean();
 

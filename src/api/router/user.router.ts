@@ -11,11 +11,16 @@ import { CONTAINER } from '../../s3';
 import { FeedPost } from '../../types/types';
 import { LeanPost, RelationshipDocument, UserDocument } from '../../types/mongoose.types';
 import { isUserOnline } from '../socket/socket';
+import { FULL_USER_FIELDS, PUBLIC_USER_FIELDS } from '../../types/projections';
 
 export const userRouter = new Router();
 
 /**
  * USER POSTS: Get hydrated active posts for a user
+ *
+ * The author projection here is intentionally minimal (just _id/name/img).
+ * The viewer's frontend cache already holds the author's full public
+ * customization — populating it here would be redundant bytes.
  */
 userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
   const { user_id: targetUserId } = ctx.params;
@@ -173,6 +178,10 @@ userRouter.post('/upload-image', requireAuth, async (ctx) => {
 
 /**
  * PROFILE VIEW: Aggregate stats and relationship status
+ *
+ * Now uses FULL_USER_FIELDS so the profile modal receives the user's
+ * signature and full customization. This is the ONE endpoint where the
+ * signature ships — list endpoints stay lean with PUBLIC_USER_FIELDS only.
  */
 userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
   const { user_id: targetId } = ctx.params;
@@ -181,13 +190,13 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
   try {
     const sortedUsers = [viewer_id, targetId].sort();
 
-    // PERFORMANCE WIN: Dropped 4 countDocuments queries!
     const [
       user,
       connection,
       posts
     ] = await Promise.all([
-      user_model.findById(targetId).lean() as Promise<UserDocument | null>,
+      // Use FULL_USER_FIELDS so the response includes signature + description
+      user_model.findById(targetId).select(FULL_USER_FIELDS).lean() as Promise<UserDocument | null>,
       relationship_model.findOne({ users: sortedUsers }).lean() as Promise<RelationshipDocument | null>,
       post_model.find({
         author_id: targetId,
@@ -239,8 +248,12 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
         description: user.description || '',
         img: user.img,
         last_seen_version: user.last_seen_version,
+        // Customization (full, with signature) — frontend ProfileCard
+        // expects this nested object exactly as stored
+        customization: user.customization || {},
+        // Stats sourced directly from the User document
+        stats: user.stats || { followers: 0, following: 0, mates: 0, posts: 0 },
         chat_status: connection?.chat_status || 'none',
-        stats: user.stats || { followers: 0, following: 0, mates: 0, posts: 0 }, // Sourced directly from User Document
         relationship: {
           isFollowing: connection?.follows?.some(f => f.follower.toString() === viewer_id) || false,
           areFollowingMe: connection?.follows?.some(f => f.followed.toString() === viewer_id) || false
@@ -254,11 +267,16 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
   }
 });
 
+/**
+ * ONLINE FRIENDS: list of currently-online mates
+ *
+ * Projection updated to include public customization so online friends
+ * render with their decorations/titles without an extra cache fill.
+ */
 userRouter.get('/online-friends', requireAuth, async (ctx) => {
   const viewerId = ctx.state.user._id.toString();
   const io = ctx.app.context.io;
 
-  // Only pull relationships worth showing in the online bar
   const relationships = await relationship_model.find({
     users: new Types.ObjectId(viewerId),
     chat_status: { $in: ['temporary', 'pending_mate', 'mate'] }
@@ -273,9 +291,7 @@ userRouter.get('/online-friends', requireAuth, async (ctx) => {
     rel.users.find(id => id.toString() !== viewerId)?.toString()
   ).filter(Boolean) as string[];
 
-  // Fan out all online checks in parallel — was already parallel, kept as-is
   const onlineFlags = await Promise.all(partnerIds.map(id => isUserOnline(io, id)));
-
   const onlineIds = partnerIds.filter((_, i) => onlineFlags[i]);
 
   if (!onlineIds.length) {
@@ -283,15 +299,15 @@ userRouter.get('/online-friends', requireAuth, async (ctx) => {
     return;
   }
 
+  // Public projection — includes lightweight customization + stats
   const users = await user_model
     .find({ _id: { $in: onlineIds } })
-    .select('name img _id last_seen_version')
+    .select(PUBLIC_USER_FIELDS)
     .lean();
 
-  // Build a rel lookup map instead of .find() inside .map()
   const relByPartnerId = new Map(
     relationships.map(rel => {
-      const partnerId = rel.users.find(id => id.toString() !== viewerId)?.toString()!;
+      const partnerId = rel.users.find(id => id.toString() !== viewerId)?.toString();
       return [partnerId, rel];
     })
   );
@@ -299,11 +315,37 @@ userRouter.get('/online-friends', requireAuth, async (ctx) => {
   ctx.body = users.map(u => {
     const rel = relByPartnerId.get(u._id.toString());
     return {
+      ...u,
       _id: u._id.toString(),
-      name: u.name,
-      img: u.img,
-      last_seen_version: u.last_seen_version,
       chat_status: rel?.chat_status ?? 'none'
     };
   });
+});
+
+
+userRouter.get('/public_users', requireAuth, async (ctx) => {
+  const _ids = (ctx.query._ids as string) || '';
+
+  if (!_ids) {
+    ctx.body = [];
+    return;
+  }
+
+  const safeIds = _ids
+    .split(',')
+    .slice(0, 100)
+    .filter((id) => Types.ObjectId.isValid(id))
+    .map((id) => new Types.ObjectId(id));
+
+  if (!safeIds.length) {
+    ctx.body = [];
+    return;
+  }
+
+  const users = await user_model
+    .find({ _id: { $in: safeIds } })
+    .select(PUBLIC_USER_FIELDS)
+    .lean();
+
+  ctx.body = users;
 });
