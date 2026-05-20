@@ -35,6 +35,7 @@ import { registerChatHandlers } from './chat.socket';
 import { RelationshipDocument, UserDocument } from '../../types/mongoose.types';
 import { relationship_model } from '../../models/relationship.model';
 import { Types } from 'mongoose';
+import { PUBLIC_USER_FIELDS } from '../../types/projections';
 
 const inflateAsync = promisify(zlib.inflate);
 
@@ -55,29 +56,28 @@ export function registerSocketHandlers(io: Server) {
       const userIdString = params._id;
 
       try {
-        // 1. Manage Socket Mapping (Multi-device support)
         if (!userSocketMap[userIdString]) {
           userSocketMap[userIdString] = [];
         }
         userSocketMap[userIdString].push(socket);
 
+        // Use the public projection so we have everything we need to broadcast
+        // to mates AND set up socket data in one fetch
         const [user, relationships] = await Promise.all([
-          user_model.findById(userIdString, {
-            _id: 1, img: 1, name: 1, date_of_birth: 1
-          }).lean() as unknown as UserDocument | null,
+          user_model.findById(userIdString)
+            .select(PUBLIC_USER_FIELDS + ' date_of_birth')
+            .lean() as unknown as UserDocument | null,
           relationship_model.find({
             users: new Types.ObjectId(userIdString),
             chat_status: { $in: ['mate', 'temporary', 'pending_mate', 'expired'] }
           }).select('users').lean() as unknown as RelationshipDocument[]
         ]);
 
-
         if (!user) {
           socket.emit(SOCKET_ENDPONTS.login, { status: 'error', message: 'User not found' });
           return;
         }
 
-        // 3. Set Socket Data & Join Personal Room
         socket.data.user = {
           _id: userIdString,
           name: user.name,
@@ -88,13 +88,10 @@ export function registerSocketHandlers(io: Server) {
         socket.join(userIdString);
 
         const watcherSet = new Set<string>();
-
         relationships.forEach(rel => {
           rel.users.forEach(p => {
             const pId = p.toString();
-            if (pId !== userIdString) {
-              watcherSet.add(pId);
-            }
+            if (pId !== userIdString) watcherSet.add(pId);
           });
         });
 
@@ -103,10 +100,18 @@ export function registerSocketHandlers(io: Server) {
         if (watcherRooms.length > 0) {
           socket.to(watcherRooms).emit('friend:online', {
             user_id: userIdString,
-            status: 'online'
+            status: 'online',
+            user: {
+              _id: userIdString,
+              name: user.name,
+              img: user.img,
+              last_seen_version: user.last_seen_version,
+              subscription_tier: user.subscription_tier,
+              stats: user.stats,
+              customization: user.customization
+            }
           });
         }
-
 
         socket.emit(SOCKET_ENDPONTS.login, { status: 'success' });
 

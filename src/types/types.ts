@@ -108,19 +108,14 @@ export interface User {
 }
 
 export interface UserCustomization {
-  titleId?: string;
-  fontFamily?: string;
-  fontEffect?: string;
-  cardBg?: string;
-  cardBgColor?: string;
-  nameColor?: string;
-  descColor?: string;
-  avatarBorderColor?: string;
-  cardBorderColor?: string;
-  signatureColor?: string;
+  themeId: string;
+  fontId: string;
+  fontEffectId: string;
+  decorationId: string;
+  effectId: string;
+  titleId: string;
   signaturePath?: string;
   signatureViewBox?: string;
-  unlocked_items?: string[];
 }
 
 export interface UserStats {

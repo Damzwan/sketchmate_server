@@ -7,6 +7,7 @@ import { conversation_model } from '../../models/conversation.model';
 import { user_model } from '../../models/user.model';
 import { RelationshipDocument } from '../../types/mongoose.types';
 import { sendSocketNotificationToUser } from '../socket/socket';
+import { PUBLIC_USER_FIELDS } from '../../types/projections';
 
 export const relationshipRouter = new Router();
 relationshipRouter.use(requireAuth);
@@ -29,19 +30,17 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
     return ctx.throw(400, 'Waiting for partner response');
   }
 
-  const io = ctx.app.context.io;
   const partnerId = rel.users.find((u: Types.ObjectId) => u.toString() !== user_id);
 
   if (action === 'accept') {
     if (rel.chat_status === 'pending_invite') {
       const expiresAt = dayjs().add(24, 'hours').toDate();
 
-      // ✅ Use existing conversation from relationship, don't create a new one
       if (!rel.conversation_id) return ctx.throw(400, 'No conversation found for this relationship');
 
       const populatedConvo = await conversation_model
         .findById(rel.conversation_id)
-        .populate('participants', 'name img _id last_seen_version')
+        .populate('participants', PUBLIC_USER_FIELDS)
         .populate('last_message')
         .lean() as any;
 
@@ -58,7 +57,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       populatedConvo.initiator_id = rel.action_user_id?.toString();
 
       if (partnerId) {
-        console.log('si');
         sendSocketNotificationToUser(partnerId.toString(), 'chat:request_accepted', {
           conversation: populatedConvo
         });
@@ -66,7 +64,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
 
       ctx.body = { success: true, conversation: populatedConvo };
     } else if (rel.chat_status === 'pending_mate') {
-      // --- TRIAL -> PERMANENT MATE ---
       rel.chat_status = 'mate';
       rel.expires_at = undefined;
       rel.cooldown_until = undefined;
@@ -81,7 +78,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
 
       await rel.save();
 
-      // PERMANENT STAT SYNC: Only mates, followers, and following are permanent stats
       await user_model.updateMany(
         { _id: { $in: rel.users } },
         { $inc: { 'stats.mates': 1, 'stats.followers': 1, 'stats.following': 1 } }
@@ -90,14 +86,14 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       const populatedConvo = rel.conversation_id
         ? await conversation_model
           .findById(rel.conversation_id)
-          .populate('participants', 'name img _id last_seen_version')
+          .populate('participants', PUBLIC_USER_FIELDS)
           .populate('last_message')
           .lean()
         : null;
 
       if (populatedConvo) {
-        populatedConvo.status = 'mate';
-        populatedConvo.relationship_id = rel._id.toString();
+        (populatedConvo as any).status = 'mate';
+        (populatedConvo as any).relationship_id = rel._id.toString();
       }
 
       if (partnerId) {
@@ -109,7 +105,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       ctx.body = { success: true, conversation: populatedConvo };
     }
   } else {
-    // --- DECLINE LOGIC ---
     if (rel.chat_status === 'pending_invite') {
       const conversationId = rel.conversation_id;
 
@@ -122,12 +117,10 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
         await rel.save();
       }
 
-      // Delete the conversation too — nothing useful in it yet
       if (conversationId) {
         await conversation_model.deleteOne({ _id: conversationId });
       }
 
-      // Notify the sender their invite was declined
       if (partnerId) {
         sendSocketNotificationToUser(partnerId.toString(), 'chat:request_declined', {
           conversation_id: conversationId?.toString()
@@ -136,7 +129,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
 
       ctx.body = { success: true };
     } else {
-      // pending_mate decline
       const isTrialValid = rel.expires_at && dayjs().isBefore(dayjs(rel.expires_at));
       rel.chat_status = isTrialValid ? 'temporary' : 'expired';
       if (!isTrialValid) rel.deleted_at = dayjs().add(30, 'days').toDate();
@@ -146,7 +138,7 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       const populatedConvo = rel.conversation_id
         ? await conversation_model
           .findById(rel.conversation_id)
-          .populate('participants', 'name img _id last_seen_version')
+          .populate('participants', PUBLIC_USER_FIELDS)
           .lean() as any
         : null;
 
@@ -169,7 +161,7 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
 });
 
 /**
- * FOLLOW / UNFOLLOW: Toggle and sync stats
+ * FOLLOW / UNFOLLOW
  */
 relationshipRouter.put('/follow/:target_id', async (ctx) => {
   const followerId = ctx.state.user._id.toString();
@@ -288,7 +280,7 @@ relationshipRouter.post('/unblock', async (ctx) => {
 });
 
 /**
- * UNFRIEND: Downgrade from Trial or Mate
+ * UNFRIEND
  */
 relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
   const myId = ctx.state.user._id.toString();
@@ -329,7 +321,7 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
 });
 
 /**
- * MATE REQUEST: Initiate upgrade via conversation context
+ * MATE REQUEST
  */
 relationshipRouter.post('/:conversation_id/mate-request', async (ctx) => {
   const { conversation_id } = ctx.params;
@@ -348,7 +340,7 @@ relationshipRouter.post('/:conversation_id/mate-request', async (ctx) => {
   if (partnerId) {
     const populatedConvo = await conversation_model
       .findById(conversation_id)
-      .populate('participants', 'name img _id last_seen_version')
+      .populate('participants', PUBLIC_USER_FIELDS)
       .populate('last_message')
       .lean() as any;
 
@@ -367,7 +359,7 @@ relationshipRouter.post('/:conversation_id/mate-request', async (ctx) => {
 });
 
 /**
- * UTILITY: Lists and IDs
+ * NETWORK LISTS - now returns enriched user data so the cache can ingest it
  */
 relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
   const { user_id, type } = ctx.params;
@@ -389,7 +381,8 @@ relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
 
   const rels = await relationship_model.find(query).sort({ updatedAt: -1 }).skip(skip).limit(Number(limit)).lean();
   const targetIds = rels.map(r => r.users.find(id => id.toString() !== user_id));
-  const users = await user_model.find({ _id: { $in: targetIds } }).select('name img _id description last_seen_version stats').lean();
+  // Use the projection — same fields we ship everywhere else
+  const users = await user_model.find({ _id: { $in: targetIds } }).select(PUBLIC_USER_FIELDS).lean();
 
   ctx.body = users.map(u => {
     const rel = rels.find(r => r.users.some(id => id.toString() === u._id.toString()));
