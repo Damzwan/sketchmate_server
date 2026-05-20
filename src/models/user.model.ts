@@ -2,26 +2,19 @@ import mongoose, { Schema } from 'mongoose';
 import { Mate, NotificationSubscription, Saved } from '../types/types';
 import { UserDocument } from '../types/mongoose.types';
 
-/**
- * CUSTOMIZATION SCHEMA
- */
+
 const customizationSchema = new Schema({
-  titleId: String,
-  fontFamily: String,
-  fontEffect: String,
-  cardBg: String,
-  cardBgColor: String,
-  nameColor: String,
-  descColor: String,
-  avatarBorderColor: String,
-  cardBorderColor: String,
-  signatureColor: String,
-  signaturePath: String,
-  signatureViewBox: String,
-  unlocked_items: { type: [String], default: [] }
+  themeId: { type: String, default: 'classic' },
+  fontId: { type: String, default: 'sketch' },
+  fontEffectId: { type: String, default: '' },
+  decorationId: { type: String, default: 'none' },
+  effectId: { type: String, default: 'none' },
+  titleId: { type: String, default: '' },
+  signaturePath: { type: String, default: '' },
+  signatureViewBox: { type: String, default: '' }
 }, {
   _id: false,
-  minimize: true
+  minimize: false  // ← keep empty-string fields so the doc shape is stable
 });
 
 /**
@@ -65,9 +58,9 @@ const user_schema = new Schema<UserDocument>({
   img: { type: String, required: true },
   description: { type: String, required: false },
 
-  stats: { type: statsSchema, default: () => ({}) }, // <-- NEW: Default empty stats
+  stats: { type: statsSchema, default: () => ({}) },
 
-  customization: { type: customizationSchema, required: false },
+  customization: { type: customizationSchema, default: () => ({}) },
 
   // --- @DEPRECATED MATES & CHAT ARRAYS ---
   mate_requests_received: { type: [String], default: [] },
