@@ -54,16 +54,16 @@ import { promises as fsPromises } from 'fs';
 import { inbox_model } from '../../models/inbox.model';
 import postRouter from './post.router';
 import { userRouter } from './user.router';
-import { reportRouter } from './report.router';
 import { chatRouter } from './chat.router';
 import { relationshipRouter } from './relationship.router';
 import { InboxDocument } from '../../types/mongoose.types';
+import { moderationRouter } from './moderation.router';
 
 export const router = new Router();
 
 router.use('/post', postRouter.routes(), postRouter.allowedMethods());
 router.use('/user', userRouter.routes(), userRouter.allowedMethods());
-router.use('/report', reportRouter.routes(), reportRouter.allowedMethods());
+router.use('/moderation', moderationRouter.routes(), moderationRouter.allowedMethods());
 router.use('/chats', chatRouter.routes(), chatRouter.allowedMethods());
 router.use('/relationship', relationshipRouter.routes(), relationshipRouter.allowedMethods());
 
