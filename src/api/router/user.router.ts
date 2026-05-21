@@ -8,12 +8,27 @@ import { Capability } from '../../types/moderation.policy';
 import { user_model } from '../../models/user.model';
 import { post_model, post_reaction_model } from '../../models/post.model';
 import { relationship_model } from '../../models/relationship.model';
-import { s3Creator } from '../../mongodb';
+import {
+  changeUserName, createEmblem,
+  createSaved, createSticker, deleteEmblem,
+  deleteProfileImg, deleteSaved, deleteSticker,
+  getUser,
+  s3Creator, subscribe, unsubscribe,
+  updateUser,
+  uploadProfileImg
+} from '../../mongodb';
 import { CONTAINER } from '../../s3';
-import { FeedPost } from '../../types/types';
+import {
+  ChangeUserNameParams,
+  FeedPost,
+  RegisterNotificationParams, UnRegisterNotificationParams,
+  UpdateUserParams,
+  UploadProfileImgParams
+} from '../../types/types';
 import { LeanPost, RelationshipDocument, UserDocument } from '../../types/mongoose.types';
 import { isUserOnline } from '../socket/socket';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
+import { migrateMatesToRelationships, parseParams, syncAndFinalizeMigrationStats } from '../../helper';
 
 export const userRouter = new Router();
 
@@ -346,4 +361,109 @@ userRouter.get('/public_users', requireAuth, async (ctx) => {
     .lean();
 
   ctx.body = users;
+});
+
+userRouter.get('/', requireAuth, async (ctx) => {
+  const auth_id = ctx.state.user.auth_id;
+  const _id = ctx.state.user._id.toString();
+
+  const res = await getUser({ auth_id, _id });
+  if (!res?.user) return ctx.throw(404, 'User not found');
+
+  const user = res.user as any;
+
+  if ((user.migration_version || 0) < 1) {
+    const newStats = await syncAndFinalizeMigrationStats(user);
+
+    migrateMatesToRelationships(user._id, user.mates)
+      .catch(err => console.error('Mates migration failed:', err));
+
+    user.stats = newStats;
+    user.mates = [];
+    user.migration_version = 1;
+  }
+
+  if (!user.customization) user.customization = {};
+  ctx.body = res;
+});
+
+// Update Username
+userRouter.put('/name', requireAuth, requireCapability(Capability.CHANGE_NAME), async (ctx) => {
+  const params = parseParams<ChangeUserNameParams>(ctx.request.body);
+  params._id = ctx.state.user._id.toString(); // SECURE
+  ctx.body = await changeUserName(params);
+});
+
+// General Updates
+userRouter.put('/update', requireAuth, requireCapability(Capability.CHANGE_NAME), async (ctx) => {
+  const params = parseParams<UpdateUserParams>(ctx.request.body);
+  params._id = ctx.state.user._id.toString(); // SECURE
+  ctx.body = await updateUser(params);
+});
+
+// Profile Image
+userRouter.put('/img', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
+  if (!ctx.request.files) throw new Error('No files');
+  const params: UploadProfileImgParams = {
+    _id: ctx.state.user._id.toString(),
+    img: ctx.request.files.file,
+    previousImage: ctx.request.query.previousImage as string
+  };
+  ctx.body = await uploadProfileImg(params);
+});
+
+userRouter.delete('/img', requireAuth, async (ctx) => {
+  const stock_img = ctx.request.query.stockImage as string;
+  ctx.body = await deleteProfileImg(ctx.state.user._id.toString(), stock_img);
+});
+
+// Inventory: Stickers
+userRouter.post('/sticker', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
+  if (!ctx.request.files) throw new Error('No files');
+  ctx.body = await createSticker({ _id: ctx.state.user._id.toString(), img: ctx.request.files.file });
+});
+
+userRouter.delete('/sticker', requireAuth, async (ctx) => {
+  ctx.body = await deleteSticker({
+    user_id: ctx.state.user._id.toString(),
+    sticker_url: ctx.query.sticker_url as string
+  });
+});
+
+// Inventory: Emblems
+userRouter.post('/emblem', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
+  if (!ctx.request.files) throw new Error('No files');
+  ctx.body = await createEmblem({ _id: ctx.state.user._id.toString(), img: ctx.request.files.file });
+});
+
+userRouter.delete('/emblem', requireAuth, async (ctx) => {
+  ctx.body = await deleteEmblem({ user_id: ctx.state.user._id.toString(), emblem_url: ctx.query.emblem_url as string });
+});
+
+// Inventory: Saved Drawings
+userRouter.post('/saved', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
+  if (!ctx.request.files) throw new Error('No files');
+  const files = ctx.request.files as any;
+  ctx.body = await createSaved({
+    _id: ctx.state.user._id.toString(),
+    img: files.img,
+    drawing: files.drawing
+  });
+});
+
+userRouter.delete('/saved', requireAuth, async (ctx) => {
+  ctx.body = await deleteSaved({
+    user_id: ctx.state.user._id.toString(),
+    drawing_url: ctx.query.drawing_url as string,
+    img_url: ctx.query.img_url as string
+  });
+});
+
+// Notifications
+userRouter.put('/subscribe', requireAuth, async (ctx) => {
+  ctx.body = await subscribe(parseParams<RegisterNotificationParams>(ctx.request.body));
+});
+
+userRouter.put('/unsubscribe', requireAuth, async (ctx) => {
+  ctx.body = await unsubscribe(parseParams<UnRegisterNotificationParams>(ctx.request.body));
 });

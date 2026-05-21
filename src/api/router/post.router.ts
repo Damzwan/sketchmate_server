@@ -159,7 +159,10 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
     const [latestCommentsRaw, userReactions] = await Promise.all([
       Promise.all(
         postIds.map(id =>
-          post_comment_model.findOne({ post_id: id }).sort({ createdAt: -1 }).lean()
+          post_comment_model.findOne({
+            post_id: id,
+            status: 'active'
+          }).sort({ createdAt: -1 }).lean()
         )
       ),
       post_reaction_model.find({
@@ -440,7 +443,10 @@ postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
   const skip = (page - 1) * limit;
 
   try {
-    const comments = await post_comment_model.find({ post_id: new Types.ObjectId(post_id) })
+    const comments = await post_comment_model.find({
+      post_id: new Types.ObjectId(post_id),
+      status: 'active'
+    })
       .sort({ createdAt: 1 })
       .skip(skip)
       .limit(limit)
