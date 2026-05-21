@@ -6,6 +6,8 @@ import { sendNotificationUser } from '../../notifications';
 import { lobbyInvitationNotification } from '../../config/notification.config';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
 import { s3Creator } from '../../mongodb';
+import { checkSocketCapability } from '../../middleware/moderation.middleware';
+import { Capability } from '../../types/moderation.policy';
 
 interface PublicLobby {
   id: string;
@@ -85,6 +87,28 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     }
 
     const userId = socket.data.user?._id.toString();
+
+    if (isPublic) {
+      const check = await checkSocketCapability(userId, Capability.JOIN_PUBLIC_LOBBY);
+      if (check.blocked) {
+        socket.emit('join-error', {
+          reason: 'CAPABILITY_BLOCKED',
+          restriction: check.restriction
+        });
+        return;
+      }
+    }
+
+    if (intent === 'create' && !isPublic) {
+      const check = await checkSocketCapability(userId, Capability.CREATE_LOBBY);
+      if (check.blocked) {
+        socket.emit('join-error', {
+          reason: 'CAPABILITY_BLOCKED',
+          restriction: check.restriction
+        });
+        return;
+      }
+    }
 
     const existingSocket = clients.find(
       s => s.data.user?._id.toString() === userId && s.id !== socket.id

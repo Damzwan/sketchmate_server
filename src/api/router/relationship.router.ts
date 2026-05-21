@@ -2,6 +2,8 @@ import Router from 'koa-router';
 import dayjs from 'dayjs';
 import { Types } from 'mongoose';
 import { requireAuth } from '../../middleware/auth';
+import { requireCapability } from '../../middleware/moderation.middleware';
+import { Capability } from '../../types/moderation.policy';
 import { relationship_model } from '../../models/relationship.model';
 import { conversation_model } from '../../models/conversation.model';
 import { user_model } from '../../models/user.model';
@@ -14,6 +16,11 @@ relationshipRouter.use(requireAuth);
 
 /**
  * RESPOND: Accept or Decline trials and mate requests
+ *
+ * Intentionally NOT gated. Responding to an existing request is a no-op or a
+ * decline at worst — both are operations a restricted user should still be
+ * able to do. They shouldn't be FORCED to remain in a pending state just
+ * because they got a strike.
  */
 relationshipRouter.post('/:id/respond', async (ctx) => {
   const { id } = ctx.params;
@@ -26,7 +33,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
     return ctx.throw(404, 'Relationship not found');
   }
 
-  // Only the person who did NOT initiate can respond
   if (rel.action_user_id?.toString() === user_id) {
     return ctx.throw(400, 'Waiting for partner response');
   }
@@ -70,10 +76,8 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       rel.expires_at = undefined;
       rel.cooldown_until = undefined;
       rel.deleted_at = undefined;
-      // Note: We no longer modify rel.follows here. Follows are handled separately via the follow endpoint.
       await rel.save();
 
-      // Only increment the 'mates' stat
       await user_model.updateMany(
         { _id: { $in: rel.users } },
         { $inc: { 'stats.mates': 1 } }
@@ -101,7 +105,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       ctx.body = { success: true, conversation: populatedConvo };
     }
   } else {
-    // Action: Decline
     if (rel.chat_status === 'pending_invite') {
       const conversationId = rel.conversation_id;
 
@@ -126,7 +129,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
 
       ctx.body = { success: true };
     } else if (rel.chat_status === 'pending_mate') {
-      // Downgrade pending_mate back to temporary or expired
       const isTrialValid = rel.expires_at && dayjs().isBefore(dayjs(rel.expires_at));
       rel.chat_status = isTrialValid ? 'temporary' : 'expired';
       rel.action_user_id = undefined;
@@ -170,7 +172,15 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
 });
 
 /**
- * FOLLOW / UNFOLLOW
+ * FOLLOW / UNFOLLOW — gated on FOLLOW_USER (a new capability).
+ *
+ * Note: we use a single endpoint for both. The capability check applies
+ * uniformly. A user can ALWAYS unfollow regardless of their restriction —
+ * but since unfollowing is "destructive of their own action", we let it pass.
+ * The gate fires for follows, not unfollows.
+ *
+ * Implementation detail: the gate check happens before we know if it's a
+ * follow or unfollow. We deal with that inline in the handler.
  */
 relationshipRouter.put('/follow/:target_id', async (ctx) => {
   const followerId = ctx.state.user._id.toString();
@@ -187,6 +197,7 @@ relationshipRouter.put('/follow/:target_id', async (ctx) => {
     'follows.followed': followedOID
   });
 
+  // UNFOLLOW path — always allowed.
   if (existing) {
     await Promise.all([
       relationship_model.updateOne(
@@ -197,24 +208,50 @@ relationshipRouter.put('/follow/:target_id', async (ctx) => {
       user_model.updateOne({ _id: followerOID }, { $inc: { 'stats.following': -1 } })
     ]);
     ctx.body = { isFollowing: false };
-  } else {
-    await Promise.all([
-      relationship_model.updateOne(
-        { users: sortedUsers },
-        {
-          $setOnInsert: { users: sortedUsers },
-          $addToSet: { follows: { follower: followerOID, followed: followedOID } }
-        },
-        { upsert: true }
-      ),
-      user_model.updateOne({ _id: followedOID }, { $inc: { 'stats.followers': 1 } }),
-      user_model.updateOne({ _id: followerOID }, { $inc: { 'stats.following': 1 } })
-    ]);
-    ctx.body = { isFollowing: true };
+    return;
   }
+
+  // FOLLOW path — check capability inline. We can't use middleware because
+  // we only know it's a follow after the DB lookup above.
+  const restriction = ctx.state.user.restriction;
+  if (restriction?.blocked_capabilities?.includes(Capability.FOLLOW_USER)) {
+    ctx.status = 403;
+    ctx.body = {
+      error: 'capability_blocked',
+      capability: Capability.FOLLOW_USER,
+      restriction: {
+        level: restriction.level,
+        reason: restriction.reason,
+        expires_at: restriction.expires_at
+      }
+    };
+    return;
+  }
+
+  await Promise.all([
+    relationship_model.updateOne(
+      { users: sortedUsers },
+      {
+        $setOnInsert: { users: sortedUsers },
+        $addToSet: { follows: { follower: followerOID, followed: followedOID } }
+      },
+      { upsert: true }
+    ),
+    user_model.updateOne({ _id: followedOID }, { $inc: { 'stats.followers': 1 } }),
+    user_model.updateOne({ _id: followerOID }, { $inc: { 'stats.following': 1 } })
+  ]);
+  ctx.body = { isFollowing: true };
 });
 
 
+/**
+ * BLOCK — intentionally NOT gated.
+ *
+ * A user under restriction MUST still be able to block harassers. This is a
+ * safety feature, not a social action. Blocking even works for fully suspended
+ * users — though they obviously can't interact with anyone anyway, blocking
+ * still has the effect of preventing the other party from sending to them.
+ */
 relationshipRouter.post('/block', async (ctx) => {
   const current_user_id = ctx.state.user._id.toString();
   const { target_id } = ctx.request.body;
@@ -277,6 +314,9 @@ relationshipRouter.post('/block', async (ctx) => {
   ctx.body = { success: true, message: 'User blocked' };
 });
 
+/**
+ * UNBLOCK — not gated either. The user is undoing their own action.
+ */
 relationshipRouter.post('/unblock', async (ctx) => {
   const current_user_id = ctx.state.user._id.toString();
   const { target_id } = ctx.request.body;
@@ -284,7 +324,6 @@ relationshipRouter.post('/unblock', async (ctx) => {
   const rel = await relationship_model.findOne({ users: sortedUsers });
 
   if (rel?.chat_status === 'blocked' && rel.blocked_by?.toString() === current_user_id) {
-
     if (rel.conversation_id) {
       rel.chat_status = 'none';
       rel.blocked_by = undefined;
@@ -300,7 +339,8 @@ relationshipRouter.post('/unblock', async (ctx) => {
 });
 
 /**
- * UNFRIEND
+ * UNFRIEND — not gated. Ending a relationship is always allowed.
+ * (Severing connections is the opposite direction from "social action".)
  */
 relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
   const myId = ctx.state.user._id.toString();
@@ -341,9 +381,10 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
 });
 
 /**
- * MATE REQUEST
+ * MATE REQUEST — gated on SEND_MATE_REQUEST.
+ * Blocked at level 4+ ("Account Under Review").
  */
-relationshipRouter.post('/:conversation_id/mate-request', async (ctx) => {
+relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capability.SEND_MATE_REQUEST), async (ctx) => {
   const { conversation_id } = ctx.params;
   const user_id = ctx.state.user._id;
 
@@ -379,7 +420,7 @@ relationshipRouter.post('/:conversation_id/mate-request', async (ctx) => {
 });
 
 /**
- * NETWORK LISTS - now returns enriched user data so the cache can ingest it
+ * NETWORK LISTS — reads, not gated.
  */
 relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
   const { user_id, type } = ctx.params;
@@ -401,7 +442,6 @@ relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
 
   const rels = await relationship_model.find(query).sort({ updatedAt: -1 }).skip(skip).limit(Number(limit)).lean();
   const targetIds = rels.map(r => r.users.find(id => id.toString() !== user_id));
-  // Use the projection — same fields we ship everywhere else
   const users = await user_model.find({ _id: { $in: targetIds } }).select(PUBLIC_USER_FIELDS).lean();
 
   ctx.body = users.map(u => {
@@ -429,6 +469,9 @@ relationshipRouter.get('/:userId/stats', async (ctx) => {
   ctx.body = user?.stats || { mates: 0, followers: 0, following: 0, posts: 0 };
 });
 
+/**
+ * CANCEL MATE REQUEST — not gated. Canceling is always allowed.
+ */
 relationshipRouter.post('/:conversation_id/mate-request/cancel', async (ctx) => {
   const { conversation_id } = ctx.params;
   const user_id = ctx.state.user._id;
@@ -441,7 +484,6 @@ relationshipRouter.post('/:conversation_id/mate-request/cancel', async (ctx) => 
     return ctx.throw(400, 'Cannot cancel this request');
   }
 
-  // Evaluate if the original 24h trial is still running
   const isTrialValid = rel.expires_at && dayjs().isBefore(dayjs(rel.expires_at));
   rel.chat_status = isTrialValid ? 'temporary' : 'expired';
   rel.action_user_id = undefined;
@@ -460,7 +502,6 @@ relationshipRouter.post('/:conversation_id/mate-request/cancel', async (ctx) => 
       populatedConvo.relationship_id = rel._id.toString();
     }
 
-    // We reuse mate_declined because the frontend handles the state downgrade identically
     sendSocketNotificationToUser(partnerId.toString(), 'chat:mate_declined', {
       conversation_id,
       conversation: populatedConvo,

@@ -88,40 +88,36 @@ async function liftExpiredRestriction(userId: string) {
   }
 }
 
-/**
- * Socket-side equivalent: check capability without throwing.
- * Returns null if allowed, or the restriction object if blocked.
- *
- * Use this in your socket handlers (chat:send_message, balloon emits, etc.)
- * because they can't use Koa middleware.
- */
-export function checkCapability(user: any, capability: Capability): {
-  blocked: boolean;
-  restriction?: any;
-} {
+
+export async function checkSocketCapability(
+  userId: string,
+  capability: Capability
+): Promise<{ blocked: boolean; restriction?: any }> {
+  const user = await user_model
+    .findById(userId)
+    .select('restriction')
+    .lean() as any;
+
   const restriction = user?.restriction;
   if (!restriction || restriction.level === 0) return { blocked: false };
 
+  // Lazy expiry: if the restriction has elapsed, let the action through.
+  // The HTTP middleware will formally lift it on the user's next request.
   if (restriction.expires_at && new Date(restriction.expires_at) < new Date()) {
-    // Don't lift here — the next HTTP request will. Just treat as expired.
     return { blocked: false };
   }
 
-  const blocked =
-    restriction.blocked_capabilities?.includes(capability) ||
-    isCapabilityBlocked(restriction.level, capability);
+  const isBlocked = restriction.blocked_capabilities?.includes(capability);
+  if (!isBlocked) return { blocked: false };
 
-  if (!blocked) return { blocked: false };
-
-  const config = getLevelConfig(restriction.level);
   return {
     blocked: true,
     restriction: {
       level: restriction.level,
-      name: config.name,
-      description: config.description,
       reason: restriction.reason,
-      expires_at: restriction.expires_at
+      expires_at: restriction.expires_at,
+      blocked_capabilities: restriction.blocked_capabilities
     }
   };
 }
+

@@ -34,7 +34,7 @@ export enum Capability {
 
   CHANGE_NAME = 'CHANGE_NAME',
   CHANGE_PROFILE_IMG = 'CHANGE_PROFILE_IMG',
-
+  FOLLOW_USER = 'FOLLOW_USER',
   REPORT_CONTENT = 'REPORT_CONTENT',        // yes, this is gated — spam reporters lose this
 }
 
@@ -117,7 +117,9 @@ export const STRIKE_LADDER = [
       Capability.SEND_BALLOON,
       Capability.RECEIVE_BALLOON,
       Capability.JOIN_PUBLIC_LOBBY,
-      Capability.CREATE_LOBBY
+      Capability.CREATE_LOBBY,
+      Capability.FOLLOW_USER,
+      Capability.COMMENT_ON_INBOX
     ] as Capability[],
     duration_days: 30
   },
