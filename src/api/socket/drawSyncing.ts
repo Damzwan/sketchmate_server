@@ -92,6 +92,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       const check = await checkSocketCapability(userId, Capability.JOIN_PUBLIC_LOBBY);
       if (check.blocked) {
         socket.emit('join-error', {
+          action: 'join-lobby',
           reason: 'CAPABILITY_BLOCKED',
           restriction: check.restriction
         });

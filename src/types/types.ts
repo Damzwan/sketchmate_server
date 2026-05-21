@@ -337,9 +337,6 @@ export interface Comment {
   message: string;
   _id: string;
   date: string;
-
-  // Inbox-comment moderation — removed comments render as "[removed]"
-  // client-side so threading stays intact.
   status?: 'active' | 'removed';
   reports_count?: number;
 }
