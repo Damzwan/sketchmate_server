@@ -20,6 +20,7 @@ const relationship_schema = new Schema<RelationshipDocument>({
 
   conversation_id: { type: ObjectId, ref: 'conversations' },
   action_user_id: { type: ObjectId, ref: 'users' },
+  blocked_by: { type: ObjectId, ref: 'users', index: true },
 
   follows: [{
     follower: { type: ObjectId, ref: 'users', required: true },

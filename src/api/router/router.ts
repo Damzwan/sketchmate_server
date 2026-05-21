@@ -30,11 +30,13 @@ import {
   deleteSaved,
   deleteSticker,
   getBalloon,
-  getInboxItems, getInboxItemsV2,
+  getInboxItems,
+  getInboxItemsV2,
   getPartialUsers,
   getUser,
   onLoginEvent,
-  removeFromInbox, s3Creator,
+  removeFromInbox,
+  s3Creator,
   searchMate,
   seeInbox,
   subscribe,
@@ -49,9 +51,7 @@ import { mixpanelEvents, trackEvent } from '../../mixpanel';
 import zlib from 'zlib';
 import { promisify } from 'util';
 import { promises as fsPromises } from 'fs';
-import { user_model } from '../../models/user.model';
 import { inbox_model } from '../../models/inbox.model';
-import mongoose from 'mongoose';
 import postRouter from './post.router';
 import { userRouter } from './user.router';
 import { reportRouter } from './report.router';

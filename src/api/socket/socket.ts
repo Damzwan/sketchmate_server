@@ -83,7 +83,8 @@ export function registerSocketHandlers(io: Server) {
           name: user.name,
           img: user.img,
           date_of_birth: user.date_of_birth,
-          version: params.version || null
+          version: params.version || null,
+          customization: user.customization
         };
         socket.join(userIdString);
 
@@ -101,15 +102,7 @@ export function registerSocketHandlers(io: Server) {
           socket.to(watcherRooms).emit('friend:online', {
             user_id: userIdString,
             status: 'online',
-            user: {
-              _id: userIdString,
-              name: user.name,
-              img: user.img,
-              last_seen_version: user.last_seen_version,
-              subscription_tier: user.subscription_tier,
-              stats: user.stats,
-              customization: user.customization
-            }
+            last_seen_version: user.last_seen_version
           });
         }
 
@@ -121,7 +114,7 @@ export function registerSocketHandlers(io: Server) {
       }
     });
 
-    socket.on(SOCKET_ENDPONTS.disconnect, () => {
+    socket.on(SOCKET_ENDPONTS.disconnect, async () => {
       const userId = socket.data.user?._id?.toString();
 
       if (userId && userSocketMap[userId]) {
@@ -132,8 +125,30 @@ export function registerSocketHandlers(io: Server) {
         if (userSocketMap[userId].length === 0) {
           delete userSocketMap[userId];
 
-          // Emit offline status
-          socket.broadcast.emit('friend:offline', { user_id: userId });
+          try {
+            // 1. Fetch their up-to-date friend list directly from the database
+            const relationships = await relationship_model.find({
+              users: new Types.ObjectId(userId),
+              chat_status: { $in: ['mate', 'temporary', 'pending_mate', 'expired'] }
+            }).select('users').lean();
+
+            const watcherSet = new Set<string>();
+            relationships.forEach(rel => {
+              rel.users.forEach(p => {
+                const pId = p.toString();
+                if (pId !== userId) watcherSet.add(pId);
+              });
+            });
+
+            const watcherRooms = Array.from(watcherSet);
+
+            // 2. Targeted emit ONLY to their actual friends
+            if (watcherRooms.length > 0) {
+              socket.to(watcherRooms).emit('friend:offline', { user_id: userId });
+            }
+          } catch (error) {
+            console.error('Error broadcasting offline status:', error);
+          }
         }
       }
 
