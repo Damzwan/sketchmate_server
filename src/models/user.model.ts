@@ -76,9 +76,6 @@ const user_schema = new Schema<UserDocument>({
   stats: { type: statsSchema, default: () => ({}) },
   customization: { type: customizationSchema, default: () => ({}) },
 
-  // --- MODERATION (NEW) ---
-  // restriction is the denormalized projection of moderation_actions —
-  // read on every gated request, so it must be a single field, not a query.
   restriction: { type: restrictionSchema, default: () => ({}) },
   strike_summary: { type: strikeSummarySchema, default: () => ({}) },
 

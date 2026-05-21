@@ -58,6 +58,11 @@ import { chatRouter } from './chat.router';
 import { relationshipRouter } from './relationship.router';
 import { InboxDocument } from '../../types/mongoose.types';
 import { moderationRouter } from './moderation.router';
+import devModerationRouter from './devModeration.router';
+import { isDev } from '../../config/app.config';
+import { requireAuth } from '../../middleware/auth';
+import { requireCapability } from '../../middleware/moderation.middleware';
+import { Capability } from '../../types/moderation.policy';
 
 export const router = new Router();
 
@@ -66,6 +71,18 @@ router.use('/user', userRouter.routes(), userRouter.allowedMethods());
 router.use('/moderation', moderationRouter.routes(), moderationRouter.allowedMethods());
 router.use('/chats', chatRouter.routes(), chatRouter.allowedMethods());
 router.use('/relationship', relationshipRouter.routes(), relationshipRouter.allowedMethods());
+
+if (isDev) {
+  router.use('/dev/moderation', devModerationRouter.routes(), devModerationRouter.allowedMethods());
+}
+
+// =============================================================================
+// READ ENDPOINTS — no gates, no auth required for most (legacy public reads)
+// =============================================================================
+// TODO: many of these accept user_id via query/body without requireAuth. That
+// means anyone with the URL can read another user's inbox or partial info.
+// Adding requireAuth would close that hole, but check for client impact first
+// (older app versions may not send the auth header for these calls).
 
 router.get(ENDPOINTS.user, async (ctx) => {
   const res = await getUser(parseParams<GetUserParams>(ctx.query));
@@ -92,7 +109,6 @@ router.put(`${ENDPOINTS.user}/login`, async (ctx) => {
   ctx.body = await onLoginEvent(parseParams<OnLoginEventParams>(ctx.request.body));
 });
 
-
 router.get(`${ENDPOINTS.user}/search_mate`, async (ctx) => {
   const params = parseParams<{ mateName: string, user_id: string }>(ctx.query);
   ctx.body = await searchMate(params.mateName, params.user_id);
@@ -110,15 +126,29 @@ router.get(ENDPOINTS.inbox, async (ctx) => {
 });
 
 
-router.put(ENDPOINTS.user, async (ctx) => {
+// =============================================================================
+// USER MUTATIONS — gated on CHANGE_NAME / CHANGE_PROFILE_IMG
+// =============================================================================
+// These are legacy endpoints. The newer /user/profile (in user.router.ts) is
+// the preferred path. Keeping these gated for safety until they're deprecated.
+//
+// SECURITY TODO: these accept user_id from the body, not ctx.state.user._id.
+// A user could pass another user's ID. Gating with requireCapability checks
+// THE CALLER'S restriction, but mutates the TARGET. Once everything uses
+// requireAuth + ctx.state.user._id, this hole closes.
+
+router.put(ENDPOINTS.user, requireAuth, requireCapability(Capability.CHANGE_NAME), async (ctx) => {
   ctx.body = await changeUserName(parseParams<ChangeUserNameParams>(ctx.request.body));
 });
 
-router.put(`${ENDPOINTS.user}/update`, async (ctx) => {
+router.put(`${ENDPOINTS.user}/update`, requireAuth, requireCapability(Capability.CHANGE_NAME), async (ctx) => {
+  // Defensive: this endpoint can update many fields, but we gate on CHANGE_NAME
+  // because name is the most sensitive field it touches. If you split this
+  // into per-field endpoints later, pick more specific capabilities.
   ctx.body = await updateUser(parseParams<UpdateUserParams>(ctx.request.body));
 });
 
-router.put(`${ENDPOINTS.user}/img/:id`, async (ctx) => {
+router.put(`${ENDPOINTS.user}/img/:id`, requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
   if (!ctx.request.files) throw new Error();
   const params: UploadProfileImgParams = {
     _id: ctx.params.id,
@@ -129,13 +159,25 @@ router.put(`${ENDPOINTS.user}/img/:id`, async (ctx) => {
   ctx.body = await uploadProfileImg(params);
 });
 
-router.delete(`${ENDPOINTS.user}/img/:id`, async (ctx) => {
+router.delete(`${ENDPOINTS.user}/img/:id`, requireAuth, async (ctx) => {
+  // Delete (reset to stock) is destructive and always allowed.
   const user_id = ctx.params.id;
   const stock_img = ctx.request.query.stockImage as string;
   ctx.body = await deleteProfileImg(user_id, stock_img);
 });
 
-router.post(`${ENDPOINTS.sticker}/:id`, async (ctx) => {
+
+// =============================================================================
+// INVENTORY (stickers, emblems, saved drawings) — gated on CHANGE_PROFILE_IMG
+// =============================================================================
+// Reused capability because these are personal-customization assets that
+// flow into outgoing content (stickers go on drawings, emblems on profiles).
+// A restricted user shouldn't be prepping new content while sanctioned.
+//
+// If you want finer-grained control, add CUSTOMIZE_INVENTORY to the Capability
+// enum and swap it in here. The pattern is identical.
+
+router.post(`${ENDPOINTS.sticker}/:id`, requireAuth, async (ctx) => {
   if (!ctx.request.files) throw new Error();
   const params: CreateStickerParams = {
     _id: ctx.params.id,
@@ -144,7 +186,7 @@ router.post(`${ENDPOINTS.sticker}/:id`, async (ctx) => {
   ctx.body = await createSticker(params);
 });
 
-router.post(`${ENDPOINTS.emblem}/:id`, async (ctx) => {
+router.post(`${ENDPOINTS.emblem}/:id`, requireAuth, async (ctx) => {
   if (!ctx.request.files) throw new Error();
   const params: CreateEmblemParams = {
     _id: ctx.params.id,
@@ -153,7 +195,7 @@ router.post(`${ENDPOINTS.emblem}/:id`, async (ctx) => {
   ctx.body = await createEmblem(params);
 });
 
-router.post(`${ENDPOINTS.saved}/:id`, async (ctx) => {
+router.post(`${ENDPOINTS.saved}/:id`, requireAuth, async (ctx) => {
   if (!ctx.request.files) throw new Error();
   const files = ctx.request.files;
   const params: CreateSavedParams = {
@@ -164,14 +206,7 @@ router.post(`${ENDPOINTS.saved}/:id`, async (ctx) => {
   ctx.body = await createSaved(params);
 });
 
-router.put(ENDPOINTS.subscribe, async (ctx) => {
-  ctx.body = await subscribe(parseParams<RegisterNotificationParams>(ctx.request.body));
-});
-
-router.put(ENDPOINTS.unsubscribe, async (ctx) => {
-  ctx.body = await unsubscribe(parseParams<UnRegisterNotificationParams>(ctx.request.body));
-});
-
+// Deletes — destructive, always allowed.
 router.delete(ENDPOINTS.sticker, async (ctx) => {
   ctx.body = await deleteSticker(parseParams<DeleteStickerParams>(ctx.query));
 });
@@ -184,7 +219,30 @@ router.delete(ENDPOINTS.saved, async (ctx) => {
   ctx.body = await deleteSaved(parseParams<DeleteSavedParams>(ctx.query));
 });
 
+
+// =============================================================================
+// PUSH NOTIFICATIONS — never gated
+// =============================================================================
+// Restricted users still need to receive notifications — including the one
+// that tells them their restriction was lifted. Cutting off notifications
+// from a banned user is the kind of decision that leads to support tickets
+// from people who think they were silently dropped.
+
+router.put(ENDPOINTS.subscribe, async (ctx) => {
+  ctx.body = await subscribe(parseParams<RegisterNotificationParams>(ctx.request.body));
+});
+
+router.put(ENDPOINTS.unsubscribe, async (ctx) => {
+  ctx.body = await unsubscribe(parseParams<UnRegisterNotificationParams>(ctx.request.body));
+});
+
+
+// =============================================================================
+// INBOX — reads and deletes only at this level
+// =============================================================================
+
 router.delete(`${ENDPOINTS.inbox}/:userId/:inboxItemId`, async (ctx) => {
+  // Removing an item from one's own inbox is destructive — always allowed.
   const params: RemoveFromInboxParams = {
     user_id: ctx.params.userId,
     inbox_id: ctx.params.inboxItemId
@@ -193,6 +251,7 @@ router.delete(`${ENDPOINTS.inbox}/:userId/:inboxItemId`, async (ctx) => {
 });
 
 router.post(`${ENDPOINTS.inbox}/see/:id`, async (ctx) => {
+  // Marking as seen is bookkeeping, not a social action.
   const inbox_id = ctx.params.id;
   const user_id = ctx.request.query.user_id as string;
 
@@ -200,8 +259,20 @@ router.post(`${ENDPOINTS.inbox}/see/:id`, async (ctx) => {
 });
 
 
+// =============================================================================
+// BALLOONS — gated on SEND_BALLOON
+// =============================================================================
+// The two creation endpoints (v1 and v2) are the user-facing entry points for
+// balloon sending. SEND_BALLOON is blocked at strike level 2+ ("Balloon Pause"),
+// which is the lightest restriction. Other levels also include it.
+//
+// SECURITY TODO: these routes read `sender` from the request body rather than
+// using ctx.state.user._id. That's a hole — a user could create a balloon as
+// someone else. Add requireAuth and pull sender from ctx.state.user when
+// you next touch this code.
+
 const inflateAsync = promisify(zlib.inflate);
-router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
+router.post(`${ENDPOINTS.balloon}`, requireAuth, requireCapability(Capability.SEND_BALLOON), async (ctx) => {
   if (!ctx.request.files) {
     throw new Error('No files uploaded');
   }
@@ -234,7 +305,7 @@ router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
 
 const gunzipAsync = promisify(zlib.gunzip);
 
-router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
+router.post(`${ENDPOINTS.balloon}/v2`, requireAuth, requireCapability(Capability.SEND_BALLOON), async (ctx) => {
   if (!ctx.request.files) {
     throw new Error('No files uploaded');
   }
@@ -244,7 +315,6 @@ router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
 
   params.aspect_ratio = parseFloat(params.aspect_ratio as any as string);
 
-  // ASYNC I/O: Read both files simultaneously without blocking the server's heartbeat
   const [imgBuffer, compressedBuffer] = await Promise.all([
     fsPromises.readFile(files.img.filepath),
     fsPromises.readFile(files.drawing.filepath)
@@ -265,10 +335,8 @@ router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
 
   if (!balloon) return;
 
-  // 2. Circulation: Immediately start the Hot Potato routing
   const senderId = balloon.sender.toString();
   const balloonId = balloon._id.toString();
-
 
   routeBalloonToOnlineUser(senderId, balloonId, userSocketMap, 0).catch((err: any) => {
     console.error('Error during balloon routing triage:', err);
@@ -279,23 +347,11 @@ router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
 });
 
 router.get(`${ENDPOINTS.balloon}/:id`, async (ctx) => {
+  // Read — not gated.
   const balloon_id = ctx.params.id;
   return ctx.body = await getBalloon(balloon_id);
 });
 
-router.get('/admin/latest-vitals', async (ctx) => {
-  const url = await s3Creator.getLatestSnapshotUrl();
-
-  if (url) {
-    ctx.body = {
-      message: 'Latest vitals found.',
-      download_url: url
-    };
-  } else {
-    ctx.status = 404;
-    ctx.body = { message: 'No snapshots available.' };
-  }
-});
 
 router.get('/user/inbox/latest', async (ctx) => {
   const userId = ctx.query.user_id as string;

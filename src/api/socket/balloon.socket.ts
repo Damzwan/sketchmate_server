@@ -33,6 +33,8 @@ import { sendNotification, sendNotificationUser } from '../../notifications';
 import { balloon_model } from '../../models/balloon.model';
 import { userSocketMap } from './socket';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
+import { checkSocketCapability } from '../../middleware/moderation.middleware';
+import { Capability } from '../../types/moderation.policy';
 
 export function registerV2BalloonHandlers(io: Server, socket: Socket) {
 
@@ -89,7 +91,15 @@ export function registerV2BalloonHandlers(io: Server, socket: Socket) {
     sender_id: string,
     user_id: string
   }) => {
-    // 1. Stabilize the patient (Clear the timer)
+    const check = await checkSocketCapability(params.user_id, Capability.RECEIVE_BALLOON);
+    if (check.blocked) {
+      socket.emit('capability-blocked', {
+        action: 'accept-balloon',
+        restriction: check.restriction
+      });
+      return;
+    }
+
     if (activeBalloonTimeouts.has(params.balloon_id)) {
       clearTimeout(activeBalloonTimeouts.get(params.balloon_id)!);
       activeBalloonTimeouts.delete(params.balloon_id);

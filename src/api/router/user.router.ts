@@ -3,6 +3,8 @@ import Router from 'koa-router';
 import dayjs from 'dayjs';
 import { Types } from 'mongoose';
 import { requireAuth } from '../../middleware/auth';
+import { requireCapability } from '../../middleware/moderation.middleware';
+import { Capability } from '../../types/moderation.policy';
 import { user_model } from '../../models/user.model';
 import { post_model, post_reaction_model } from '../../models/post.model';
 import { relationship_model } from '../../models/relationship.model';
@@ -16,11 +18,7 @@ import { PUBLIC_USER_FIELDS } from '../../types/projections';
 export const userRouter = new Router();
 
 /**
- * USER POSTS: Get hydrated active posts for a user
- *
- * The author projection here is intentionally minimal (just _id/name/img).
- * The viewer's frontend cache already holds the author's full public
- * customization — populating it here would be redundant bytes.
+ * USER POSTS — read endpoint, not gated.
  */
 userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
   const { user_id: targetUserId } = ctx.params;
@@ -98,7 +96,16 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
 });
 
 /**
- * UPDATE PROFILE: Handle name changes, bio, and customization
+ * UPDATE PROFILE — partially gated.
+ *
+ * This endpoint bundles three different changes: name, bio/description, and
+ * customization. A user under restriction should still be able to update their
+ * bio and pick a different theme — those don't surface to other users as new
+ * activity. But name changes ARE social (the user appears renamed across the
+ * network), so we gate name changes specifically using CHANGE_NAME.
+ *
+ * Two-tier check inside the handler rather than middleware, because we don't
+ * know until we read the body which fields are changing.
  */
 const NAME_CHANGE_COOLDOWN_DAYS = 31;
 userRouter.put('/profile', requireAuth, async (ctx) => {
@@ -115,6 +122,23 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
   }
 
   if (name && name !== user.name) {
+    // Restriction check ONLY fires when the user is actually changing their
+    // name. Bio/customization updates pass through even at level 4.
+    const restriction = ctx.state.user.restriction;
+    if (restriction?.blocked_capabilities?.includes(Capability.CHANGE_NAME)) {
+      ctx.status = 403;
+      ctx.body = {
+        error: 'capability_blocked',
+        capability: Capability.CHANGE_NAME,
+        restriction: {
+          level: restriction.level,
+          reason: restriction.reason,
+          expires_at: restriction.expires_at
+        }
+      };
+      return;
+    }
+
     const isPro = user.subscription_tier === 'pro';
     const daysSinceChange = user.last_name_change
       ? dayjs().diff(dayjs(user.last_name_change), 'day')
@@ -150,9 +174,13 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
 });
 
 /**
- * UPLOAD IMAGE: Profile picture handling
+ * UPLOAD IMAGE — gated on CHANGE_PROFILE_IMG.
+ *
+ * Profile images are social (everyone who interacts with this user sees them),
+ * so a sanctioned user shouldn't be able to swap them. This matters for
+ * impersonation/harassment cases especially.
  */
-userRouter.post('/upload-image', requireAuth, async (ctx) => {
+userRouter.post('/upload-image', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
   const { _id } = ctx.state.user;
   const file = (ctx.request as any).files?.img;
   const { previousImage } = ctx.request.body;
@@ -177,19 +205,21 @@ userRouter.post('/upload-image', requireAuth, async (ctx) => {
 });
 
 
+/**
+ * GET PROFILE — read endpoint, not gated.
+ */
 userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
   const { user_id: targetId } = ctx.params;
   const viewer_id = ctx.state.user._id.toString();
 
   try {
     const sortedUsers = [viewer_id, targetId].sort();
-``
+
     const [
       user,
       connection,
       posts
     ] = await Promise.all([
-      // Use FULL_USER_FIELDS so the response includes signature + description
       user_model.findById(targetId).select(PUBLIC_USER_FIELDS).lean() as Promise<UserDocument | null>,
       relationship_model.findOne({ users: sortedUsers }).lean() as Promise<RelationshipDocument | null>,
       post_model.find({
@@ -242,10 +272,7 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
         description: user.description || '',
         img: user.img,
         last_seen_version: user.last_seen_version,
-        // Customization (full, with signature) — frontend ProfileCard
-        // expects this nested object exactly as stored
         customization: user.customization || {},
-        // Stats sourced directly from the User document
         stats: user.stats || { followers: 0, following: 0, mates: 0, posts: 0 },
         chat_status: connection?.chat_status || 'none',
         relationship: {
@@ -262,10 +289,7 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
 });
 
 /**
- * ONLINE FRIENDS: list of currently-online mates
- *
- * Projection updated to include public customization so online friends
- * render with their decorations/titles without an extra cache fill.
+ * ONLINE FRIENDS — read, not gated.
  */
 userRouter.get('/online-friends', requireAuth, async (ctx) => {
   const viewerId = ctx.state.user._id.toString();

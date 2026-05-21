@@ -36,6 +36,8 @@ import { RelationshipDocument, UserDocument } from '../../types/mongoose.types';
 import { relationship_model } from '../../models/relationship.model';
 import { Types } from 'mongoose';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
+import { checkSocketCapability } from '../../middleware/moderation.middleware';
+import { Capability } from '../../types/moderation.policy';
 
 const inflateAsync = promisify(zlib.inflate);
 
@@ -285,6 +287,15 @@ export function registerSocketHandlers(io: Server) {
 
         params.img = imageBuffer;
 
+        const check = await checkSocketCapability(params._id, Capability.SEND_INBOX_DRAWING);
+        if (check.blocked) {
+          socket.emit('capability-blocked', {
+            action: 'send-inbox-drawing',
+            restriction: check.restriction
+          });
+          return;
+        }
+
         // 4. Clear the arrays to free up the RAM immediately
         textChunks = [];
         imageChunks = [];
@@ -324,6 +335,15 @@ export function registerSocketHandlers(io: Server) {
 
 
     socket.on(SOCKET_ENDPONTS.comment, async (params: CommentParams) => {
+      const check = await checkSocketCapability(params.sender, Capability.COMMENT_ON_INBOX);
+      if (check.blocked) {
+        socket.emit('capability-blocked', {
+          action: 'comment-on-inbox',
+          restriction: check.restriction
+        });
+        return;
+      }
+
       const createdComment = await comment(params);
       const commentRes: CommentRes = {
         comment: createdComment,

@@ -3,6 +3,8 @@ import { saveMessageLogic } from '../services/chat.service';
 import { relationship_model } from '../../models/relationship.model';
 import { Types } from 'mongoose';
 import { RelationshipDocument } from '../../types/mongoose.types';
+import { checkSocketCapability } from '../../middleware/moderation.middleware';
+import { Capability } from '../../types/moderation.policy';
 
 export function registerChatHandlers(io: Server, socket: Socket) {
 
@@ -17,12 +19,21 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         return callback({ error: 'Cannot send a message to yourself.' });
       }
 
+      const check = await checkSocketCapability(sender_id, Capability.SEND_DM);
+      if (check.blocked) {
+        return callback({
+          error: 'capability_blocked',
+          restriction: check.restriction
+        });
+      }
+
       const rel = await relationship_model.findOne({
         users: {
           $all: [new Types.ObjectId(sender_id), new Types.ObjectId(receiver_id)]
         }
       }).lean() as RelationshipDocument | null;
 
+      // --- 2. SHADOWBAN ON BLOCK (existing behavior) ---
       if (rel && rel.chat_status === 'blocked') {
         return callback({
           success: true,
@@ -39,21 +50,21 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         });
       }
 
-      // --- 2. ENFORCE PENDING INVITE LIMIT ---
+      // --- 3. ENFORCE PENDING INVITE LIMIT ---
       if (rel && rel.chat_status === 'pending_invite') {
         return callback({
           error: 'You must wait for the artist to accept your request before sending more messages.'
         });
       }
 
-      // --- 3. STANDARD CHECKS ---
+      // --- 4. STANDARD CHECKS ---
       if (rel && rel.chat_status === 'expired') {
         return callback({
           error: 'Trial expired. Send a Mate request to continue sketching.'
         });
       }
 
-      // --- 4. EXECUTE NORMAL LOGIC ---
+      // --- 5. EXECUTE NORMAL LOGIC ---
       const { message, conversation } = await saveMessageLogic(
         sender_id,
         receiver_id,
@@ -79,6 +90,7 @@ export function registerChatHandlers(io: Server, socket: Socket) {
     }
   });
 
+
   socket.on('chat:typing', (payload: { receiver_id: string, is_typing: boolean }) => {
     const sender_id = socket.data.user?._id?.toString();
     if (sender_id) {
@@ -89,3 +101,4 @@ export function registerChatHandlers(io: Server, socket: Socket) {
     }
   });
 }
+

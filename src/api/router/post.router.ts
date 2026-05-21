@@ -14,13 +14,19 @@ import {
   UserDocument
 } from '../../types/mongoose.types';
 import { relationship_model } from '../../models/relationship.model';
+import { requireCapability } from '../../middleware/moderation.middleware';
+import { Capability } from '../../types/moderation.policy';
 
 const postRouter = new Router();
 
 /**
  * STEP 1: Generate S3 Presigned URLs
+ *
+ * Not capability-gated. A user with a strike can still request signed URLs —
+ * the gate fires on /publish, which is where the actual post comes into being.
+ * Generating an unused S3 URL is harmless.
  */
-postRouter.post('/upload-urls', requireAuth, async (ctx) => {
+postRouter.post('/upload-urls', requireAuth, requireCapability(Capability.CREATE_POST), async (ctx) => {
   try {
     const [drawingUrls, imageUrls, thumbnailUrls] = await Promise.all([
       s3Creator.getPresignedUploadUrl('application/gzip'),
@@ -41,7 +47,11 @@ postRouter.post('/upload-urls', requireAuth, async (ctx) => {
 });
 
 
-postRouter.post('/publish', requireAuth, async (ctx) => {
+/**
+ * PUBLISH POST — gated on CREATE_POST.
+ * Blocked at strike level 3+.
+ */
+postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POST), async (ctx) => {
   const { drawing_url, image_url, thumbnail_url, aspect_ratio, description } = ctx.request.body;
   const author_id = ctx.state.user._id;
 
@@ -73,6 +83,9 @@ postRouter.post('/publish', requireAuth, async (ctx) => {
 
 /**
  * FEED: Paginated and Hydrated
+ *
+ * Reads aren't capability-gated — a restricted user can still browse the feed.
+ * The feed query itself filters out `under_review` and `removed` posts.
  */
 postRouter.get('/feed', requireAuth, async (ctx) => {
   const limit = parseInt(ctx.query.limit as string) || 20;
@@ -213,7 +226,7 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
         description: post.description || '',
         status: post.status || 'active',
         comment_count: post.comment_count || 0,
-        reports_count: post.reports_count || 0, // FIX: Added missing required property
+        reports_count: post.reports_count || 0,
 
         author: authorDoc
           ? { _id: authorDoc._id.toString(), name: authorDoc.name, img: authorDoc.img }
@@ -245,9 +258,9 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
 });
 
 /**
- * COMMENTS & REACTIONS
+ * COMMENT — gated on COMMENT_ON_POST. Blocked at strike level 3+.
  */
-postRouter.post('/:post_id/comment', requireAuth, async (ctx) => {
+postRouter.post('/:post_id/comment', requireAuth, requireCapability(Capability.COMMENT_ON_POST), async (ctx) => {
   const { post_id } = ctx.params;
   const { message } = ctx.request.body;
   const author_id = ctx.state.user._id;
@@ -282,9 +295,16 @@ postRouter.post('/:post_id/comment', requireAuth, async (ctx) => {
   }
 });
 
-postRouter.post('/:post_id/react', requireAuth, async (ctx) => {
+/**
+ * REACT — gated on REACT_TO_POST.
+ *
+ * Reactions don't appear in any strike level's `blocks` list by default — they
+ * feel too lightweight to restrict. Gating it anyway so the policy can change
+ * later without touching this file.
+ */
+postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REACT_TO_POST), async (ctx) => {
   const { post_id } = ctx.params;
-  const { reaction_type } = ctx.request.body; // e.g., 'fire' or null
+  const { reaction_type } = ctx.request.body;
   const user_id = ctx.state.user._id.toString();
 
   try {
@@ -306,7 +326,6 @@ postRouter.post('/:post_id/react', requireAuth, async (ctx) => {
       if (existing) {
         await Promise.all([
           post_reaction_model.deleteOne({ _id: existing._id }),
-          // Mongoose parses string paths accurately to dot-notation in Maps
           post_model.updateOne(
             { _id: new Types.ObjectId(post_id) },
             { $inc: { [`reaction_counts.${existing.reaction_type}`]: -1 } }
@@ -352,6 +371,13 @@ postRouter.post('/:post_id/react', requireAuth, async (ctx) => {
   }
 });
 
+/**
+ * DELETE — intentionally NOT capability-gated.
+ *
+ * A user should always be able to delete their own content, even fully
+ * suspended. It's a graceful out before an appeal and prevents the awkward
+ * "I can see my bad post but can't delete it" state.
+ */
 postRouter.delete('/:post_id', requireAuth, async (ctx) => {
   const { post_id } = ctx.params;
   const user_id = ctx.state.user._id.toString();
@@ -375,7 +401,6 @@ postRouter.delete('/:post_id', requireAuth, async (ctx) => {
       post_model.deleteOne({ _id: post._id }),
       post_comment_model.deleteMany({ post_id: post._id }),
       post_reaction_model.deleteMany({ post_id: post._id }),
-      // Decrement the user's post count
       user_model.updateOne(
         { _id: post.author_id },
         { $inc: { 'stats.posts': -1 } }
@@ -406,7 +431,7 @@ postRouter.delete('/:post_id', requireAuth, async (ctx) => {
 });
 
 /**
- * GET COMMENTS
+ * GET COMMENTS — read endpoint, not gated.
  */
 postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
   const { post_id } = ctx.params;

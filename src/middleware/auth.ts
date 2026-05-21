@@ -1,6 +1,7 @@
 import * as admin from 'firebase-admin';
 import { user_model } from '../models/user.model';
 
+
 export const requireAuth = async (ctx: any, next: () => Promise<any>) => {
   const authHeader = ctx.headers.authorization;
 
@@ -14,7 +15,11 @@ export const requireAuth = async (ctx: any, next: () => Promise<any>) => {
 
   try {
     const decodedToken = await admin.auth().verifyIdToken(idToken);
-    const user = await user_model.findOne({ auth_id: decodedToken.uid }).select('_id');
+
+    const user = await user_model
+      .findOne({ auth_id: decodedToken.uid })
+      .select('_id restriction strike_summary subscription_tier')
+      .lean();
 
     if (!user) {
       ctx.status = 404;
@@ -22,7 +27,18 @@ export const requireAuth = async (ctx: any, next: () => Promise<any>) => {
       return;
     }
 
-    ctx.state.user = user;
+
+    ctx.state.user = {
+      ...user,
+      restriction: user.restriction || {
+        level: 0,
+        blocked_capabilities: []
+      },
+      strike_summary: user.strike_summary || {
+        active_strikes: 0,
+        total_strikes: 0
+      }
+    };
 
     await next();
   } catch (error) {
