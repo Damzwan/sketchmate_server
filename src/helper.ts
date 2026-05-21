@@ -242,8 +242,8 @@ export async function syncAndFinalizeMigrationStats(user: UserDocument) {
 
   const initialStats = {
     mates: legacyMatesCount,
-    followers: legacyMatesCount,
-    following: legacyMatesCount,
+    followers: 0,
+    following: 0,
     posts: postsCount
   };
 

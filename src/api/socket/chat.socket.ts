@@ -23,17 +23,37 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         }
       }).lean() as RelationshipDocument | null;
 
-      const isBlocked = rel && rel.chat_status === 'blocked';
-      const isExpired = rel && rel.chat_status === 'expired';
-
-      if (isBlocked) {
-        return callback({ error: 'You cannot message this artist.' });
+      if (rel && rel.chat_status === 'blocked') {
+        return callback({
+          success: true,
+          message: {
+            _id: new Types.ObjectId().toString(),
+            content,
+            sender_id,
+            createdAt: new Date().toISOString(),
+            status: 'sent'
+          },
+          conversation: {
+            _id: rel.conversation_id?.toString() || new Types.ObjectId().toString()
+          }
+        });
       }
 
-      if (isExpired) {
-        return callback({ error: 'Trial expired. Send a Mate request to continue sketching.' });
+      // --- 2. ENFORCE PENDING INVITE LIMIT ---
+      if (rel && rel.chat_status === 'pending_invite') {
+        return callback({
+          error: 'You must wait for the artist to accept your request before sending more messages.'
+        });
       }
 
+      // --- 3. STANDARD CHECKS ---
+      if (rel && rel.chat_status === 'expired') {
+        return callback({
+          error: 'Trial expired. Send a Mate request to continue sketching.'
+        });
+      }
+
+      // --- 4. EXECUTE NORMAL LOGIC ---
       const { message, conversation } = await saveMessageLogic(
         sender_id,
         receiver_id,

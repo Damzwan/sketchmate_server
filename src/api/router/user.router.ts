@@ -11,7 +11,7 @@ import { CONTAINER } from '../../s3';
 import { FeedPost } from '../../types/types';
 import { LeanPost, RelationshipDocument, UserDocument } from '../../types/mongoose.types';
 import { isUserOnline } from '../socket/socket';
-import { FULL_USER_FIELDS, PUBLIC_USER_FIELDS } from '../../types/projections';
+import { PUBLIC_USER_FIELDS } from '../../types/projections';
 
 export const userRouter = new Router();
 
@@ -176,27 +176,21 @@ userRouter.post('/upload-image', requireAuth, async (ctx) => {
   }
 });
 
-/**
- * PROFILE VIEW: Aggregate stats and relationship status
- *
- * Now uses FULL_USER_FIELDS so the profile modal receives the user's
- * signature and full customization. This is the ONE endpoint where the
- * signature ships — list endpoints stay lean with PUBLIC_USER_FIELDS only.
- */
+
 userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
   const { user_id: targetId } = ctx.params;
   const viewer_id = ctx.state.user._id.toString();
 
   try {
     const sortedUsers = [viewer_id, targetId].sort();
-
+``
     const [
       user,
       connection,
       posts
     ] = await Promise.all([
       // Use FULL_USER_FIELDS so the response includes signature + description
-      user_model.findById(targetId).select(FULL_USER_FIELDS).lean() as Promise<UserDocument | null>,
+      user_model.findById(targetId).select(PUBLIC_USER_FIELDS).lean() as Promise<UserDocument | null>,
       relationship_model.findOne({ users: sortedUsers }).lean() as Promise<RelationshipDocument | null>,
       post_model.find({
         author_id: targetId,
@@ -299,27 +293,7 @@ userRouter.get('/online-friends', requireAuth, async (ctx) => {
     return;
   }
 
-  // Public projection — includes lightweight customization + stats
-  const users = await user_model
-    .find({ _id: { $in: onlineIds } })
-    .select(PUBLIC_USER_FIELDS)
-    .lean();
-
-  const relByPartnerId = new Map(
-    relationships.map(rel => {
-      const partnerId = rel.users.find(id => id.toString() !== viewerId)?.toString();
-      return [partnerId, rel];
-    })
-  );
-
-  ctx.body = users.map(u => {
-    const rel = relByPartnerId.get(u._id.toString());
-    return {
-      ...u,
-      _id: u._id.toString(),
-      chat_status: rel?.chat_status ?? 'none'
-    };
-  });
+  ctx.body = onlineIds;
 });
 
 

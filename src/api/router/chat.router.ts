@@ -16,8 +16,6 @@ chatRouter.get('/active', async (ctx) => {
     participants: user_id
   })
     .populate('last_message')
-    // Now includes lightweight customization + stats so chat list items
-    // can render with decorations/titles without an extra fetch.
     .populate('participants', PUBLIC_USER_FIELDS)
     .sort({ updatedAt: -1 })
     .lean();
@@ -31,7 +29,8 @@ chatRouter.get('/active', async (ctx) => {
     users: user_id
   }).lean();
 
-  const activeStatuses = ['temporary', 'mate', 'pending_mate', 'pending_invite', 'expired'];
+  // ADDED 'blocked' to the allowed statuses!
+  const activeStatuses = ['temporary', 'mate', 'pending_mate', 'pending_invite', 'expired', 'blocked'];
 
   const activeConvos = conversations.map(c => {
     const partnerId = c.participants.find((p: any) => p._id.toString() !== user_id)?._id.toString();
