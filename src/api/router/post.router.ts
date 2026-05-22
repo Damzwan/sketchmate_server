@@ -17,6 +17,7 @@ import { relationship_model } from '../../models/relationship.model';
 import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
+import { shapeFeedPost } from '../services/post.service';
 
 const postRouter = new Router();
 
@@ -42,27 +43,42 @@ postRouter.post('/upload-urls', requireAuth, requireCapability(Capability.CREATE
 
 postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POST), async (ctx) => {
   const { drawing_url, image_url, thumbnail_url, aspect_ratio, description } = ctx.request.body;
-  const author_id = ctx.state.user._id;
+  const authorObjectId = new Types.ObjectId(ctx.state.user._id);
 
   try {
-    const authorObjectId = new Types.ObjectId(author_id);
+    const [postDoc, authorDoc] = await Promise.all([
+      post_model.create({
+        author_id: authorObjectId,
+        drawing_url,
+        image_url,
+        thumbnail_url,
+        aspect_ratio,
+        description
+      }) as Promise<PostDocument>,
+      user_model
+        .findById(authorObjectId)
+        .select('_id name img')
+        .lean() as Promise<UserDocument | null>,
+      user_model.updateOne(
+        { _id: authorObjectId },
+        { $inc: { 'stats.posts': 1 } }
+      )
+    ]);
 
-    const post = await post_model.create({
-      author_id: authorObjectId,
-      drawing_url,
-      image_url,
-      thumbnail_url,
-      aspect_ratio,
-      description
-    }) as PostDocument;
+    const leanPost = postDoc.toObject() as unknown as LeanPost;
 
-    await user_model.updateOne(
-      { _id: authorObjectId },
-      { $inc: { 'stats.posts': 1 } }
-    );
+    const author = authorDoc
+      ? {
+        _id: authorDoc._id.toString(),
+        name: authorDoc.name,
+        img: authorDoc.img
+      }
+      : { _id: ctx.state.user._id.toString(), name: 'Unknown', img: '' };
+
+    const hydrated = shapeFeedPost(leanPost, author, null, []);
 
     ctx.status = 201;
-    ctx.body = { post: post.toObject() };
+    ctx.body = { post: hydrated };
   } catch (error) {
     console.error('Publish error:', error);
     ctx.status = 500;
@@ -269,7 +285,7 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
       const authorIdStr = post.author_id.toString();
       const authorDoc = userMap[authorIdStr];
 
-      let postComments = commentsByPostId[postIdStr] || [];
+      const postComments = commentsByPostId[postIdStr] || [];
       // Sort the 2 comments chronologically so the preview looks natural
       postComments.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
@@ -286,6 +302,8 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
         reports_count: post.reports_count || 0,
         views: post.views || 0,
         total_reactions: post.total_reactions || 0,
+        enable_remix: post.enable_remix || true,
+        enable_comments: post.enable_comments || true,
 
         author: authorDoc
           ? { _id: authorDoc._id.toString(), name: authorDoc.name, img: authorDoc.img }
@@ -594,7 +612,7 @@ postRouter.get('/:id', async (ctx) => {
       ...rest,
       author: author_id,
       user_reaction: null, // or compute from a reactions lookup if you have one
-      comments: [],
+      comments: []
     }
   };
 });

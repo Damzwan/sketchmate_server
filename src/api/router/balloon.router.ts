@@ -1,62 +1,76 @@
 import Router from 'koa-router';
-import zlib from 'zlib';
-import { promisify } from 'util';
-import { promises as fsPromises } from 'fs';
-
 import { requireAuth } from '../../middleware/auth';
 import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
-import { createBalloon, getBalloon } from '../../mongodb';
-import { routeBalloonToOnlineUser } from '../balloon';
-import { userSocketMap } from '../socket/socket';
-import { mixpanelEvents, trackEvent } from '../../mixpanel';
-import { parseParams } from '../../helper';
-import { CreateBalloonPostParams, CreateBalloonPostRes } from '../../types/types';
+import { getBalloon, s3Creator } from '../../mongodb';
+import { createBalloonV2 } from '../services/balloon.service';
+import { QuotaExceededError } from '../services/quota.service';
 
 export const balloonRouter = new Router();
-const gunzipAsync = promisify(zlib.gunzip);
 
+balloonRouter.post(
+  '/upload-urls',
+  requireAuth,
+  requireCapability(Capability.SEND_BALLOON),
+  async (ctx) => {
+    try {
+      const [drawingUrls, imageUrls, thumbnailUrls] = await Promise.all([
+        s3Creator.getPresignedUploadUrl('application/gzip'),
+        s3Creator.getPresignedUploadUrl('image/webp'),
+        s3Creator.getPresignedUploadUrl('image/webp')
+      ]);
 
-balloonRouter.post('/', requireAuth, requireCapability(Capability.SEND_BALLOON), async (ctx) => {
-  if (!ctx.request.files) throw new Error('No files uploaded');
+      ctx.body = {
+        drawing: drawingUrls,
+        image: imageUrls,
+        thumbnail: thumbnailUrls
+      };
+    } catch (error) {
+      console.error('Balloon presigned URL error:', error);
+      ctx.status = 500;
+      ctx.body = { error: 'Failed to generate upload URLs' };
+    }
+  }
+);
 
-  const files = ctx.request.files as any;
-  const params = parseParams<CreateBalloonPostParams>(ctx.request.body);
+balloonRouter.post(
+  '/',
+  requireAuth,
+  requireCapability(Capability.SEND_BALLOON),
+  async (ctx) => {
+    const { drawing_url, image_url, thumbnail_url, aspect_ratio, message } = ctx.request.body;
 
-  // SECURE: Force sender to be the authenticated user
-  params.sender = ctx.state.user._id.toString();
-  params.aspect_ratio = parseFloat(params.aspect_ratio as any as string);
+    if (!drawing_url || !image_url || !thumbnail_url) {
+      ctx.status = 400;
+      ctx.body = { error: 'Missing one of: drawing_url, image_url, thumbnail_url' };
+      return;
+    }
 
-  const [imgBuffer, compressedBuffer] = await Promise.all([
-    fsPromises.readFile(files.img.filepath),
-    fsPromises.readFile(files.drawing.filepath)
-  ]);
+    try {
+      const balloon = await createBalloonV2({
+        sender: ctx.state.user._id.toString(),
+        message: message || '',
+        aspect_ratio: parseFloat(aspect_ratio) || 1,
+        drawing_url,
+        image_url,
+        thumbnail_url
+      });
 
-  await Promise.all([
-    fsPromises.unlink(files.img.filepath).catch(console.error),
-    fsPromises.unlink(files.drawing.filepath).catch(console.error)
-  ]);
+      ctx.status = 201;
+      ctx.body = { balloon };
+    } catch (error) {
+      if (error instanceof QuotaExceededError) {
+        ctx.status = 429;
+        ctx.body = { error: 'quota_exceeded', kind: error.kind, state: error.state };
+        return;
+      }
+      console.error('Balloon create error:', error);
+      ctx.status = 500;
+      ctx.body = { error: 'Failed to create balloon' };
+    }
+  }
+);
 
-  params.img = imgBuffer;
-  const decompressedBuffer = await gunzipAsync(compressedBuffer);
-  params.drawing = JSON.parse(decompressedBuffer.toString('utf-8'));
-
-  const balloonData = { ...params, version: 2 };
-  const balloon = await createBalloon(balloonData);
-
-  if (!balloon) return;
-
-  const balloonId = balloon._id.toString();
-
-  routeBalloonToOnlineUser(params.sender, balloonId, userSocketMap, 0).catch((err: any) => {
-    console.error('Error during balloon routing triage:', err);
-  });
-
-  ctx.body = { balloon } as CreateBalloonPostRes;
-  trackEvent(params.sender, mixpanelEvents.balloon_v2_create);
-});
-
-// Read Balloon (Un-gated read)
 balloonRouter.get('/:id', requireAuth, async (ctx) => {
   ctx.body = await getBalloon(ctx.params.id);
 });

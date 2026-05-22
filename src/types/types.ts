@@ -1,54 +1,54 @@
 // --- ENUMS & CONSTANTS ---
 
 export enum NotificationType {
-  match = "match",
-  unmatch = "unmatch",
-  message = "message",
-  comment = "comment",
-  friend_request = "friend_request",
-  balloon = "balloon",
-  lobby_invitation = "lobby_invitation",
-  moderation_strike = "moderation_strike",
+  match = 'match',
+  unmatch = 'unmatch',
+  message = 'message',
+  comment = 'comment',
+  friend_request = 'friend_request',
+  balloon = 'balloon',
+  lobby_invitation = 'lobby_invitation',
+  moderation_strike = 'moderation_strike',
 }
 
 export enum ENDPOINTS {
-  user = "/user",
-  partial_users = "/partial_users",
-  subscribe = "/subscribe",
-  unsubscribe = "/unsubscribe",
-  inbox = "/inbox",
-  sticker = "/sticker",
-  emblem = "/emblem",
-  saved = "/saved",
-  balloon = "/balloon",
-  report = "/report",
+  user = '/user',
+  partial_users = '/partial_users',
+  subscribe = '/subscribe',
+  unsubscribe = '/unsubscribe',
+  inbox = '/inbox',
+  sticker = '/sticker',
+  emblem = '/emblem',
+  saved = '/saved',
+  balloon = '/balloon',
+  report = '/report',
 }
 
 export enum SOCKET_ENDPONTS {
-  match = "match",
-  unmatch = "unmatch",
-  login = "login",
-  send = "send",
-  disconnect = "disconnect",
-  comment = "comment",
-  mate_request = "mate_request",
-  cancel_mate_request = "cancel_mate_request",
-  refuse_mate_request = "refuse_mate_request",
-  accept_balloon = "accept_balloon",
-  refuse_balloon = "refuse_balloon",
-  cancel_balloon = "cancel-balloon ",
-  match_balloon = "match-balloon",
-  balloon_match_expired = "balloon_match_expired",
-  balloon_expired = "balloon_expired ",
-  receive_new_balloon = "receive_new_balloon",
-  balloon_missed = "balloon_missed",
-  v2_accept_balloon = "v2_accept_balloon",
-  v2_refuse_balloon = "v2_refuse_balloon",
-  v2_cancel_balloon = "v2_cancel_balloon",
-  balloon_check = "balloon_check",
-  friend_invitation = "friend-invitation",
-  moderation_strike = "moderation:strike",
-  moderation_restriction_lifted = "moderation:restriction_lifted",
+  match = 'match',
+  unmatch = 'unmatch',
+  login = 'login',
+  send = 'send',
+  disconnect = 'disconnect',
+  comment = 'comment',
+  mate_request = 'mate_request',
+  cancel_mate_request = 'cancel_mate_request',
+  refuse_mate_request = 'refuse_mate_request',
+  accept_balloon = 'accept_balloon',
+  refuse_balloon = 'refuse_balloon',
+  cancel_balloon = 'cancel-balloon ',
+  match_balloon = 'match-balloon',
+  balloon_match_expired = 'balloon_match_expired',
+  balloon_expired = 'balloon_expired ',
+  receive_new_balloon = 'receive_new_balloon',
+  balloon_missed = 'balloon_missed',
+  v2_accept_balloon = 'v2_accept_balloon',
+  v2_refuse_balloon = 'v2_refuse_balloon',
+  v2_cancel_balloon = 'v2_cancel_balloon',
+  balloon_check = 'balloon_check',
+  friend_invitation = 'friend-invitation',
+  moderation_strike = 'moderation:strike',
+  moderation_restriction_lifted = 'moderation:restriction_lifted',
 }
 
 // --- SHARED TYPES ---
@@ -56,13 +56,13 @@ export enum SOCKET_ENDPONTS {
 export type Res<T> = T | undefined | null;
 
 export type ChatStatus =
-  | "none"
-  | "pending_invite"
-  | "temporary"
-  | "expired"
-  | "pending_mate"
-  | "mate"
-  | "blocked";
+  | 'none'
+  | 'pending_invite'
+  | 'temporary'
+  | 'expired'
+  | 'pending_mate'
+  | 'mate'
+  | 'blocked';
 
 // Standardized ConversationStatus to match ChatStatus for UI consistency
 export type ConversationStatus = ChatStatus;
@@ -86,7 +86,7 @@ export interface Saved {
 // frontend can import either location. The policy file is the source of truth
 // for the values; this file is the source of truth for the type shapes.
 
-export type ContentModerationStatus = "active" | "under_review" | "removed";
+export type ContentModerationStatus = 'active' | 'under_review' | 'removed';
 
 export interface ContentModerationMeta {
   quarantined_at?: string;
@@ -96,47 +96,47 @@ export interface ContentModerationMeta {
 }
 
 export type ReportReason =
-  | "minor_safety"
-  | "nsfw"
-  | "violence"
-  | "harassment"
-  | "hate_speech"
-  | "spam"
-  | "impersonation"
-  | "other";
+  | 'minor_safety'
+  | 'nsfw'
+  | 'violence'
+  | 'harassment'
+  | 'hate_speech'
+  | 'spam'
+  | 'impersonation'
+  | 'other';
 
 export type ReportableType =
-  | "post"
-  | "comment"
-  | "user"
-  | "balloon"
-  | "dm_message"
-  | "inbox_drawing"
-  | "inbox_comment"
-  | "lobby_message"
-  | "lobby_drawing";
+  | 'post'
+  | 'comment'
+  | 'user'
+  | 'balloon'
+  | 'dm_message'
+  | 'inbox_drawing'
+  | 'inbox_comment'
+  | 'lobby_message'
+  | 'lobby_drawing';
 
-export type ReportStatus = "pending" | "auto_actioned" | "upheld" | "dismissed";
+export type ReportStatus = 'pending' | 'auto_actioned' | 'upheld' | 'dismissed';
 
 // Mirrors the Capability enum in moderation.policy.ts. Kept as a string union
 // here so this file has no imports.
 export type Capability =
-  | "CREATE_POST"
-  | "COMMENT_ON_POST"
-  | "REACT_TO_POST"
-  | "SEND_INBOX_DRAWING"
-  | "COMMENT_ON_INBOX"
-  | "SEND_BALLOON"
-  | "RECEIVE_BALLOON"
-  | "SEND_DM"
-  | "SEND_MATE_REQUEST"
-  | "CREATE_LOBBY"
-  | "JOIN_PUBLIC_LOBBY"
-  | "SEND_LOBBY_MESSAGE"
-  | "DRAW_IN_LOBBY"
-  | "CHANGE_NAME"
-  | "CHANGE_PROFILE_IMG"
-  | "REPORT_CONTENT";
+  | 'CREATE_POST'
+  | 'COMMENT_ON_POST'
+  | 'REACT_TO_POST'
+  | 'SEND_INBOX_DRAWING'
+  | 'COMMENT_ON_INBOX'
+  | 'SEND_BALLOON'
+  | 'RECEIVE_BALLOON'
+  | 'SEND_DM'
+  | 'SEND_MATE_REQUEST'
+  | 'CREATE_LOBBY'
+  | 'JOIN_PUBLIC_LOBBY'
+  | 'SEND_LOBBY_MESSAGE'
+  | 'DRAW_IN_LOBBY'
+  | 'CHANGE_NAME'
+  | 'CHANGE_PROFILE_IMG'
+  | 'REPORT_CONTENT';
 
 export interface UserRestriction {
   level: number;
@@ -179,7 +179,7 @@ export interface UserStandingData {
 
 // 403 response body from requireCapability — frontend catches and shows sheet
 export interface CapabilityBlockedError {
-  error: "capability_blocked";
+  error: 'capability_blocked';
   capability: Capability;
   restriction: {
     level: number;
@@ -302,6 +302,8 @@ export interface BasePost {
   aspect_ratio: number;
   comment_count: number;
   reports_count: number;
+  enable_comments: boolean;
+  enable_remix: boolean;
   views: number;
   total_reactions: number;
   status: ContentModerationStatus;
@@ -309,7 +311,7 @@ export interface BasePost {
   reaction_counts: Record<string, number>;
 }
 
-export type FeedPost = Omit<BasePost, "createdAt" | "updatedAt"> & {
+export type FeedPost = Omit<BasePost, 'createdAt' | 'updatedAt'> & {
   author: { _id: string; name: string; img: string };
   user_reaction: string | null;
   comments: any[];
@@ -345,7 +347,7 @@ export interface Comment {
   message: string;
   _id: string;
   date: string;
-  status?: "active" | "removed";
+  status?: 'active' | 'removed';
   reports_count?: number;
 }
 
@@ -357,13 +359,14 @@ export interface BasePostComment {
   createdAt: string;
   updatedAt: string;
 
+
   // Post-comment moderation — same convention as inbox comments
   status?: ContentModerationStatus;
   reports_count?: number;
 }
 
 export interface HydratedPostComment
-  extends Omit<BasePostComment, "author_id"> {
+  extends Omit<BasePostComment, 'author_id'> {
   author: {
     _id: string;
     name: string;
@@ -405,13 +408,13 @@ export interface ModerationAction {
   _id: string;
   user_id: string;
   action_type:
-    | "strike_applied"
-    | "strike_decayed"
-    | "restriction_applied"
-    | "restriction_lifted"
-    | "manual_suspension"
-    | "appeal_granted"
-    | "appeal_denied";
+    | 'strike_applied'
+    | 'strike_decayed'
+    | 'restriction_applied'
+    | 'restriction_lifted'
+    | 'manual_suspension'
+    | 'appeal_granted'
+    | 'appeal_denied';
   level?: number;
   reason?: ReportReason;
   source_report_id?: string;
@@ -427,7 +430,7 @@ export interface ModerationAction {
 // BALLOONS
 // =============================================================================
 
-export type BalloonStatus = "pending" | "paired" | "accepted";
+export type BalloonStatus = 'pending' | 'paired' | 'accepted';
 
 export interface Balloon {
   _id: string;
@@ -473,7 +476,7 @@ export interface BaseMessage {
   status?: string;
 
   // DM-message moderation — soft delete on uphold, preserves conversation flow
-  moderation_status?: "active" | "removed";
+  moderation_status?: 'active' | 'removed';
   reports_count?: number;
   shared_post_id?: string;
 }
@@ -489,7 +492,7 @@ export interface BaseConversation {
 }
 
 export interface PopulatedConversation
-  extends Omit<BaseConversation, "participants" | "last_message"> {
+  extends Omit<BaseConversation, 'participants' | 'last_message'> {
   participants: Mate[];
   last_message?: BaseMessage;
 
@@ -763,3 +766,25 @@ export interface SubmitReportRes {
   alreadyReported?: boolean;
   message?: string;
 }
+
+export type SubscriptionTier = 'free' | 'pro';
+
+export interface DailyQuota {
+  balloons_per_day: number;
+  posts_per_day: number;
+}
+
+export interface QuotaState {
+  used: number;
+  limit: number;
+  remaining: number;
+  reset_at: string; // ISO
+}
+
+export interface QuotaSummary {
+  tier: string;
+  balloons: QuotaState;
+  posts: QuotaState;
+}
+
+

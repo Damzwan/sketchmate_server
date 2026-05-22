@@ -583,6 +583,7 @@ export async function seeInbox(params: SeeInboxParams) {
   }
 }
 
+// @deprecated
 export async function createBalloon(params: CreateBalloonPostParams): Promise<Res<Balloon>> {
   const alreadyExistingBalloon = await balloon_model.findOne({ sender: new Types.ObjectId(params.sender) });
 
