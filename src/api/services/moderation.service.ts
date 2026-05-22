@@ -5,18 +5,11 @@ import { moderation_action_model } from '../../models/moderation.model';
 import { user_model } from '../../models/user.model';
 import { sendSocketNotificationToUser } from '../socket/socket';
 
+import { post_model, post_comment_model } from '../../models/post.model';
+import { balloon_model } from '../../models/balloon.model';
+import { inbox_model } from '../../models/inbox.model';
+import { message_model } from '../../models/message.model';
 
-/**
- * Apply a strike to a user. The single entry point — auto-quarantines call it,
- * manual mod resolutions call it, escalation cron (if any) calls it.
- *
- * Flow:
- *   1. Append a moderation_action (audit log)
- *   2. Recompute active strike count (counts non-decayed strikes)
- *   3. Project the new strike count → level → blocked capabilities
- *   4. Update user.restriction + user.strike_summary
- *   5. Push a socket event so the client can show the restriction modal
- */
 export async function applyStrike(params: {
   userId: string;
   reason: ReportReason;
@@ -25,7 +18,6 @@ export async function applyStrike(params: {
 }) {
   const { userId, reason, sourceReportId, adminId } = params;
 
-  // 1. Audit entry
   await moderation_action_model.create({
     user_id: new Types.ObjectId(userId),
     action_type: 'strike_applied',
@@ -34,10 +26,7 @@ export async function applyStrike(params: {
     admin_id: adminId ? new Types.ObjectId(adminId) : undefined
   });
 
-  // 2. Recompute from the audit log — this is the source of truth
   const summary = await recomputeStrikeSummary(userId);
-
-  // 3. Determine new level + apply restriction projection
   const newLevel = Math.min(summary.active_strikes, STRIKE_LADDER.length - 1);
   const config = getLevelConfig(newLevel);
   const expiresAt = config.duration_days
@@ -48,18 +37,19 @@ export async function applyStrike(params: {
     level: newLevel,
     reason,
     applied_at: new Date(),
-    expires_at: expiresAt,
-    blocked_capabilities: [...config.blocks]
+    expires_at: expiresAt
   };
 
-  // 4. Persist denormalized projection
+  // Completely clean update layout - zero structural conflicts or $unset runtime casting crashes
   await user_model.updateOne(
     { _id: userId },
-    { $set: { restriction, strike_summary: summary } }
+    {
+      $set: { restriction, strike_summary: summary }
+    }
   );
 
-  // Audit the restriction transition separately so the timeline is complete
   if (newLevel > 0) {
+    // Audit logs preserve historic capability snapshots for legal/audit validation
     await moderation_action_model.create({
       user_id: new Types.ObjectId(userId),
       action_type: 'restriction_applied',
@@ -71,7 +61,7 @@ export async function applyStrike(params: {
     });
   }
 
-  // 5. Tell the client — modal fires from this event
+  // Socket triggers dynamic capability hydration maps straight down to the client view layers
   sendSocketNotificationToUser(userId, 'moderation:strike', {
     level: newLevel,
     name: config.name,
@@ -84,11 +74,6 @@ export async function applyStrike(params: {
   return { level: newLevel, restriction };
 }
 
-/**
- * Counts non-decayed upheld strikes from the audit log.
- * Decay is computed on read — there's no cron to "expire" old strikes.
- * This means level always reflects the true current state.
- */
 export async function recomputeStrikeSummary(userId: string) {
   const decayCutoff = dayjs()
     .subtract(POLICY_CONSTANTS.STRIKE_DECAY_DAYS, 'day')
@@ -120,9 +105,6 @@ export async function recomputeStrikeSummary(userId: string) {
   };
 }
 
-/**
- * Lifts a restriction manually — used by appeals and admin overrides.
- */
 export async function liftRestriction(params: {
   userId: string;
   adminId: string;
@@ -135,8 +117,8 @@ export async function liftRestriction(params: {
       {
         $set: {
           'restriction.level': 0,
-          'restriction.blocked_capabilities': [],
-          'restriction.expires_at': null
+          'restriction.expires_at': null,
+          'restriction.reason': 'clear'
         }
       }
     ),
@@ -153,10 +135,6 @@ export async function liftRestriction(params: {
   });
 }
 
-/**
- * Returns the user-facing "Your Standing" payload — used by the frontend
- * standing page so the user can see exactly where they are.
- */
 export async function getStanding(userId: string) {
   const [user, recentActions] = await Promise.all([
     user_model
@@ -173,11 +151,17 @@ export async function getStanding(userId: string) {
   const level = user?.restriction?.level ?? 0;
   const config = getLevelConfig(level);
 
+  // Dynamic injection happens safely here on read, keeping database layers decoupled and lean!
+  const populatedRestriction = user?.restriction ? {
+    ...user.restriction,
+    blocked_capabilities: config.blocks
+  } : null;
+
   return {
     level,
     name: config.name,
     description: config.description,
-    restriction: user?.restriction ?? null,
+    restriction: populatedRestriction,
     summary: user?.strike_summary ?? { active_strikes: 0, total_strikes: 0 },
     history: recentActions.map((a: any) => ({
       action_type: a.action_type,
@@ -187,4 +171,55 @@ export async function getStanding(userId: string) {
       expires_at: a.expires_at
     }))
   };
+}
+
+export async function removeContent(type: string, id: string) {
+  const oid = new Types.ObjectId(id);
+  const now = new Date();
+
+  switch (type) {
+    case 'post':
+      await post_model.updateOne({ _id: oid }, { $set: { status: 'removed', 'moderation.removed_at': now } });
+      break;
+    case 'balloon':
+      await balloon_model.updateOne({ _id: oid }, { $set: { moderation_status: 'removed', 'moderation.removed_at': now } });
+      break;
+    case 'inbox_drawing':
+      await inbox_model.updateOne({ _id: oid }, { $set: { status: 'removed', 'moderation.removed_at': now } });
+      break;
+    case 'comment':
+      await post_comment_model.updateOne({ _id: oid }, { $set: { status: 'removed' } });
+      break;
+    case 'inbox_comment':
+      await inbox_model.updateOne({ 'comments._id': oid }, { $set: { 'comments.$.status': 'removed' } });
+      break;
+    case 'dm_message':
+      await message_model.updateOne({ _id: oid }, { $set: { moderation_status: 'removed' } });
+      break;
+  }
+}
+
+export async function restoreContent(type: string, id: string) {
+  const oid = new Types.ObjectId(id);
+
+  switch (type) {
+    case 'post':
+      await post_model.updateOne({ _id: oid, status: 'under_review' }, { $set: { status: 'active' } });
+      break;
+    case 'balloon':
+      await balloon_model.updateOne({ _id: oid, moderation_status: 'under_review' }, { $set: { moderation_status: 'active' } });
+      break;
+    case 'inbox_drawing':
+      await inbox_model.updateOne({ _id: oid, status: 'under_review' }, { $set: { status: 'active' } });
+      break;
+    case 'comment':
+      await post_comment_model.updateOne({ _id: oid, status: 'under_review' }, { $set: { status: 'active' } });
+      break;
+    case 'inbox_comment':
+      await inbox_model.updateOne({ 'comments._id': oid, 'comments.status': 'removed' }, { $set: { 'comments.$.status': 'active' } });
+      break;
+    case 'dm_message':
+      await message_model.updateOne({ _id: oid, moderation_status: 'removed' }, { $set: { moderation_status: 'active' } });
+      break;
+  }
 }

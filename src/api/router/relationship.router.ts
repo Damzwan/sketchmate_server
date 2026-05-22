@@ -2,26 +2,19 @@ import Router from 'koa-router';
 import dayjs from 'dayjs';
 import { Types } from 'mongoose';
 import { requireAuth } from '../../middleware/auth';
-import { requireCapability } from '../../middleware/moderation.middleware';
-import { Capability } from '../../types/moderation.policy';
+import { Capability, isCapabilityBlocked } from '../../types/moderation.policy';
 import { relationship_model } from '../../models/relationship.model';
 import { conversation_model } from '../../models/conversation.model';
 import { user_model } from '../../models/user.model';
 import { RelationshipDocument } from '../../types/mongoose.types';
 import { isUserOnline, sendSocketNotificationToUser } from '../socket/socket';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
+import { requireCapability } from '../../middleware/moderation.middleware';
+import { userRouter } from './user.router';
 
 export const relationshipRouter = new Router();
 relationshipRouter.use(requireAuth);
 
-/**
- * RESPOND: Accept or Decline trials and mate requests
- *
- * Intentionally NOT gated. Responding to an existing request is a no-op or a
- * decline at worst — both are operations a restricted user should still be
- * able to do. They shouldn't be FORCED to remain in a pending state just
- * because they got a strike.
- */
 relationshipRouter.post('/:id/respond', async (ctx) => {
   const { id } = ctx.params;
   const user_id = ctx.state.user._id.toString();
@@ -171,18 +164,7 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
   }
 });
 
-/**
- * FOLLOW / UNFOLLOW — gated on FOLLOW_USER (a new capability).
- *
- * Note: we use a single endpoint for both. The capability check applies
- * uniformly. A user can ALWAYS unfollow regardless of their restriction —
- * but since unfollowing is "destructive of their own action", we let it pass.
- * The gate fires for follows, not unfollows.
- *
- * Implementation detail: the gate check happens before we know if it's a
- * follow or unfollow. We deal with that inline in the handler.
- */
-relationshipRouter.put('/follow/:target_id', async (ctx) => {
+userRouter.put('/follow/:target_id', async (ctx) => {
   const followerId = ctx.state.user._id.toString();
   const targetId = ctx.params.target_id;
   if (followerId === targetId) return ctx.throw(400, 'Cannot follow yourself');
@@ -197,7 +179,6 @@ relationshipRouter.put('/follow/:target_id', async (ctx) => {
     'follows.followed': followedOID
   });
 
-  // UNFOLLOW path — always allowed.
   if (existing) {
     await Promise.all([
       relationship_model.updateOne(
@@ -211,18 +192,19 @@ relationshipRouter.put('/follow/:target_id', async (ctx) => {
     return;
   }
 
-  // FOLLOW path — check capability inline. We can't use middleware because
-  // we only know it's a follow after the DB lookup above.
-  const restriction = ctx.state.user.restriction;
-  if (restriction?.blocked_capabilities?.includes(Capability.FOLLOW_USER)) {
+  // MODERATION: Swapped out static array checking loops to use policy levels cleanly
+  const userRestriction = ctx.state.user.restriction;
+  const userLevel = userRestriction?.level ?? 0;
+
+  if (isCapabilityBlocked(userLevel, Capability.FOLLOW_USER)) {
     ctx.status = 403;
     ctx.body = {
       error: 'capability_blocked',
       capability: Capability.FOLLOW_USER,
       restriction: {
-        level: restriction.level,
-        reason: restriction.reason,
-        expires_at: restriction.expires_at
+        level: userLevel,
+        reason: userRestriction?.reason,
+        expires_at: userRestriction?.expires_at
       }
     };
     return;
@@ -243,15 +225,6 @@ relationshipRouter.put('/follow/:target_id', async (ctx) => {
   ctx.body = { isFollowing: true };
 });
 
-
-/**
- * BLOCK — intentionally NOT gated.
- *
- * A user under restriction MUST still be able to block harassers. This is a
- * safety feature, not a social action. Blocking even works for fully suspended
- * users — though they obviously can't interact with anyone anyway, blocking
- * still has the effect of preventing the other party from sending to them.
- */
 relationshipRouter.post('/block', async (ctx) => {
   const current_user_id = ctx.state.user._id.toString();
   const { target_id } = ctx.request.body;
@@ -314,9 +287,6 @@ relationshipRouter.post('/block', async (ctx) => {
   ctx.body = { success: true, message: 'User blocked' };
 });
 
-/**
- * UNBLOCK — not gated either. The user is undoing their own action.
- */
 relationshipRouter.post('/unblock', async (ctx) => {
   const current_user_id = ctx.state.user._id.toString();
   const { target_id } = ctx.request.body;
@@ -338,10 +308,6 @@ relationshipRouter.post('/unblock', async (ctx) => {
   }
 });
 
-/**
- * UNFRIEND — not gated. Ending a relationship is always allowed.
- * (Severing connections is the opposite direction from "social action".)
- */
 relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
   const myId = ctx.state.user._id.toString();
   const targetId = ctx.params.target_id;
@@ -380,10 +346,6 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
   ctx.body = { success: true };
 });
 
-/**
- * MATE REQUEST — gated on SEND_MATE_REQUEST.
- * Blocked at level 4+ ("Account Under Review").
- */
 relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capability.SEND_MATE_REQUEST), async (ctx) => {
   const { conversation_id } = ctx.params;
   const user_id = ctx.state.user._id;
@@ -419,9 +381,6 @@ relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capa
   ctx.body = { success: true };
 });
 
-/**
- * NETWORK LISTS — reads, not gated.
- */
 relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
   const { user_id, type } = ctx.params;
   const { page = 1, limit = 20 } = ctx.query;
@@ -469,9 +428,6 @@ relationshipRouter.get('/:userId/stats', async (ctx) => {
   ctx.body = user?.stats || { mates: 0, followers: 0, following: 0, posts: 0 };
 });
 
-/**
- * CANCEL MATE REQUEST — not gated. Canceling is always allowed.
- */
 relationshipRouter.post('/:conversation_id/mate-request/cancel', async (ctx) => {
   const { conversation_id } = ctx.params;
   const user_id = ctx.state.user._id;

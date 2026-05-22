@@ -70,10 +70,7 @@ router.use('/v2/chats', chatRouter.routes(), chatRouter.allowedMethods());
 router.use('/v2/relationship', relationshipRouter.routes(), relationshipRouter.allowedMethods());
 router.use('/v2/inbox', inboxRouter.routes(), inboxRouter.allowedMethods());
 router.use('/v2/balloon', balloonRouter.routes(), balloonRouter.allowedMethods());
-
-if (isDev) {
-  router.use('/dev/moderation', devModerationRouter.routes(), devModerationRouter.allowedMethods());
-}
+router.use('/dev/moderation', devModerationRouter.routes(), devModerationRouter.allowedMethods());
 
 router.get(ENDPOINTS.user, async (ctx) => {
   const res = await getUser(parseParams<GetUserParams>(ctx.query));

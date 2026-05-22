@@ -98,17 +98,10 @@ export const STRIKE_LADDER = [
     name: 'First Warning',
     description: 'We removed a piece of content. Please review our guidelines — no restrictions yet.',
     blocks: [] as Capability[],
-    duration_days: 14   // warning visible for 14 days, but no actual block
+    duration_days: 14
   },
   {
     level: 2,
-    name: 'Balloon Pause',
-    description: 'Your balloon privileges are paused for 7 days. You can still post, chat, and draw with mates.',
-    blocks: [Capability.SEND_BALLOON, Capability.RECEIVE_BALLOON] as Capability[],
-    duration_days: 7
-  },
-  {
-    level: 3,
     name: 'Public Pause',
     description: 'Public posting and balloons are paused for 30 days. You can still chat with existing mates.',
     blocks: [
@@ -124,28 +117,10 @@ export const STRIKE_LADDER = [
     duration_days: 30
   },
   {
-    level: 4,
-    name: 'Account Under Review',
-    description: 'Most features are paused while we review your account. Contact support to appeal.',
-    blocks: [
-      Capability.CREATE_POST,
-      Capability.COMMENT_ON_POST,
-      Capability.SEND_BALLOON,
-      Capability.RECEIVE_BALLOON,
-      Capability.SEND_INBOX_DRAWING,
-      Capability.SEND_MATE_REQUEST,
-      Capability.JOIN_PUBLIC_LOBBY,
-      Capability.CREATE_LOBBY,
-      Capability.SEND_LOBBY_MESSAGE,
-      Capability.DRAW_IN_LOBBY
-    ] as Capability[],
-    duration_days: null // until manually resolved
-  },
-  {
-    level: 5,
-    name: 'Suspended',
+    level: 3,
+    name: 'Banned',
     description: 'Your account has been suspended. Contact support if you believe this is a mistake.',
-    blocks: Object.values(Capability) as Capability[],  // everything
+    blocks: Object.values(Capability) as Capability[],
     duration_days: null
   }
 ] as const;

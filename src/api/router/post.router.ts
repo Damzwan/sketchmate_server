@@ -19,13 +19,6 @@ import { Capability } from '../../types/moderation.policy';
 
 const postRouter = new Router();
 
-/**
- * STEP 1: Generate S3 Presigned URLs
- *
- * Not capability-gated. A user with a strike can still request signed URLs —
- * the gate fires on /publish, which is where the actual post comes into being.
- * Generating an unused S3 URL is harmless.
- */
 postRouter.post('/upload-urls', requireAuth, requireCapability(Capability.CREATE_POST), async (ctx) => {
   try {
     const [drawingUrls, imageUrls, thumbnailUrls] = await Promise.all([
@@ -46,11 +39,6 @@ postRouter.post('/upload-urls', requireAuth, requireCapability(Capability.CREATE
   }
 });
 
-
-/**
- * PUBLISH POST — gated on CREATE_POST.
- * Blocked at strike level 3+.
- */
 postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POST), async (ctx) => {
   const { drawing_url, image_url, thumbnail_url, aspect_ratio, description } = ctx.request.body;
   const author_id = ctx.state.user._id;
@@ -82,11 +70,37 @@ postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POS
 });
 
 /**
- * FEED: Paginated and Hydrated
- *
- * Reads aren't capability-gated — a restricted user can still browse the feed.
- * The feed query itself filters out `under_review` and `removed` posts.
+ * NEW: BATCHED VIEW TRACKING
+ * The frontend sends an array of post IDs that were on screen for > 1.5 seconds.
  */
+postRouter.post('/views', requireAuth, async (ctx) => {
+  const { post_ids } = ctx.request.body;
+
+  if (!Array.isArray(post_ids) || post_ids.length === 0) {
+    ctx.status = 400;
+    ctx.body = { error: 'Invalid post_ids array' };
+    return;
+  }
+
+  try {
+    // Cap at 50 IDs per request to prevent abuse of the endpoint
+    const oids = post_ids.slice(0, 50).map(id => new Types.ObjectId(id));
+
+    // Bulk increment views for all provided IDs in a single operation
+    await post_model.updateMany(
+      { _id: { $in: oids }, status: 'active' },
+      { $inc: { views: 1 } }
+    );
+
+    ctx.status = 200;
+    ctx.body = { success: true };
+  } catch (error) {
+    console.error('Failed to log views:', error);
+    ctx.status = 500;
+    ctx.body = { error: 'Failed to log views' };
+  }
+});
+
 postRouter.get('/feed', requireAuth, async (ctx) => {
   const limit = parseInt(ctx.query.limit as string) || 20;
   const user_id = ctx.state.user._id.toString();
@@ -105,9 +119,7 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
       if (!otherUser) continue;
 
       const otherUserIdStr = otherUser.toString();
-
       const isMate = rel.chat_status === 'mate';
-
 
       const userFollowsOther = rel.follows?.some(f =>
         f.follower.toString() === user_id &&
@@ -121,7 +133,7 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
 
     let feedPosts: LeanPost[] = [];
 
-    // 2. Priority 1: Fetch posts from Mates and Following (Excluding Blocks)
+    // Priority 1: Mates and Following
     if (followingIds.length > 0) {
       feedPosts = await post_model.find({
         author_id: { $in: followingIds },
@@ -132,20 +144,46 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
         .lean() as unknown as LeanPost[];
     }
 
-    // 3. Priority 2: Global Fallback (Excluding self, following, and BLOCKS)
+    // Priority 2: Global Fallback Algorithm (Interleaved Popular + New)
     if (feedPosts.length < limit) {
       const remainingSlots = limit - feedPosts.length;
       const excludedIds = [userIdObj, ...followingIds, ...blockedIds];
 
-      const globalPosts = await post_model.find({
+      const popLimit = Math.ceil(remainingSlots / 2); // 50% Popular
+      const newLimit = remainingSlots - popLimit;     // 50% New
+
+      // 1. Fetch Popular Posts
+      const popularPosts = await post_model.find({
         author_id: { $nin: excludedIds },
         status: 'active'
       })
-        .sort({ createdAt: -1 })
-        .limit(remainingSlots)
+        // Sort by engagement metrics
+        .sort({ views: -1, total_reactions: -1, createdAt: -1 })
+        .limit(popLimit)
         .lean() as unknown as LeanPost[];
 
-      feedPosts = [...feedPosts, ...globalPosts];
+      // Prevent the "New" query from fetching posts we just got in "Popular"
+      const popularIds = popularPosts.map(p => new Types.ObjectId(p._id));
+      const combinedExcluded = [...excludedIds, ...popularIds];
+
+      // 2. Fetch New Posts
+      const newPosts = await post_model.find({
+        author_id: { $nin: combinedExcluded },
+        status: 'active'
+      })
+        .sort({ createdAt: -1 })
+        .limit(newLimit)
+        .lean() as unknown as LeanPost[];
+
+      // 3. Interleave them (Popular, New, Popular, New...)
+      const interleavedGlobal = [];
+      const maxLen = Math.max(popularPosts.length, newPosts.length);
+      for(let i = 0; i < maxLen; i++) {
+        if (popularPosts[i]) interleavedGlobal.push(popularPosts[i]);
+        if (newPosts[i]) interleavedGlobal.push(newPosts[i]);
+      }
+
+      feedPosts = [...feedPosts, ...interleavedGlobal];
     }
 
     if (feedPosts.length === 0) {
@@ -155,7 +193,6 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
 
     const postIds = feedPosts.map(p => new Types.ObjectId(p._id));
 
-    // 4. Batch Hydration: Comments and Reactions
     const [latestCommentsRaw, userReactions] = await Promise.all([
       Promise.all(
         postIds.map(id =>
@@ -212,14 +249,13 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
       return acc;
     }, {} as Record<string, HydratedPostComment>);
 
-    // 5. Assembly
     const hydratedFeed: FeedPost[] = feedPosts.map(post => {
       const postIdStr = post._id.toString();
       const authorIdStr = post.author_id.toString();
       const authorDoc = userMap[authorIdStr];
       const latestComment = commentsByPostId[postIdStr];
 
-      const feedItem: FeedPost = {
+      return {
         _id: postIdStr,
         author_id: authorIdStr,
         drawing_url: post.drawing_url,
@@ -230,6 +266,8 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
         status: post.status || 'active',
         comment_count: post.comment_count || 0,
         reports_count: post.reports_count || 0,
+        views: post.views || 0,
+        total_reactions: post.total_reactions || 0,
 
         author: authorDoc
           ? { _id: authorDoc._id.toString(), name: authorDoc.name, img: authorDoc.img }
@@ -249,8 +287,6 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
           ? post.updatedAt.toISOString()
           : new Date(post.updatedAt).toISOString()
       };
-
-      return feedItem;
     });
 
     ctx.body = { feed: hydratedFeed };
@@ -260,9 +296,6 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
   }
 });
 
-/**
- * COMMENT — gated on COMMENT_ON_POST. Blocked at strike level 3+.
- */
 postRouter.post('/:post_id/comment', requireAuth, requireCapability(Capability.COMMENT_ON_POST), async (ctx) => {
   const { post_id } = ctx.params;
   const { message } = ctx.request.body;
@@ -298,13 +331,6 @@ postRouter.post('/:post_id/comment', requireAuth, requireCapability(Capability.C
   }
 });
 
-/**
- * REACT — gated on REACT_TO_POST.
- *
- * Reactions don't appear in any strike level's `blocks` list by default — they
- * feel too lightweight to restrict. Gating it anyway so the policy can change
- * later without touching this file.
- */
 postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REACT_TO_POST), async (ctx) => {
   const { post_id } = ctx.params;
   const { reaction_type } = ctx.request.body;
@@ -331,7 +357,12 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
           post_reaction_model.deleteOne({ _id: existing._id }),
           post_model.updateOne(
             { _id: new Types.ObjectId(post_id) },
-            { $inc: { [`reaction_counts.${existing.reaction_type}`]: -1 } }
+            {
+              $inc: {
+                [`reaction_counts.${existing.reaction_type}`]: -1,
+                total_reactions: -1 // Decrement aggregate score
+              }
+            }
           )
         ]);
       }
@@ -340,6 +371,7 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
     }
 
     if (existing) {
+      // Swapping reaction: total_reactions stays the same, just adjust map counts
       await Promise.all([
         post_reaction_model.updateOne({ _id: existing._id }, { reaction_type }),
         post_model.updateOne(
@@ -353,6 +385,7 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
         )
       ]);
     } else {
+      // New reaction: increment both specific counter and aggregate score
       await Promise.all([
         post_reaction_model.create({
           post_id: new Types.ObjectId(post_id),
@@ -361,7 +394,12 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
         }),
         post_model.updateOne(
           { _id: new Types.ObjectId(post_id) },
-          { $inc: { [`reaction_counts.${reaction_type}`]: 1 } }
+          {
+            $inc: {
+              [`reaction_counts.${reaction_type}`]: 1,
+              total_reactions: 1
+            }
+          }
         )
       ]);
     }
@@ -374,13 +412,6 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
   }
 });
 
-/**
- * DELETE — intentionally NOT capability-gated.
- *
- * A user should always be able to delete their own content, even fully
- * suspended. It's a graceful out before an appeal and prevents the awkward
- * "I can see my bad post but can't delete it" state.
- */
 postRouter.delete('/:post_id', requireAuth, async (ctx) => {
   const { post_id } = ctx.params;
   const user_id = ctx.state.user._id.toString();
@@ -433,9 +464,6 @@ postRouter.delete('/:post_id', requireAuth, async (ctx) => {
   }
 });
 
-/**
- * GET COMMENTS — read endpoint, not gated.
- */
 postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
   const { post_id } = ctx.params;
   const page = parseInt(ctx.query.page as string) || 1;
