@@ -8,7 +8,8 @@ export const saveMessageLogic = async (
   sender_id: string,
   receiver_id: string,
   content: string,
-  rel: RelationshipDocument | null  // pass the full rel, not just the status string
+  rel: RelationshipDocument | null,
+  shared_post_id?: string
 ) => {
   const sorted = [sender_id, receiver_id].sort();
   const sortedUsers = sorted;
@@ -32,8 +33,9 @@ export const saveMessageLogic = async (
   const [message] = await Promise.all([
     message_model.create({
       conversation_id: conversation._id,
-      sender_id: senderOID,
-      content
+      sender_id,
+      content,
+      ...(shared_post_id && { shared_post_id: new Types.ObjectId(shared_post_id) })
     }),
     conversation_model.updateOne(
       { _id: conversation._id },

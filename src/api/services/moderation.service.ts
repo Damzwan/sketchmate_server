@@ -1,7 +1,7 @@
 import dayjs from 'dayjs';
 import { Types } from 'mongoose';
 import { getLevelConfig, POLICY_CONSTANTS, ReportReason, STRIKE_LADDER } from '../../types/moderation.policy';
-import { moderation_action_model } from '../../models/moderation.model';
+import { moderation_action_model, report_model } from '../../models/moderation.model';
 import { user_model } from '../../models/user.model';
 import { sendSocketNotificationToUser } from '../socket/socket';
 
@@ -9,6 +9,7 @@ import { post_model, post_comment_model } from '../../models/post.model';
 import { balloon_model } from '../../models/balloon.model';
 import { inbox_model } from '../../models/inbox.model';
 import { message_model } from '../../models/message.model';
+import { deletion_queue_model } from '../../models/deletion.model';
 
 export async function applyStrike(params: {
   userId: string;
@@ -182,7 +183,12 @@ export async function removeContent(type: string, id: string) {
       await post_model.updateOne({ _id: oid }, { $set: { status: 'removed', 'moderation.removed_at': now } });
       break;
     case 'balloon':
-      await balloon_model.updateOne({ _id: oid }, { $set: { moderation_status: 'removed', 'moderation.removed_at': now } });
+      await balloon_model.updateOne({ _id: oid }, {
+        $set: {
+          moderation_status: 'removed',
+          'moderation.removed_at': now
+        }
+      });
       break;
     case 'inbox_drawing':
       await inbox_model.updateOne({ _id: oid }, { $set: { status: 'removed', 'moderation.removed_at': now } });
@@ -197,6 +203,14 @@ export async function removeContent(type: string, id: string) {
       await message_model.updateOne({ _id: oid }, { $set: { moderation_status: 'removed' } });
       break;
   }
+
+  const executeAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+  await deletion_queue_model.updateOne(
+    { target_id: oid, target_type: type },
+    { $set: { execute_after: executeAt } },
+    { upsert: true }
+  );
 }
 
 export async function restoreContent(type: string, id: string) {
@@ -207,7 +221,10 @@ export async function restoreContent(type: string, id: string) {
       await post_model.updateOne({ _id: oid, status: 'under_review' }, { $set: { status: 'active' } });
       break;
     case 'balloon':
-      await balloon_model.updateOne({ _id: oid, moderation_status: 'under_review' }, { $set: { moderation_status: 'active' } });
+      await balloon_model.updateOne({
+        _id: oid,
+        moderation_status: 'under_review'
+      }, { $set: { moderation_status: 'active' } });
       break;
     case 'inbox_drawing':
       await inbox_model.updateOne({ _id: oid, status: 'under_review' }, { $set: { status: 'active' } });
@@ -216,10 +233,48 @@ export async function restoreContent(type: string, id: string) {
       await post_comment_model.updateOne({ _id: oid, status: 'under_review' }, { $set: { status: 'active' } });
       break;
     case 'inbox_comment':
-      await inbox_model.updateOne({ 'comments._id': oid, 'comments.status': 'removed' }, { $set: { 'comments.$.status': 'active' } });
+      await inbox_model.updateOne({
+        'comments._id': oid,
+        'comments.status': 'removed'
+      }, { $set: { 'comments.$.status': 'active' } });
       break;
     case 'dm_message':
-      await message_model.updateOne({ _id: oid, moderation_status: 'removed' }, { $set: { moderation_status: 'active' } });
+      await message_model.updateOne({
+        _id: oid,
+        moderation_status: 'removed'
+      }, { $set: { moderation_status: 'active' } });
       break;
+  }
+  await deletion_queue_model.deleteOne({ target_id: oid, target_type: type });
+}
+
+const SYSTEM_FLAG_THRESHOLD = 3;
+
+export async function evaluateUserStanding(authorId: string, triggeringReporterId: string) {
+  const recentCutoff = dayjs().subtract(24, 'hour').toDate();
+
+  const recentQuarantinedContent = await report_model.distinct('target_id', {
+    target_author_id: new Types.ObjectId(authorId),
+    status: 'auto_actioned',
+    createdAt: { $gte: recentCutoff }
+  });
+
+  if (recentQuarantinedContent.length >= SYSTEM_FLAG_THRESHOLD) {
+    const existingSystemFlag = await report_model.findOne({
+      target_id: new Types.ObjectId(authorId),
+      target_type: 'user',
+      status: 'pending'
+    }).lean();
+
+    if (!existingSystemFlag) {
+      await report_model.create({
+        reporter_id: new Types.ObjectId(triggeringReporterId),
+        target_id: new Types.ObjectId(authorId),
+        target_type: 'user',
+        target_author_id: new Types.ObjectId(authorId),
+        reason: 'spam', // Defaulting to spam/abuse of system
+        details: `SYSTEM AUTO-FLAG: This user has had ${recentQuarantinedContent.length} different pieces of content auto-quarantined in the last 24 hours. Please review their account standing.`
+      });
+    }
   }
 }
