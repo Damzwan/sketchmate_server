@@ -1,7 +1,6 @@
 import * as admin from 'firebase-admin';
 import { user_model } from '../models/user.model';
 
-
 export const requireAuth = async (ctx: any, next: () => Promise<any>) => {
   const authHeader = ctx.headers.authorization;
 
@@ -12,10 +11,18 @@ export const requireAuth = async (ctx: any, next: () => Promise<any>) => {
   }
 
   const idToken = authHeader.split('Bearer ')[1];
+  let decodedToken;
 
   try {
-    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    decodedToken = await admin.auth().verifyIdToken(idToken);
+  } catch (error) {
+    console.error('Firebase Auth Error:', error);
+    ctx.status = 401;
+    ctx.body = { error: 'Unauthorized: Token expired or invalid' };
+    return; // Stop execution here
+  }
 
+  try {
     const user = await user_model
       .findOne({ auth_id: decodedToken.uid })
       .select('_id restriction strike_summary subscription_tier')
@@ -26,7 +33,6 @@ export const requireAuth = async (ctx: any, next: () => Promise<any>) => {
       ctx.body = { error: 'User not found in database' };
       return;
     }
-
 
     ctx.state.user = {
       ...user,
@@ -39,11 +45,12 @@ export const requireAuth = async (ctx: any, next: () => Promise<any>) => {
         total_strikes: 0
       }
     };
-
-    await next();
-  } catch (error) {
-    console.error('Auth Error:', error);
-    ctx.status = 401;
-    ctx.body = { error: 'Unauthorized: Token expired or invalid' };
+  } catch (dbError) {
+    console.error('Database Auth Error:', dbError);
+    ctx.status = 500;
+    ctx.body = { error: 'Internal Server Error during authentication' };
+    return;
   }
+
+  await next();
 };

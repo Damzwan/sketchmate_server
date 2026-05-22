@@ -113,12 +113,13 @@ export interface RelationshipDocument extends Omit<BaseRelationship, '_id' | 'us
   blocked_by?: Types.ObjectId;
 }
 
-export interface MessageDocument extends Document, Omit<BaseMessage, '_id' | 'sender_id' | 'conversation_id' | 'createdAt' | 'updatedAt'> {
+export interface MessageDocument extends Document, Omit<BaseMessage, '_id' | 'sender_id' | 'conversation_id' | 'createdAt' | 'updatedAt' | 'shared_post_id'> {
   _id: Types.ObjectId;
   sender_id: Types.ObjectId;
   conversation_id: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
+  shared_post_id?: Types.ObjectId | null;
 }
 
 export interface InboxCommentDocument extends Omit<Comment, '_id' | 'date'> {

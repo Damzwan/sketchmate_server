@@ -28,26 +28,32 @@ devModerationRouter.get('/standing/:user_id', async (ctx) => {
 });
 
 devModerationRouter.post('/:report_id/resolve', async (ctx) => {
-  const { action } = ctx.request.body as { action: 'uphold' | 'dismiss' };
-  const report = await report_model.findById(ctx.params.report_id);
-  if (!report) return ctx.throw(404, 'Report not found');
+  if (!ctx.state.user.is_admin) return ctx.throw(403);
 
+  // ADDED 'remove_only'
+  const { action } = ctx.request.body as { action: 'uphold' | 'dismiss' | 'remove_only' };
+  const report = await report_model.findById(ctx.params.report_id);
+  if (!report) return ctx.throw(404);
   if (report.status === 'upheld' || report.status === 'dismissed') {
     return ctx.throw(400, 'Already resolved');
   }
 
-  report.status = action === 'uphold' ? 'upheld' : 'dismissed';
+  // Both 'uphold' and 'remove_only' mean we agreed the content was bad (upheld the report)
+  report.status = action === 'dismiss' ? 'dismissed' : 'upheld';
   report.resolved_at = new Date();
   report.resolved_by = ctx.state.user._id;
   await report.save();
 
   if (action === 'uphold') {
+    // 1. Strike the user AND remove the content
     await applyStrike({
       userId: report.target_author_id.toString(),
       reason: report.reason as ReportReason,
       sourceReportId: report._id.toString(),
       adminId: ctx.state.user._id.toString()
     });
+    await removeContent(report.target_type, report.target_id.toString());
+  } else if (action === 'remove_only') {
     await removeContent(report.target_type, report.target_id.toString());
   } else {
     await restoreContent(report.target_type, report.target_id.toString());

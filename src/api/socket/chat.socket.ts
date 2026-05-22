@@ -8,38 +8,43 @@ import { Capability } from '../../types/moderation.policy';
 
 export function registerChatHandlers(io: Server, socket: Socket) {
 
-  socket.on('chat:send_message', async (payload: { receiver_id: string, content: string }, callback) => {
+  // chat socket handler
+  socket.on('chat:send_message', async (
+    payload: { receiver_id: string, content: string, shared_post_id?: string },
+    callback
+  ) => {
     try {
       const sender_id = socket.data.user?._id?.toString();
       if (!sender_id) return callback({ error: 'Not authenticated' });
 
-      const { receiver_id, content } = payload;
+      const { receiver_id, content, shared_post_id } = payload;
 
       if (sender_id === receiver_id) {
         return callback({ error: 'Cannot send a message to yourself.' });
       }
 
+      // Must have either text or a shared post
+      if (!content?.trim() && !shared_post_id) {
+        return callback({ error: 'Message cannot be empty.' });
+      }
+
       const check = await checkSocketCapability(sender_id, Capability.SEND_DM);
       if (check.blocked) {
-        return callback({
-          error: 'capability_blocked',
-          restriction: check.restriction
-        });
+        return callback({ error: 'capability_blocked', restriction: check.restriction });
       }
 
       const rel = await relationship_model.findOne({
-        users: {
-          $all: [new Types.ObjectId(sender_id), new Types.ObjectId(receiver_id)]
-        }
+        users: { $all: [new Types.ObjectId(sender_id), new Types.ObjectId(receiver_id)] }
       }).lean() as RelationshipDocument | null;
 
-      // --- 2. SHADOWBAN ON BLOCK (existing behavior) ---
+      // Shadowban
       if (rel && rel.chat_status === 'blocked') {
         return callback({
           success: true,
           message: {
             _id: new Types.ObjectId().toString(),
-            content,
+            content: content || '',
+            shared_post_id: shared_post_id || null,
             sender_id,
             createdAt: new Date().toISOString(),
             status: 'sent'
@@ -50,26 +55,20 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         });
       }
 
-      // --- 3. ENFORCE PENDING INVITE LIMIT ---
       if (rel && rel.chat_status === 'pending_invite') {
-        return callback({
-          error: 'You must wait for the artist to accept your request before sending more messages.'
-        });
+        return callback({ error: 'You must wait for the artist to accept your request before sending more messages.' });
       }
 
-      // --- 4. STANDARD CHECKS ---
       if (rel && rel.chat_status === 'expired') {
-        return callback({
-          error: 'Trial expired. Send a Mate request to continue sketching.'
-        });
+        return callback({ error: 'Trial expired. Send a Mate request to continue sketching.' });
       }
 
-      // --- 5. EXECUTE NORMAL LOGIC ---
       const { message, conversation } = await saveMessageLogic(
         sender_id,
         receiver_id,
-        content,
-        rel
+        content || '',
+        rel,
+        shared_post_id
       );
 
       io.to(receiver_id).emit('chat:receive_message', {
@@ -78,12 +77,7 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         conversation_id: conversation._id
       });
 
-      callback({
-        success: true,
-        message,
-        conversation
-      });
-
+      callback({ success: true, message, conversation });
     } catch (error: any) {
       console.error('Socket Chat Error:', error.message);
       callback({ error: error.message || 'Failed to send message' });

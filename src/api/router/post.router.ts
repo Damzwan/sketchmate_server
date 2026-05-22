@@ -16,6 +16,7 @@ import {
 import { relationship_model } from '../../models/relationship.model';
 import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
+import { PUBLIC_USER_FIELDS } from '../../types/projections';
 
 const postRouter = new Router();
 
@@ -70,7 +71,7 @@ postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POS
 });
 
 /**
- * NEW: BATCHED VIEW TRACKING
+ * BATCHED VIEW TRACKING
  * The frontend sends an array of post IDs that were on screen for > 1.5 seconds.
  */
 postRouter.post('/views', requireAuth, async (ctx) => {
@@ -83,10 +84,8 @@ postRouter.post('/views', requireAuth, async (ctx) => {
   }
 
   try {
-    // Cap at 50 IDs per request to prevent abuse of the endpoint
     const oids = post_ids.slice(0, 50).map(id => new Types.ObjectId(id));
 
-    // Bulk increment views for all provided IDs in a single operation
     await post_model.updateMany(
       { _id: { $in: oids }, status: 'active' },
       { $inc: { views: 1 } }
@@ -119,8 +118,13 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
       if (!otherUser) continue;
 
       const otherUserIdStr = otherUser.toString();
-      const isMate = rel.chat_status === 'mate';
 
+      if (rel.chat_status === 'blocked') {
+        blockedIds.push(otherUser as Types.ObjectId);
+        continue;
+      }
+
+      const isMate = rel.chat_status === 'mate';
       const userFollowsOther = rel.follows?.some(f =>
         f.follower.toString() === user_id &&
         f.followed.toString() === otherUserIdStr
@@ -133,7 +137,6 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
 
     let feedPosts: LeanPost[] = [];
 
-    // Priority 1: Mates and Following
     if (followingIds.length > 0) {
       feedPosts = await post_model.find({
         author_id: { $in: followingIds },
@@ -144,41 +147,35 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
         .lean() as unknown as LeanPost[];
     }
 
-    // Priority 2: Global Fallback Algorithm (Interleaved Popular + New)
     if (feedPosts.length < limit) {
       const remainingSlots = limit - feedPosts.length;
-      const excludedIds = [userIdObj, ...followingIds, ...blockedIds];
+      const excludedAuthorIds = [userIdObj, ...followingIds, ...blockedIds];
 
-      const popLimit = Math.ceil(remainingSlots / 2); // 50% Popular
-      const newLimit = remainingSlots - popLimit;     // 50% New
+      const popLimit = Math.ceil(remainingSlots / 2);
+      const newLimit = remainingSlots - popLimit;
 
-      // 1. Fetch Popular Posts
       const popularPosts = await post_model.find({
-        author_id: { $nin: excludedIds },
+        author_id: { $nin: excludedAuthorIds },
         status: 'active'
       })
-        // Sort by engagement metrics
         .sort({ views: -1, total_reactions: -1, createdAt: -1 })
         .limit(popLimit)
         .lean() as unknown as LeanPost[];
 
-      // Prevent the "New" query from fetching posts we just got in "Popular"
-      const popularIds = popularPosts.map(p => new Types.ObjectId(p._id));
-      const combinedExcluded = [...excludedIds, ...popularIds];
+      const popularPostIds = popularPosts.map(p => p._id);
 
-      // 2. Fetch New Posts
       const newPosts = await post_model.find({
-        author_id: { $nin: combinedExcluded },
+        author_id: { $nin: excludedAuthorIds },
+        _id: { $nin: popularPostIds },
         status: 'active'
       })
         .sort({ createdAt: -1 })
         .limit(newLimit)
         .lean() as unknown as LeanPost[];
 
-      // 3. Interleave them (Popular, New, Popular, New...)
       const interleavedGlobal = [];
       const maxLen = Math.max(popularPosts.length, newPosts.length);
-      for(let i = 0; i < maxLen; i++) {
+      for (let i = 0; i < maxLen; i++) {
         if (popularPosts[i]) interleavedGlobal.push(popularPosts[i]);
         if (newPosts[i]) interleavedGlobal.push(newPosts[i]);
       }
@@ -191,15 +188,27 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
       return;
     }
 
+    const uniquePostsMap = new Map<string, LeanPost>();
+    for (const post of feedPosts) {
+      if (!uniquePostsMap.has(post._id.toString())) {
+        uniquePostsMap.set(post._id.toString(), post);
+      }
+    }
+    feedPosts = Array.from(uniquePostsMap.values());
+
     const postIds = feedPosts.map(p => new Types.ObjectId(p._id));
 
-    const [latestCommentsRaw, userReactions] = await Promise.all([
+    // Fetch the 2 latest comments per post and user reactions
+    const [latestCommentsNested, userReactions] = await Promise.all([
       Promise.all(
         postIds.map(id =>
-          post_comment_model.findOne({
+          post_comment_model.find({
             post_id: id,
-            status: 'active'
-          }).sort({ createdAt: -1 }).lean()
+            status: { $nin: ['under_review', 'removed'] }
+          })
+            .sort({ createdAt: -1 }) // get newest first
+            .limit(2)
+            .lean()
         )
       ),
       post_reaction_model.find({
@@ -208,7 +217,9 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
       }).lean()
     ]);
 
-    const validComments = latestCommentsRaw.filter(c => c !== null);
+    // Flatten array of arrays
+    const validComments = latestCommentsNested.flat().filter(c => c !== null);
+
     const postAuthorIds = feedPosts.map(post => post.author_id.toString());
     const commentAuthorIds = validComments.map((c: any) => c.author_id.toString());
     const allUserIdsToFetch = [...new Set([...postAuthorIds, ...commentAuthorIds])].map(id => new Types.ObjectId(id));
@@ -227,12 +238,16 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
       return acc;
     }, {} as Record<string, string>);
 
+    // Group hydrated comments by Post ID
     const commentsByPostId = validComments.reduce((acc, comment: any) => {
       const author = userMap[comment.author_id.toString()];
+      const pid = comment.post_id.toString();
 
-      acc[comment.post_id.toString()] = {
+      if (!acc[pid]) acc[pid] = [];
+
+      acc[pid].push({
         _id: comment._id.toString(),
-        post_id: comment.post_id.toString(),
+        post_id: pid,
         message: comment.message,
         createdAt: comment.createdAt instanceof Date
           ? comment.createdAt.toISOString()
@@ -245,15 +260,18 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
           name: author.name,
           img: author.img
         } : { _id: comment.author_id.toString(), name: 'Unknown', img: '' }
-      };
+      });
       return acc;
-    }, {} as Record<string, HydratedPostComment>);
+    }, {} as Record<string, HydratedPostComment[]>);
 
     const hydratedFeed: FeedPost[] = feedPosts.map(post => {
       const postIdStr = post._id.toString();
       const authorIdStr = post.author_id.toString();
       const authorDoc = userMap[authorIdStr];
-      const latestComment = commentsByPostId[postIdStr];
+
+      let postComments = commentsByPostId[postIdStr] || [];
+      // Sort the 2 comments chronologically so the preview looks natural
+      postComments.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
       return {
         _id: postIdStr,
@@ -278,7 +296,7 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
           : (post.reaction_counts || {}),
         user_reaction: userReactionMap[postIdStr] || null,
 
-        comments: latestComment ? [latestComment] : [],
+        comments: postComments,
 
         createdAt: post.createdAt instanceof Date
           ? post.createdAt.toISOString()
@@ -331,6 +349,48 @@ postRouter.post('/:post_id/comment', requireAuth, requireCapability(Capability.C
   }
 });
 
+/**
+ * DELETE COMMENT
+ * Validates that the requestor is either the comment author OR the post owner.
+ */
+postRouter.delete('/:post_id/comment/:comment_id', requireAuth, async (ctx) => {
+  const { post_id, comment_id } = ctx.params;
+  const user_id = ctx.state.user._id.toString();
+
+  try {
+    const comment = await post_comment_model.findById(comment_id) as PostCommentDocument | null;
+    if (!comment) {
+      ctx.status = 404;
+      ctx.body = { error: 'Comment not found' };
+      return;
+    }
+
+    const post = await post_model.findById(post_id) as PostDocument | null;
+    if (!post) {
+      ctx.status = 404;
+      ctx.body = { error: 'Post not found' };
+      return;
+    }
+
+    // Permission check: You can delete if you wrote the comment OR you own the post
+    if (comment.author_id.toString() !== user_id && post.author_id.toString() !== user_id) {
+      ctx.status = 403;
+      ctx.body = { error: 'You are not authorized to delete this comment' };
+      return;
+    }
+
+    await post_comment_model.deleteOne({ _id: comment._id });
+    await post_model.updateOne({ _id: post._id }, { $inc: { comment_count: -1 } });
+
+    ctx.status = 200;
+    ctx.body = { message: 'Comment deleted successfully' };
+  } catch (error) {
+    console.error('Delete comment error:', error);
+    ctx.status = 500;
+    ctx.body = { error: 'Failed to delete comment' };
+  }
+});
+
 postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REACT_TO_POST), async (ctx) => {
   const { post_id } = ctx.params;
   const { reaction_type } = ctx.request.body;
@@ -360,7 +420,7 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
             {
               $inc: {
                 [`reaction_counts.${existing.reaction_type}`]: -1,
-                total_reactions: -1 // Decrement aggregate score
+                total_reactions: -1
               }
             }
           )
@@ -371,7 +431,6 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
     }
 
     if (existing) {
-      // Swapping reaction: total_reactions stays the same, just adjust map counts
       await Promise.all([
         post_reaction_model.updateOne({ _id: existing._id }, { reaction_type }),
         post_model.updateOne(
@@ -385,7 +444,6 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
         )
       ]);
     } else {
-      // New reaction: increment both specific counter and aggregate score
       await Promise.all([
         post_reaction_model.create({
           post_id: new Types.ObjectId(post_id),
@@ -473,9 +531,9 @@ postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
   try {
     const comments = await post_comment_model.find({
       post_id: new Types.ObjectId(post_id),
-      status: 'active'
+      status: { $nin: ['under_review', 'removed'] }
     })
-      .sort({ createdAt: 1 })
+      .sort({ createdAt: 1 }) // Chronological order (oldest first) so chat feels natural
       .skip(skip)
       .limit(limit)
       .lean() as any[];
@@ -516,6 +574,29 @@ postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
     ctx.status = 500;
     ctx.body = { error: 'Failed to fetch comments' };
   }
+});
+
+postRouter.get('/:id', async (ctx) => {
+  const post = await post_model.findById(ctx.params.id)
+    .populate('author_id', PUBLIC_USER_FIELDS)
+    .lean();
+
+  if (!post || post.status === 'removed') {
+    ctx.status = 404;
+    ctx.body = { error: 'Post not found' };
+    return;
+  }
+
+  // Match the FeedPost shape your frontend expects
+  const { author_id, ...rest } = post as any;
+  ctx.body = {
+    post: {
+      ...rest,
+      author: author_id,
+      user_reaction: null, // or compute from a reactions lookup if you have one
+      comments: [],
+    }
+  };
 });
 
 export default postRouter;

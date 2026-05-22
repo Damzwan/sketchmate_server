@@ -11,7 +11,7 @@ import { CONTAINER } from '../../s3';
 
 const MAX_REPORT_RATIO = 0.01;
 
-import { applyStrike, getStanding } from '../services/moderation.service';
+import { applyStrike, evaluateUserStanding, getStanding } from '../services/moderation.service';
 import {
   POLICY_CONSTANTS,
   REPORT_REASONS,
@@ -49,7 +49,9 @@ moderationRouter.post('/', async (ctx) => {
     recent &&
     dayjs(recent.createdAt).add(POLICY_CONSTANTS.REPORT_COOLDOWN_SECONDS, 'second').isAfter(dayjs())
   ) {
-    return ctx.throw(429, 'Please wait a moment before reporting again');
+    ctx.status = 200;
+    ctx.body = { success: true, message: 'Report submitted successfully' };
+    return;
   }
 
   const targetAuthorId = await resolveTargetAuthor(target_type, target_id);
@@ -352,11 +354,6 @@ async function evaluateAutoModeration(params: {
   const surfaceCfg = REPORTABLE[params.type as ReportableType];
   if (!surfaceCfg) return;
 
-  if (surfaceCfg.auto_hide) {
-    await quarantineContent(params.type, params.targetId);
-    return;
-  }
-
   const [reports, author, reporterTrust] = await Promise.all([
     report_model
       .find({
@@ -364,11 +361,23 @@ async function evaluateAutoModeration(params: {
         target_type: params.type,
         status: { $in: ['pending', 'auto_actioned'] }
       })
-      .select('reporter_id reason')
+      .select('reporter_id reason status')
       .lean() as Promise<any[]>,
     user_model.findById(params.targetAuthorId).select('createdAt').lean() as any,
     getReporterTrust(params.reporterId)
   ]);
+
+  // FIX 2: Prevent double jeopardy. If one of these reports is already
+  // 'auto_actioned', we already quarantined this content. Stop here.
+  if (reports.some(r => r.status === 'auto_actioned')) {
+    return;
+  }
+
+  if (surfaceCfg.auto_hide) {
+    await quarantineContent(params.type, params.targetId);
+    await evaluateUserStanding(params.targetAuthorId, params.reporterId);
+    return;
+  }
 
   let totalWeight = 0;
   for (const r of reports) {
@@ -377,7 +386,6 @@ async function evaluateAutoModeration(params: {
   }
   totalWeight *= reporterTrust;
 
-  // 1. Calculate Absolute Minimum Threshold
   const isNewAccount =
     author?.createdAt &&
     dayjs().diff(dayjs(author.createdAt), 'day') < POLICY_CONSTANTS.NEW_ACCOUNT_GRACE_DAYS;
@@ -385,7 +393,6 @@ async function evaluateAutoModeration(params: {
     ? surfaceCfg.quarantine_threshold * POLICY_CONSTANTS.NEW_ACCOUNT_THRESHOLD_MULTIPLIER
     : surfaceCfg.quarantine_threshold;
 
-  // 2. Calculate Relative View Threshold (for posts and comments)
   let relativeThreshold = 0;
   if (params.type === 'post') {
     const post = await post_model.findById(params.targetId).select('views').lean() as any;
@@ -399,10 +406,10 @@ async function evaluateAutoModeration(params: {
   }
 
   const finalThreshold = Math.max(absoluteThreshold, relativeThreshold);
-  const isCritical = REPORT_REASONS[params.reason as ReportReason]?.severity === 'critical';
 
-  if (isCritical || totalWeight >= finalThreshold) {
+  if (totalWeight >= finalThreshold) {
     await quarantineContent(params.type, params.targetId);
+    await evaluateUserStanding(params.targetAuthorId, params.reporterId);
   }
 }
 
