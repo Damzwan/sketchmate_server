@@ -2,7 +2,6 @@ import mongoose, { Schema } from 'mongoose';
 import { Mate, NotificationSubscription, Saved } from '../types/types';
 import { UserDocument } from '../types/mongoose.types';
 
-
 const customizationSchema = new Schema({
   themeId: { type: String, default: 'classic' },
   fontId: { type: String, default: 'sketch' },
@@ -25,19 +24,13 @@ const statsSchema = new Schema({
 }, { _id: false });
 
 // ---------------------------------------------------------------------------
-// MODERATION SUB-SCHEMAS
+// MODERATION SUB-SCHEMAS (Cleaned up - completely dropping database tracking)
 // ---------------------------------------------------------------------------
-// Defining these as proper sub-schemas (not inline objects) means:
-//   - existing users without these fields get sensible defaults via $setOnInsert
-//   - the projection { restriction: 1, strike_summary: 1 } returns the full
-//     shape on every auth read, even for never-restricted users
-//   - Mongoose validates the shape on every save
 const restrictionSchema = new Schema({
-  level: { type: Number, default: 0 },                // 0..5 (matches STRIKE_LADDER)
+  level: { type: Number, default: 0 },                // 0..3 (matches modern STRIKE_LADDER)
   reason: { type: String },                           // last triggering ReportReason
   applied_at: { type: Date },
-  expires_at: { type: Date },                         // null = until manual review
-  blocked_capabilities: { type: [String], default: [] }
+  expires_at: { type: Date }                          // null = until manual review
 }, { _id: false });
 
 const strikeSummarySchema = new Schema({
@@ -45,7 +38,6 @@ const strikeSummarySchema = new Schema({
   total_strikes: { type: Number, default: 0 },        // lifetime, for analytics
   last_strike_at: { type: Date }
 }, { _id: false });
-
 
 export const mateSchema = new Schema<Mate>({
   name: { type: String, required: true },
@@ -66,7 +58,6 @@ export const notificationSchema = new Schema<NotificationSubscription>({
   logged_in: { type: Boolean, required: true }
 });
 
-
 const user_schema = new Schema<UserDocument>({
   auth_id: { type: String, required: true },
   name: { type: String, required: true },
@@ -79,7 +70,6 @@ const user_schema = new Schema<UserDocument>({
   restriction: { type: restrictionSchema, default: () => ({}) },
   strike_summary: { type: strikeSummarySchema, default: () => ({}) },
 
-  // --- @DEPRECATED MATES & CHAT ARRAYS ---
   mate_requests_received: { type: [String], default: [] },
   mate_requests_sent: { type: [String], default: [] },
   mates: [mateSchema],
@@ -101,21 +91,19 @@ const user_schema = new Schema<UserDocument>({
   saved: { type: [savedSchema], default: [] },
   last_name_change: { type: Date, default: null },
   subscription_tier: { type: String, default: 'free' },
-  migration_version: { type: Number, default: 0 }
-
+  migration_version: { type: Number, default: 0 },
+  is_admin: { type: Boolean, required: false }
 }, {
   timestamps: true,
   toJSON: { virtuals: true },
   toObject: { virtuals: true }
 });
 
-// --- EXPLICIT INDEXES ---
 user_schema.index({ auth_id: 1 });
 user_schema.index({ 'balloon.sent': 1 });
 user_schema.index({ 'balloon.received': 1 });
 user_schema.index({ name: 'text' });
 user_schema.index({ migration_version: 1 });
-
 user_schema.index({ 'restriction.level': 1, 'restriction.expires_at': 1 });
 user_schema.index({ 'strike_summary.active_strikes': -1 });
 

@@ -4,7 +4,7 @@ import dayjs from 'dayjs';
 import { Types } from 'mongoose';
 import { requireAuth } from '../../middleware/auth';
 import { requireCapability } from '../../middleware/moderation.middleware';
-import { Capability } from '../../types/moderation.policy';
+import { Capability, isCapabilityBlocked } from '../../types/moderation.policy';
 import { user_model } from '../../models/user.model';
 import { post_model, post_reaction_model } from '../../models/post.model';
 import { relationship_model } from '../../models/relationship.model';
@@ -32,9 +32,6 @@ import { migrateMatesToRelationships, parseParams, syncAndFinalizeMigrationStats
 
 export const userRouter = new Router();
 
-/**
- * USER POSTS — read endpoint, not gated.
- */
 userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
   const { user_id: targetUserId } = ctx.params;
   const viewer_id = ctx.state.user._id.toString();
@@ -91,6 +88,8 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
         status: post.status || 'active',
         comment_count: post.comment_count || 0,
         reports_count: post.reports_count || 0,
+        views: post.views || 0,
+        total_reactions: post.total_reactions || 0,
         author,
         user_reaction: userReactionMap[postIdStr] || null,
         reaction_counts: post.reaction_counts instanceof Map
@@ -101,7 +100,6 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
         updatedAt: new Date(post.updatedAt).toISOString()
       };
     });
-
     ctx.body = { posts: hydratedPosts };
   } catch (error) {
     console.error('Fetch user posts error:', error);
@@ -110,18 +108,6 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
   }
 });
 
-/**
- * UPDATE PROFILE — partially gated.
- *
- * This endpoint bundles three different changes: name, bio/description, and
- * customization. A user under restriction should still be able to update their
- * bio and pick a different theme — those don't surface to other users as new
- * activity. But name changes ARE social (the user appears renamed across the
- * network), so we gate name changes specifically using CHANGE_NAME.
- *
- * Two-tier check inside the handler rather than middleware, because we don't
- * know until we read the body which fields are changing.
- */
 const NAME_CHANGE_COOLDOWN_DAYS = 31;
 userRouter.put('/profile', requireAuth, async (ctx) => {
   const { name, description, customization, subscription_tier } = ctx.request.body;
@@ -137,18 +123,19 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
   }
 
   if (name && name !== user.name) {
-    // Restriction check ONLY fires when the user is actually changing their
-    // name. Bio/customization updates pass through even at level 4.
-    const restriction = ctx.state.user.restriction;
-    if (restriction?.blocked_capabilities?.includes(Capability.CHANGE_NAME)) {
+    // MODERATION: Swapped to complete dynamic calculation based on operational levels
+    const userRestriction = ctx.state.user.restriction;
+    const userLevel = userRestriction?.level ?? 0;
+
+    if (isCapabilityBlocked(userLevel, Capability.CHANGE_NAME)) {
       ctx.status = 403;
       ctx.body = {
         error: 'capability_blocked',
         capability: Capability.CHANGE_NAME,
         restriction: {
-          level: restriction.level,
-          reason: restriction.reason,
-          expires_at: restriction.expires_at
+          level: userLevel,
+          reason: userRestriction?.reason,
+          expires_at: userRestriction?.expires_at
         }
       };
       return;
@@ -188,13 +175,6 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
   ctx.body = { message: 'Profile updated' };
 });
 
-/**
- * UPLOAD IMAGE — gated on CHANGE_PROFILE_IMG.
- *
- * Profile images are social (everyone who interacts with this user sees them),
- * so a sanctioned user shouldn't be able to swap them. This matters for
- * impersonation/harassment cases especially.
- */
 userRouter.post('/upload-image', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
   const { _id } = ctx.state.user;
   const file = (ctx.request as any).files?.img;
@@ -219,10 +199,6 @@ userRouter.post('/upload-image', requireAuth, requireCapability(Capability.CHANG
   }
 });
 
-
-/**
- * GET PROFILE — read endpoint, not gated.
- */
 userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
   const { user_id: targetId } = ctx.params;
   const viewer_id = ctx.state.user._id.toString();
@@ -269,6 +245,8 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
         status: post.status || 'active',
         comment_count: post.comment_count || 0,
         reports_count: post.reports_count || 0,
+        views: post.views || 0,
+        total_reactions: post.total_reactions || 0,
         author: { _id: user._id.toString(), name: user.name, img: user.img },
         user_reaction: userReactionMap[postIdStr] || null,
         reaction_counts: post.reaction_counts instanceof Map
@@ -303,9 +281,6 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
   }
 });
 
-/**
- * ONLINE FRIENDS — read, not gated.
- */
 userRouter.get('/online-friends', requireAuth, async (ctx) => {
   const viewerId = ctx.state.user._id.toString();
   const io = ctx.app.context.io;
@@ -334,7 +309,6 @@ userRouter.get('/online-friends', requireAuth, async (ctx) => {
 
   ctx.body = onlineIds;
 });
-
 
 userRouter.get('/public_users', requireAuth, async (ctx) => {
   const _ids = (ctx.query._ids as string) || '';
@@ -387,21 +361,18 @@ userRouter.get('/', requireAuth, async (ctx) => {
   ctx.body = res;
 });
 
-// Update Username
 userRouter.put('/name', requireAuth, requireCapability(Capability.CHANGE_NAME), async (ctx) => {
   const params = parseParams<ChangeUserNameParams>(ctx.request.body);
-  params._id = ctx.state.user._id.toString(); // SECURE
+  params._id = ctx.state.user._id.toString();
   ctx.body = await changeUserName(params);
 });
 
-// General Updates
 userRouter.put('/update', requireAuth, requireCapability(Capability.CHANGE_NAME), async (ctx) => {
   const params = parseParams<UpdateUserParams>(ctx.request.body);
-  params._id = ctx.state.user._id.toString(); // SECURE
+  params._id = ctx.state.user._id.toString();
   ctx.body = await updateUser(params);
 });
 
-// Profile Image
 userRouter.put('/img', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
   if (!ctx.request.files) throw new Error('No files');
   const params: UploadProfileImgParams = {
@@ -417,7 +388,6 @@ userRouter.delete('/img', requireAuth, async (ctx) => {
   ctx.body = await deleteProfileImg(ctx.state.user._id.toString(), stock_img);
 });
 
-// Inventory: Stickers
 userRouter.post('/sticker', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
   if (!ctx.request.files) throw new Error('No files');
   ctx.body = await createSticker({ _id: ctx.state.user._id.toString(), img: ctx.request.files.file });
@@ -430,7 +400,6 @@ userRouter.delete('/sticker', requireAuth, async (ctx) => {
   });
 });
 
-// Inventory: Emblems
 userRouter.post('/emblem', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
   if (!ctx.request.files) throw new Error('No files');
   ctx.body = await createEmblem({ _id: ctx.state.user._id.toString(), img: ctx.request.files.file });
@@ -440,7 +409,6 @@ userRouter.delete('/emblem', requireAuth, async (ctx) => {
   ctx.body = await deleteEmblem({ user_id: ctx.state.user._id.toString(), emblem_url: ctx.query.emblem_url as string });
 });
 
-// Inventory: Saved Drawings
 userRouter.post('/saved', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
   if (!ctx.request.files) throw new Error('No files');
   const files = ctx.request.files as any;
@@ -459,7 +427,6 @@ userRouter.delete('/saved', requireAuth, async (ctx) => {
   });
 });
 
-// Notifications
 userRouter.put('/subscribe', requireAuth, async (ctx) => {
   ctx.body = await subscribe(parseParams<RegisterNotificationParams>(ctx.request.body));
 });

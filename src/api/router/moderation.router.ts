@@ -9,6 +9,8 @@ import { user_model } from '../../models/user.model';
 import { inbox_model } from '../../models/inbox.model';
 import { CONTAINER } from '../../s3';
 
+const MAX_REPORT_RATIO = 0.01;
+
 import { applyStrike, getStanding } from '../services/moderation.service';
 import {
   POLICY_CONSTANTS,
@@ -375,16 +377,31 @@ async function evaluateAutoModeration(params: {
   }
   totalWeight *= reporterTrust;
 
+  // 1. Calculate Absolute Minimum Threshold
   const isNewAccount =
     author?.createdAt &&
     dayjs().diff(dayjs(author.createdAt), 'day') < POLICY_CONSTANTS.NEW_ACCOUNT_GRACE_DAYS;
-  const threshold = isNewAccount
+  const absoluteThreshold = isNewAccount
     ? surfaceCfg.quarantine_threshold * POLICY_CONSTANTS.NEW_ACCOUNT_THRESHOLD_MULTIPLIER
     : surfaceCfg.quarantine_threshold;
 
+  // 2. Calculate Relative View Threshold (for posts and comments)
+  let relativeThreshold = 0;
+  if (params.type === 'post') {
+    const post = await post_model.findById(params.targetId).select('views').lean() as any;
+    if (post?.views) relativeThreshold = post.views * MAX_REPORT_RATIO;
+  } else if (params.type === 'comment') {
+    const comment = await post_comment_model.findById(params.targetId).select('post_id').lean() as any;
+    if (comment?.post_id) {
+      const parentPost = await post_model.findById(comment.post_id).select('views').lean() as any;
+      if (parentPost?.views) relativeThreshold = parentPost.views * MAX_REPORT_RATIO;
+    }
+  }
+
+  const finalThreshold = Math.max(absoluteThreshold, relativeThreshold);
   const isCritical = REPORT_REASONS[params.reason as ReportReason]?.severity === 'critical';
 
-  if (isCritical || totalWeight >= threshold) {
+  if (isCritical || totalWeight >= finalThreshold) {
     await quarantineContent(params.type, params.targetId);
   }
 }
@@ -549,9 +566,7 @@ async function removeContent(type: string, id: string) {
   }
 }
 
-// =============================================================================
-// GET /report/standing — user-facing "Your Standing" page
-// =============================================================================
+
 moderationRouter.get('/standing', async (ctx) => {
   ctx.body = await getStanding(ctx.state.user._id.toString());
 });

@@ -136,7 +136,6 @@ export interface UserRestriction {
   reason?: ReportReason;
   applied_at?: string;
   expires_at?: string;
-  blocked_capabilities: Capability[];
 }
 
 export interface UserStrikeSummary {
@@ -145,23 +144,20 @@ export interface UserStrikeSummary {
   last_strike_at?: string;
 }
 
-// Payload emitted by the moderation:strike socket event — drives the
-// restriction modal on the frontend.
 export interface ModerationStrikePayload {
   level: number;
   name: string;
   description: string;
   reason: ReportReason;
   expires_at?: string;
-  blocked_capabilities: Capability[];
+  blocked_capabilities: Capability[]; // Kept for UI rendering optimization
 }
 
-// Returned by GET /report/standing — drives the "Your Standing" page
 export interface UserStandingData {
   level: number;
   name: string;
   description: string;
-  restriction: UserRestriction | null;
+  restriction: (UserRestriction & { blocked_capabilities: Capability[] }) | null;
   summary: UserStrikeSummary;
   history: Array<{
     action_type: string;
@@ -191,6 +187,7 @@ export interface CapabilityBlockedError {
 // =============================================================================
 
 export interface User {
+  is_admin?: boolean;
   _id: string;
   auth_id: string;
   name: string;
@@ -296,6 +293,8 @@ export interface BasePost {
   aspect_ratio: number;
   comment_count: number;
   reports_count: number;
+  views: number;
+  total_reactions: number;
   status: ContentModerationStatus;
   moderation?: ContentModerationMeta;
   reaction_counts: Record<string, number>;
