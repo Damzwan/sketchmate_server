@@ -13,20 +13,21 @@ interface PublicLobby {
   id: string;
   name: string;
   maxUsers: number;
-  thumbnailUrl?: string; // Add this
+  thumbnailUrl?: string;
+  premiumSlots: number;
 }
 
 const PUBLIC_LOBBY_ROOMS = new Map<string, PublicLobby>([
-  ['lobby-1', { id: 'lobby-1', name: 'Pizza', maxUsers: 4 }],
-  ['lobby-2', { id: 'lobby-2', name: 'Banana', maxUsers: 5 }],
-  ['lobby-3', { id: 'lobby-3', name: 'Noodle', maxUsers: 7 }],
-  ['lobby-4', { id: 'lobby-4', name: 'Dino', maxUsers: 4 }],
-  ['lobby-5', { id: 'lobby-5', name: 'Pixel', maxUsers: 8 }],
-  ['lobby-6', { id: 'lobby-6', name: 'Bubble', maxUsers: 6 }],
-  ['lobby-7', { id: 'lobby-7', name: 'Toast', maxUsers: 5 }],
-  ['lobby-8', { id: 'lobby-8', name: 'Kitty', maxUsers: 7 }],
-  ['lobby-9', { id: 'lobby-9', name: 'Cactus', maxUsers: 4 }],
-  ['lobby-10', { id: 'lobby-10', name: 'Robot', maxUsers: 6 }]
+  ['lobby-1', { id: 'lobby-1', name: 'Pizza', maxUsers: 5, premiumSlots: 2 }],
+  ['lobby-2', { id: 'lobby-2', name: 'Banana', maxUsers: 5, premiumSlots: 2 }],
+  ['lobby-3', { id: 'lobby-3', name: 'Noodle', maxUsers: 7, premiumSlots: 3 }],
+  ['lobby-4', { id: 'lobby-4', name: 'Dino', maxUsers: 4, premiumSlots: 2 }],
+  ['lobby-5', { id: 'lobby-5', name: 'Pixel', maxUsers: 8, premiumSlots: 3 }],
+  ['lobby-6', { id: 'lobby-6', name: 'Bubble', maxUsers: 6, premiumSlots: 3 }],
+  ['lobby-7', { id: 'lobby-7', name: 'Toast', maxUsers: 5, premiumSlots: 2 }],
+  ['lobby-8', { id: 'lobby-8', name: 'Kitty', maxUsers: 7, premiumSlots: 3 }],
+  ['lobby-9', { id: 'lobby-9', name: 'Cactus', maxUsers: 4, premiumSlots: 2 }],
+  ['lobby-10', { id: 'lobby-10', name: 'Robot', maxUsers: 6, premiumSlots: 3 }]
 ]);
 
 const ROOM_STATES = new Map();
@@ -50,9 +51,8 @@ function getOrCreateRoomState(roomId: any) {
       isRequestingSnapshot: false,
       cleanupTimeout: null,
 
-      // NEW: Chat tracking and Ghost handling
       messageBuffer: [],
-      ghostUsers: new Map(), // Tracks users who are in the disconnect grace period
+      ghostUsers: new Map(),
 
       lastThumbnailTime: 0,
       lastThumbnailSequenceId: 0,
@@ -75,11 +75,22 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     const isPublic = !!publicRoom;
     const clients = await io.in(roomId).fetchSockets();
 
-    // Handle limits and validation
-    if (isPublic && clients.length >= publicRoom.maxUsers) {
-      socket.emit('join-error', { reason: 'ROOM_FULL' });
-      return;
+    if (isPublic) {
+      const totalAllowed = publicRoom.maxUsers + publicRoom.premiumSlots;
+
+      if (clients.length >= totalAllowed) {
+        socket.emit('join-error', { reason: 'ROOM_FULL' });
+        return;
+      }
+      if (clients.length >= publicRoom.maxUsers) {
+        const tier = socket.data.user?.subscription_tier || 'free';
+        if (tier !== 'pro') {
+          socket.emit('join-error', { reason: 'ROOM_FULL' });
+          return;
+        }
+      }
     }
+
 
     if (!isPublic && intent == 'join' && clients.length === 0) {
       socket.emit('join-error', { reason: 'ROOM_NOT_FOUND' });
@@ -88,17 +99,6 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
     const userId = socket.data.user?._id.toString();
 
-    if (isPublic) {
-      const check = await checkSocketCapability(userId, Capability.JOIN_PUBLIC_LOBBY);
-      if (check.blocked) {
-        socket.emit('join-error', {
-          action: 'join-lobby',
-          reason: 'CAPABILITY_BLOCKED',
-          restriction: check.restriction
-        });
-        return;
-      }
-    }
 
     if (intent === 'create' && !isPublic) {
       const check = await checkSocketCapability(userId, Capability.CREATE_LOBBY);
@@ -567,7 +567,6 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     if (attemptIndex >= potentialHosts.length) {
       console.warn(`[Room ${roomId}] All hosts timed out. Using Fallback.`);
 
-      // FALLBACK: Give them the stale cache if we have one, just to get them in the room
       if (roomState.cachedSnapshot) {
         targetSocket.emit('initial-canvas-state', {
           canvasState: roomState.cachedSnapshot,
@@ -576,7 +575,6 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
           warning: 'Network unstable: Some recent drawings may be missing.'
         });
       } else {
-        // Ultimate failure: No cache, no hosts. Boot them or give a blank canvas.
         targetSocket.emit('join-error', { reason: 'ROOM_UNRESPONSIVE' });
       }
       return;
@@ -608,12 +606,12 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     // Send initial snapshot immediately
     const lobbies = Array.from(PUBLIC_LOBBY_ROOMS.values()).map(room => {
       const clients = io.sockets.adapter.rooms.get(room.id);
-
       return {
         id: room.id,
         name: room.name,
         users: clients ? clients.size : 0,
         maxUsers: room.maxUsers,
+        premiumSlots: room.premiumSlots,
         thumbnailUrl: room.thumbnailUrl
       };
     });

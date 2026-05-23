@@ -4,7 +4,7 @@ import { NotificationType } from '../types/types';
 export const matchNotification = (mateName: string): FBNotification => {
   return {
     notification: {
-      title: `You became friends with ${mateName}`,
+      title: `You became mates with ${mateName}`,
       body: ''
     },
     android: {
@@ -258,3 +258,95 @@ export const lobbyInvitationNotification = (mateName: string, lobby_id: string):
   };
 };
 
+export const dmPushNotification = (
+  senderName: string,
+  content: string,
+  senderImg: string,
+  conversationId: string
+): FBNotification => {
+  return {
+    notification: {
+      title: senderName,
+      body: content
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
+    },
+    data: {
+      type: NotificationType.message,
+      conversation_id: conversationId,
+      sender_name: senderName,
+      sender_img: senderImg
+    }
+  };
+};
+
+export const moderationStrikePushNotification = (
+  levelName: string,
+  description: string
+): FBNotification => ({
+  notification: {
+    title: levelName,
+    body: description.slice(0, 140)
+  },
+  android: {
+    priority: 'high',
+    notification: { priority: 'max', channelId: '1' }
+  },
+  data: { type: NotificationType.moderation_strike }
+});
+
+
+export const moderationLiftedPushNotification = (): FBNotification => {
+  return {
+    notification: {
+      title: 'Restriction Lifted',
+      body: 'Your account is back in good standing. Welcome back to sketching!'
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
+    },
+    data: {
+      type: NotificationType.moderation_lifted
+    }
+  };
+};
+
+export const requestAcceptedPushNotification = (mateName: string): FBNotification => {
+  return {
+    notification: {
+      title: `${mateName} accepted your request`,
+      body: 'You have 24 hours to see if you vibe!'
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
+    },
+    data: {
+      type: NotificationType.message
+    }
+  };
+};
+
+export const mateRequestPushNotification = (senderName: string): FBNotification => ({
+  notification: {
+    title: senderName,
+    body: 'wants to be your mate'
+  },
+  android: {
+    priority: 'high',
+    notification: { priority: 'max', channelId: '1' }
+  },
+  data: { type: NotificationType.friend_request }
+});

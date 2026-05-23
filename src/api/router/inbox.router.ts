@@ -4,6 +4,9 @@ import { getInboxItemsV2, removeFromInbox, seeInbox, s3Creator } from '../../mon
 import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
 import { commentOnInbox, createInboxItem } from '../services/inbox.service';
+import { inbox_model } from '../../models/inbox.model';
+import { user_model } from '../../models/user.model';
+import { PUBLIC_USER_FIELDS } from '../../types/projections';
 
 export const inboxRouter = new Router();
 
@@ -118,6 +121,7 @@ inboxRouter.post(
     const { message, followers } = ctx.request.body;
     const sender = ctx.state.user._id.toString();
     const name = ctx.state.user.name;
+    const img = ctx.state.user.img
 
     if (!message?.trim()) {
       ctx.status = 400;
@@ -137,7 +141,8 @@ inboxRouter.post(
         sender,
         message,
         followers,
-        name
+        name,
+        img
       });
 
       ctx.status = 201;
@@ -149,5 +154,54 @@ inboxRouter.post(
     }
   }
 );
+
+inboxRouter.get('/item/:inboxId', requireAuth, async (ctx) => {
+  const { inboxId } = ctx.params;
+
+  const item = await inbox_model.findById(inboxId).lean();
+  if (!item) return ctx.throw(404, 'Inbox item not found');
+
+  // Verify the user is allowed to see it (e.g., they are a follower or the sender)
+  const userId = ctx.state.user._id.toString();
+  const isSender = item.sender?.toString() === userId;
+  const isFollower = item.followers?.map((id: any) => id.toString()).includes(userId);
+
+  if (!isSender && !isFollower) {
+    return ctx.throw(403, 'Permission denied');
+  }
+
+  // Fetch the sender's info so the frontend has the name/avatar
+  const senderInfo = await user_model.findById(item.sender).select(PUBLIC_USER_FIELDS).lean();
+
+  ctx.body = {
+    inboxItem: item,
+    userInfo: senderInfo ? [senderInfo] : []
+  };
+});
+
+/**
+ * SYNC NEW INBOX ITEMS
+ * Fetches items received after a specific date (useful when returning to the app/gallery).
+ */
+inboxRouter.get('/sync', requireAuth, async (ctx) => {
+  const { sinceDate } = ctx.query;
+  if (!sinceDate) return ctx.throw(400, 'sinceDate is required');
+
+  const userId = ctx.state.user._id.toString();
+
+  // Find items where user is in followers AND date is greater than sinceDate
+  const newItems = await inbox_model.find({
+    followers: userId,
+    date: { $gt: new Date(sinceDate as string) }
+  }).sort({ date: -1 }).limit(50).lean();
+
+  const senderIds = [...new Set(newItems.map(item => item.sender.toString()))];
+  const userInfo = await user_model.find({ _id: { $in: senderIds } }).select(PUBLIC_USER_FIELDS).lean();
+
+  ctx.body = {
+    inboxItems: newItems,
+    userInfo: userInfo
+  };
+});
 
 export default inboxRouter;

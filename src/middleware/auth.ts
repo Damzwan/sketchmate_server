@@ -25,7 +25,7 @@ export const requireAuth = async (ctx: any, next: () => Promise<any>) => {
   try {
     const user = await user_model
       .findOne({ auth_id: decodedToken.uid })
-      .select('_id restriction strike_summary subscription_tier')
+      .select('_id restriction strike_summary subscription_tier img name')
       .lean();
 
     if (!user) {

@@ -4,26 +4,55 @@ import { relationship_model } from '../../models/relationship.model';
 import { conversation_model } from '../../models/conversation.model';
 import { RelationshipDocument } from '../../types/mongoose.types';
 
+export interface SaveMessageOptions {
+  /**
+   * Override the default 'pending_invite' chat_status set on first contact.
+   * Used by the balloon flow which goes straight to 'temporary'.
+   */
+  relationshipOverride?: {
+    chat_status: string;
+    expires_at?: Date;
+    action_user_id?: Types.ObjectId;
+  };
+
+  /**
+   * Tag the message as a system message. The frontend renders these
+   * differently (centered row, no avatar bubble) based on system_kind.
+   */
+  messageMeta?: {
+    type: 'user' | 'system';
+    system_kind?: string;
+    system_payload?: any;
+  };
+
+  /**
+   * Include an inbox item (gallery drawing) shared directly in the chat.
+   */
+  shared_inbox_item_id?: string;
+}
+
 export const saveMessageLogic = async (
   sender_id: string,
   receiver_id: string,
   content: string,
   rel: RelationshipDocument | null,
-  shared_post_id?: string
+  shared_post_id?: string,
+  options: SaveMessageOptions = {}
 ) => {
   const sorted = [sender_id, receiver_id].sort();
   const sortedUsers = sorted;
   const senderOID = new Types.ObjectId(sender_id);
-
-  const sortedParticipants = sorted.map(id => new Types.ObjectId(id));
-
+  const sortedParticipants = sorted.map((id) => new Types.ObjectId(id));
 
   const conversation = await conversation_model.findOneAndUpdate(
-    { participants: sortedParticipants },  // exact match on sorted array
+    { participants: sortedParticipants },
     {
       $setOnInsert: {
         participants: sortedParticipants,
-        unread_counts: new Map([[receiver_id, 0], [sender_id, 0]])
+        unread_counts: new Map([
+          [receiver_id, 0],
+          [sender_id, 0]
+        ])
       }
     },
     { upsert: true, new: true }
@@ -35,59 +64,72 @@ export const saveMessageLogic = async (
       conversation_id: conversation._id,
       sender_id,
       content,
-      ...(shared_post_id && { shared_post_id: new Types.ObjectId(shared_post_id) })
+      ...(shared_post_id && { shared_post_id: new Types.ObjectId(shared_post_id) }),
+      ...(options.shared_inbox_item_id && { shared_inbox_item_id: new Types.ObjectId(options.shared_inbox_item_id) }),
+      ...(options.messageMeta && {
+        type: options.messageMeta.type,
+        system_kind: options.messageMeta.system_kind,
+        system_payload: options.messageMeta.system_payload
+      })
     }),
     conversation_model.updateOne(
       { _id: conversation._id },
       {
-        $set: { last_message: conversation._id }, // will be overwritten below after create
+        $set: { last_message: conversation._id },
         $inc: { [`unread_counts.${receiver_id}`]: 1 }
       }
     )
   ]);
 
-  // 3. Now that we have the message _id, set last_message correctly
   await conversation_model.updateOne(
     { _id: conversation._id },
     { $set: { last_message: message._id } }
   );
 
-  // 4. Social graph: only on first contact
+  // 4. Social graph — caller can override the default 'pending_invite' default
   let updatedRel = rel;
-  if (!rel || rel.chat_status === 'none') {
+  const needsRelationshipWrite =
+    !rel ||
+    rel.chat_status === 'none' ||
+    !!options.relationshipOverride;
+
+  if (needsRelationshipWrite) {
+    const override = options.relationshipOverride;
+    const setBlock: any = override
+      ? {
+        chat_status: override.chat_status,
+        action_user_id: override.action_user_id ?? senderOID,
+        conversation_id: conversation._id,
+        ...(override.expires_at && { expires_at: override.expires_at })
+      }
+      : {
+        chat_status: 'pending_invite',
+        action_user_id: senderOID,
+        conversation_id: conversation._id
+      };
+
     updatedRel = await relationship_model.findOneAndUpdate(
       { users: sortedUsers },
       {
         $setOnInsert: { users: sortedUsers },
-        $set: {
-          chat_status: 'pending_invite',
-          action_user_id: senderOID,
-          conversation_id: conversation._id
-        }
+        $set: setBlock
       },
       { upsert: true, new: true }
     ).lean();
   }
 
-  // 5. Single hydrated fetch — populate here instead of two separate queries
   const finalConvo = await conversation_model
     .findById(conversation._id)
     .populate('participants', 'name img _id last_seen_version')
     .populate('last_message')
     .lean() as any;
 
-  // 6. Merge rel data — no extra DB call, we already have it
   if (updatedRel) {
     finalConvo.status = updatedRel.chat_status;
     finalConvo.initiator_id = updatedRel.action_user_id?.toString();
     finalConvo.trial_expires_at = updatedRel.expires_at;
     finalConvo.cooldown_until = updatedRel.cooldown_until;
     finalConvo.relationship_id = updatedRel._id?.toString();
-
-    console.log('sender:', sender_id)
-    console.log('action_user_id from rel:', updatedRel.action_user_id?.toString())
-    console.log('initiator_id on finalConvo:', finalConvo.initiator_id)
-    console.log('participants order:', finalConvo.participants.map((p: any) => p._id.toString()))
   }
 
   return {

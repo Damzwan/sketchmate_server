@@ -10,6 +10,8 @@ import { balloon_model } from '../../models/balloon.model';
 import { inbox_model } from '../../models/inbox.model';
 import { message_model } from '../../models/message.model';
 import { deletion_queue_model } from '../../models/deletion.model';
+import { dispatchNotification } from './notification.service';
+import { moderationLiftedPushNotification, moderationStrikePushNotification } from '../../config/notification.config';
 
 export async function applyStrike(params: {
   userId: string;
@@ -41,16 +43,12 @@ export async function applyStrike(params: {
     expires_at: expiresAt
   };
 
-  // Completely clean update layout - zero structural conflicts or $unset runtime casting crashes
   await user_model.updateOne(
     { _id: userId },
-    {
-      $set: { restriction, strike_summary: summary }
-    }
+    { $set: { restriction, strike_summary: summary } }
   );
 
   if (newLevel > 0) {
-    // Audit logs preserve historic capability snapshots for legal/audit validation
     await moderation_action_model.create({
       user_id: new Types.ObjectId(userId),
       action_type: 'restriction_applied',
@@ -62,15 +60,27 @@ export async function applyStrike(params: {
     });
   }
 
-  // Socket triggers dynamic capability hydration maps straight down to the client view layers
-  sendSocketNotificationToUser(userId, 'moderation:strike', {
+  // ─── REPLACES: sendSocketNotificationToUser('moderation:strike', ...) ───
+  const strikePayload = {
     level: newLevel,
     name: config.name,
     description: config.description,
     reason,
     expires_at: expiresAt,
     blocked_capabilities: [...config.blocks]
-  });
+  };
+
+  dispatchNotification({
+    recipient_id: userId,
+    type: 'moderation_strike',
+    target_type: 'system',
+    channels: {
+      in_app: true,
+      socket: { event: 'moderation:strike', data: strikePayload },
+      push: moderationStrikePushNotification(config.name, config.description)
+    },
+    payload: strikePayload  // Same data, persisted on the feed entry for retrospective viewing
+  }).catch(err => console.error('Strike dispatch failed:', err));
 
   return { level: newLevel, restriction };
 }
@@ -131,9 +141,19 @@ export async function liftRestriction(params: {
     })
   ]);
 
-  sendSocketNotificationToUser(params.userId, 'moderation:restriction_lifted', {
-    message: 'Your restriction has been lifted. Welcome back!'
-  });
+  dispatchNotification({
+    recipient_id: params.userId,
+    type: 'moderation_lifted',
+    target_type: 'system',
+    channels: {
+      in_app: true,
+      socket: {
+        event: 'moderation:restriction_lifted',
+        data: { message: 'Your restriction has been lifted. Welcome back!' }
+      },
+      push: moderationLiftedPushNotification()
+    }
+  }).catch(err => console.error('Lift dispatch failed:', err));
 }
 
 export async function getStanding(userId: string) {

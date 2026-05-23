@@ -22,6 +22,8 @@ const postSchema = new Schema<PostDocument>({
   aspect_ratio: { type: Number, required: true },
   description: { type: String, required: false },
   reaction_counts: { type: Map, of: Number, default: {} },
+  enable_comments: { type: Boolean, default: true },
+  enable_remix: { type: Boolean, default: true },
 
   // --- ENGAGEMENT METRICS ---
   comment_count: { type: Number, default: 0 },
@@ -65,8 +67,6 @@ const commentSchema = new Schema<PostCommentDocument>({
   post_id: { type: ObjectId, ref: 'posts', required: true },
   author_id: { type: ObjectId, ref: 'users', required: true },
   message: { type: String, required: true },
-  enable_comments: { type: Boolean, default: true },
-  enable_remix: { type: Boolean, default: true },
 
   status: {
     type: String,

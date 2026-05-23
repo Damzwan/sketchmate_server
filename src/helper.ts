@@ -157,26 +157,17 @@ export async function migrateMatesToRelationships(userId: string, legacyMates: a
     return {
       updateOne: {
         filter: {
-          // Match the unique compound index exactly
           'users.0': sortedOIDs[0],
           'users.1': sortedOIDs[1]
         },
         update: {
           $setOnInsert: {
-            users: sortedOIDs, // Only set on creation to avoid "matched twice"
+            users: sortedOIDs,
             createdAt: new Date()
           },
           $set: {
             chat_status: 'mate',
             updatedAt: new Date()
-          },
-          $addToSet: {
-            follows: {
-              $each: [
-                { follower: userOID, followed: mateOID },
-                { follower: mateOID, followed: userOID }
-              ]
-            }
           }
         },
         upsert: true
