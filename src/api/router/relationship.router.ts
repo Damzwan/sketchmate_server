@@ -2,19 +2,25 @@ import Router from 'koa-router';
 import dayjs from 'dayjs';
 import { Types } from 'mongoose';
 import { requireAuth } from '../../middleware/auth';
+import { Capability, isCapabilityBlocked } from '../../types/moderation.policy';
 import { relationship_model } from '../../models/relationship.model';
 import { conversation_model } from '../../models/conversation.model';
 import { user_model } from '../../models/user.model';
 import { RelationshipDocument } from '../../types/mongoose.types';
 import { isUserOnline, sendSocketNotificationToUser } from '../socket/socket';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
+import { requireCapability } from '../../middleware/moderation.middleware';
+import { assertMateQuota } from '../services/quota.service';
+import { dispatchNotification } from '../services/notification.service';
+import {
+  matchNotification,
+  mateRequestPushNotification,
+  requestAcceptedPushNotification
+} from '../../config/notification.config';
 
 export const relationshipRouter = new Router();
 relationshipRouter.use(requireAuth);
 
-/**
- * RESPOND: Accept or Decline trials and mate requests
- */
 relationshipRouter.post('/:id/respond', async (ctx) => {
   const { id } = ctx.params;
   const user_id = ctx.state.user._id.toString();
@@ -26,7 +32,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
     return ctx.throw(404, 'Relationship not found');
   }
 
-  // Only the person who did NOT initiate can respond
   if (rel.action_user_id?.toString() === user_id) {
     return ctx.throw(400, 'Waiting for partner response');
   }
@@ -58,22 +63,39 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       populatedConvo.initiator_id = rel.action_user_id?.toString();
 
       if (partnerId) {
-        sendSocketNotificationToUser(partnerId.toString(), 'chat:request_accepted', {
-          conversation: populatedConvo
-        });
+        // ─── REPLACES: sendSocketNotificationToUser('chat:request_accepted', ...) ───
+        dispatchNotification({
+          recipient_id: partnerId.toString(),
+          type: 'dm_message',
+          actor: {
+            _id: user_id,
+            name: ctx.state.user.name,
+            img: ctx.state.user.img
+          },
+          channels: {
+            in_app: false,
+            socket: {
+              event: 'chat:request_accepted',
+              data: { conversation: populatedConvo }
+            },
+            push: requestAcceptedPushNotification(ctx.state.user.name)
+          }
+        }).catch(err => console.error('Request accept dispatch failed:', err));
       }
 
       ctx.body = { success: true, conversation: populatedConvo };
-
     } else if (rel.chat_status === 'pending_mate') {
+      await assertMateQuota(user_id);
+      if (partnerId) {
+        await assertMateQuota(partnerId.toString());
+      }
+
       rel.chat_status = 'mate';
       rel.expires_at = undefined;
       rel.cooldown_until = undefined;
       rel.deleted_at = undefined;
-      // Note: We no longer modify rel.follows here. Follows are handled separately via the follow endpoint.
       await rel.save();
 
-      // Only increment the 'mates' stat
       await user_model.updateMany(
         { _id: { $in: rel.users } },
         { $inc: { 'stats.mates': 1 } }
@@ -93,15 +115,29 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       }
 
       if (partnerId) {
-        sendSocketNotificationToUser(partnerId.toString(), 'chat:mate_matched', {
-          conversation: populatedConvo
-        });
+        // ─── REPLACES: sendSocketNotificationToUser('chat:mate_matched', ...) ───
+        dispatchNotification({
+          recipient_id: partnerId.toString(),
+          type: 'dm_message',
+          actor: {
+            _id: user_id,
+            name: ctx.state.user.name,
+            img: ctx.state.user.img
+          },
+          channels: {
+            in_app: false,
+            socket: {
+              event: 'chat:mate_matched',
+              data: { conversation: populatedConvo }
+            },
+            push: matchNotification(ctx.state.user.name)
+          }
+        }).catch(err => console.error('Mate match dispatch failed:', err));
       }
 
       ctx.body = { success: true, conversation: populatedConvo };
     }
   } else {
-    // Action: Decline
     if (rel.chat_status === 'pending_invite') {
       const conversationId = rel.conversation_id;
 
@@ -126,7 +162,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
 
       ctx.body = { success: true };
     } else if (rel.chat_status === 'pending_mate') {
-      // Downgrade pending_mate back to temporary or expired
       const isTrialValid = rel.expires_at && dayjs().isBefore(dayjs(rel.expires_at));
       rel.chat_status = isTrialValid ? 'temporary' : 'expired';
       rel.action_user_id = undefined;
@@ -169,9 +204,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
   }
 });
 
-/**
- * FOLLOW / UNFOLLOW
- */
 relationshipRouter.put('/follow/:target_id', async (ctx) => {
   const followerId = ctx.state.user._id.toString();
   const targetId = ctx.params.target_id;
@@ -188,6 +220,7 @@ relationshipRouter.put('/follow/:target_id', async (ctx) => {
   });
 
   if (existing) {
+    // UNFOLLOW — silent. No notification on unfollow.
     await Promise.all([
       relationship_model.updateOne(
         { users: sortedUsers },
@@ -197,23 +230,55 @@ relationshipRouter.put('/follow/:target_id', async (ctx) => {
       user_model.updateOne({ _id: followerOID }, { $inc: { 'stats.following': -1 } })
     ]);
     ctx.body = { isFollowing: false };
-  } else {
-    await Promise.all([
-      relationship_model.updateOne(
-        { users: sortedUsers },
-        {
-          $setOnInsert: { users: sortedUsers },
-          $addToSet: { follows: { follower: followerOID, followed: followedOID } }
-        },
-        { upsert: true }
-      ),
-      user_model.updateOne({ _id: followedOID }, { $inc: { 'stats.followers': 1 } }),
-      user_model.updateOne({ _id: followerOID }, { $inc: { 'stats.following': 1 } })
-    ]);
-    ctx.body = { isFollowing: true };
+    return;
   }
-});
 
+  const userRestriction = ctx.state.user.restriction;
+  const userLevel = userRestriction?.level ?? 0;
+
+  if (isCapabilityBlocked(userLevel, Capability.FOLLOW_USER)) {
+    ctx.status = 403;
+    ctx.body = {
+      error: 'capability_blocked',
+      capability: Capability.FOLLOW_USER,
+      restriction: {
+        level: userLevel,
+        reason: userRestriction?.reason,
+        expires_at: userRestriction?.expires_at
+      }
+    };
+    return;
+  }
+
+  await Promise.all([
+    relationship_model.updateOne(
+      { users: sortedUsers },
+      {
+        $setOnInsert: { users: sortedUsers },
+        $addToSet: { follows: { follower: followerOID, followed: followedOID } }
+      },
+      { upsert: true }
+    ),
+    user_model.updateOne({ _id: followedOID }, { $inc: { 'stats.followers': 1 } }),
+    user_model.updateOne({ _id: followerOID }, { $inc: { 'stats.following': 1 } })
+  ]);
+
+  dispatchNotification({
+    recipient_id: targetId,
+    type: 'follow',
+    actor: {
+      _id: followerId,
+      name: ctx.state.user.name,
+      img: ctx.state.user.img
+    },
+    aggregation_key: `follow:${targetId}`,
+    target_type: 'user',
+    target_id: followerId,
+    channels: { in_app: true}
+  }).catch(err => console.error('Follow dispatch failed:', err));
+
+  ctx.body = { isFollowing: true };
+});
 
 relationshipRouter.post('/block', async (ctx) => {
   const current_user_id = ctx.state.user._id.toString();
@@ -284,7 +349,6 @@ relationshipRouter.post('/unblock', async (ctx) => {
   const rel = await relationship_model.findOne({ users: sortedUsers });
 
   if (rel?.chat_status === 'blocked' && rel.blocked_by?.toString() === current_user_id) {
-
     if (rel.conversation_id) {
       rel.chat_status = 'none';
       rel.blocked_by = undefined;
@@ -299,9 +363,6 @@ relationshipRouter.post('/unblock', async (ctx) => {
   }
 });
 
-/**
- * UNFRIEND
- */
 relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
   const myId = ctx.state.user._id.toString();
   const targetId = ctx.params.target_id;
@@ -340,12 +401,11 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
   ctx.body = { success: true };
 });
 
-/**
- * MATE REQUEST
- */
-relationshipRouter.post('/:conversation_id/mate-request', async (ctx) => {
+relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capability.SEND_MATE_REQUEST), async (ctx) => {
   const { conversation_id } = ctx.params;
   const user_id = ctx.state.user._id;
+
+  await assertMateQuota(user_id.toString());
 
   const rel = await relationship_model.findOneAndUpdate(
     { conversation_id: new Types.ObjectId(conversation_id) },
@@ -368,19 +428,29 @@ relationshipRouter.post('/:conversation_id/mate-request', async (ctx) => {
     populatedConvo.initiator_id = user_id.toString();
     populatedConvo.relationship_id = rel._id.toString();
 
-    sendSocketNotificationToUser(partnerId.toString(), 'chat:mate_requested', {
-      conversation_id,
-      conversation: populatedConvo,
-      wasExpired: false
-    });
+    // ─── REPLACES: sendSocketNotificationToUser('chat:mate_requested', ...) ───
+    dispatchNotification({
+      recipient_id: partnerId.toString(),
+      type: 'dm_message',
+      actor: {
+        _id: user_id.toString(),
+        name: ctx.state.user.name,
+        img: ctx.state.user.img
+      },
+      channels: {
+        in_app: false,
+        socket: {
+          event: 'chat:mate_requested',
+          data: { conversation_id, conversation: populatedConvo, wasExpired: false }
+        },
+        push: mateRequestPushNotification(ctx.state.user.name)
+      }
+    }).catch(err => console.error('Mate request dispatch failed:', err));
   }
 
   ctx.body = { success: true };
 });
 
-/**
- * NETWORK LISTS - now returns enriched user data so the cache can ingest it
- */
 relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
   const { user_id, type } = ctx.params;
   const { page = 1, limit = 20 } = ctx.query;
@@ -401,7 +471,6 @@ relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
 
   const rels = await relationship_model.find(query).sort({ updatedAt: -1 }).skip(skip).limit(Number(limit)).lean();
   const targetIds = rels.map(r => r.users.find(id => id.toString() !== user_id));
-  // Use the projection — same fields we ship everywhere else
   const users = await user_model.find({ _id: { $in: targetIds } }).select(PUBLIC_USER_FIELDS).lean();
 
   ctx.body = users.map(u => {
@@ -441,7 +510,6 @@ relationshipRouter.post('/:conversation_id/mate-request/cancel', async (ctx) => 
     return ctx.throw(400, 'Cannot cancel this request');
   }
 
-  // Evaluate if the original 24h trial is still running
   const isTrialValid = rel.expires_at && dayjs().isBefore(dayjs(rel.expires_at));
   rel.chat_status = isTrialValid ? 'temporary' : 'expired';
   rel.action_user_id = undefined;
@@ -460,7 +528,6 @@ relationshipRouter.post('/:conversation_id/mate-request/cancel', async (ctx) => 
       populatedConvo.relationship_id = rel._id.toString();
     }
 
-    // We reuse mate_declined because the frontend handles the state downgrade identically
     sendSocketNotificationToUser(partnerId.toString(), 'chat:mate_declined', {
       conversation_id,
       conversation: populatedConvo,

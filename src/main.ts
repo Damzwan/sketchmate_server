@@ -14,7 +14,7 @@ import { router } from './api/router/router';
 import { registerSocketHandlers } from './api/socket/socket';
 import { errorHandler } from './middleware/error_handler';
 import * as fs from 'fs';
-import { scheduleResetUploadFolder, startVitalsMonitor } from './helper';
+import { scheduleResetUploadFolder } from './helper';
 import cron from 'node-cron';
 import { pairBalloons, removeExpiredBalloons, unPairBalloons } from './api/balloon';
 import * as admin from 'firebase-admin';
@@ -25,14 +25,12 @@ admin.initializeApp({
 });
 
 const app = new Koa();
-export const isDev = process.env.NODE_ENV === 'development';
-
 
 const server = createServer(app.callback());
 const io = new Server(server, {
   maxHttpBufferSize: 1e7,
   cors: {
-    origin: ['https://app.sketchmate.ninja', 'http://localhost:8100', 'http://localhost', 'https://localhost', 'https://sketchmate-testing-5e62bf42145c.herokuapp.com'],
+    origin: ['https://app.sketchmate.ninja', 'http://localhost:8100', 'http://localhost:3000', 'http://localhost', 'https://localhost', 'https://sketchmate-testing-5e62bf42145c.herokuapp.com'],
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true
   }
@@ -52,7 +50,26 @@ if (!fs.existsSync(uploadDir)) {
 
 app
   .use(errorHandler())
-  .use(cors())
+  .use(cors({
+    origin: (ctx) => {
+      const allowedOrigins = [
+        'https://app.sketchmate.ninja',
+        'http://localhost:8100',
+        'http://localhost:3000',
+        'http://localhost',
+        'https://localhost',
+        'https://sketchmate-testing-5e62bf42145c.herokuapp.com'
+      ];
+      const requestOrigin = ctx.get('Origin');
+      if (allowedOrigins.includes(requestOrigin)) {
+        return requestOrigin;
+      }
+      return allowedOrigins[0];
+    },
+    credentials: true,
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowHeaders: ['Content-Type', 'Authorization', 'Accept']
+  }))
   .use(
     koaBody({
       multipart: true,
@@ -81,7 +98,6 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection:', reason);
 });
 
-startVitalsMonitor();
 
 // Every hour hours (at :00)
 cron.schedule('0 */1 * * *', async () => {

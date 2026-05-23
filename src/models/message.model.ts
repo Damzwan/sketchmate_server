@@ -15,15 +15,41 @@ const MessageSchema = new Schema<MessageDocument>({
   },
   content: {
     type: String,
-    required: true
+    default: ''
   },
   is_invite: {
     type: Boolean,
     default: false
+  },
+  shared_post_id: {
+    type: Schema.Types.ObjectId,
+    ref: 'posts',
+    default: null,
+    index: true
+  },
+  shared_inbox_item_id: {
+    type: Schema.Types.ObjectId,
+    ref: 'inbox',
+    default: null,
+    index: true
+  },
+  type: {
+    type: String,
+    enum: ['user', 'system'],
+    default: 'user'
+  },
+  system_kind: {
+    type: String,
+    enum: ['balloon_match'],
+    required: false
+  },
+  system_payload: {
+    type: Schema.Types.Mixed,
+    required: false
   }
+
 }, {
   timestamps: true,
-  // Optimization for lean queries and toObject conversions
   toObject: { virtuals: true },
   toJSON: { virtuals: true }
 });

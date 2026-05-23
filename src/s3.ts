@@ -1,4 +1,5 @@
 import {
+  CopyObjectCommand,
   CreateBucketCommand,
   DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command,
   PutObjectCommand,
@@ -13,7 +14,8 @@ export enum CONTAINER {
   drawings = 'sketchmate-drawings',
   account = 'sketchmate-account',
   stickers = 'sketchmate-stickers',
-  snapshots = 'snapshots-diagnostic'
+  snapshots = 'snapshots-diagnostic',
+  moderation_snapshots = 'sketchmate-moderation-snapshots'
 }
 
 const CDN_URL = 'https://d5xw0rxlv2zqt.cloudfront.net';
@@ -48,7 +50,7 @@ export class S3Creator {
     const mergedOptions = {
       ...options,
       Bucket: bucketName,
-      Key: options?.Key || uuidv4(), // Use passed Key or generate one
+      Key: options?.Key || uuidv4(),
       Body: content
     };
     await this.s3Client?.send(new PutObjectCommand(mergedOptions));
@@ -60,14 +62,14 @@ export class S3Creator {
     bucketName = CONTAINER.drawings,
     type = 'image/webp'
   ): Promise<string> {
-    const uniqueId = uuidv4(); // Generate a unique ID
-    const filename = `${uniqueId}.${type.split('/')[1]}`; // Extract extension
+    const uniqueId = uuidv4();
+    const filename = `${uniqueId}.${type.split('/')[1]}`;
 
     return await this.upload(
       buffer,
       {
         Bucket: bucketName,
-        Key: filename, // Use the filename with extension
+        Key: filename,
         ContentType: type
       },
       bucketName
@@ -81,11 +83,10 @@ export class S3Creator {
     bucketName: CONTAINER
   ): Promise<string> {
     try {
-      // Only add an extension if the filename doesn't already have one
       const hasExtension = filePath.includes('.');
       const extension = fileType.split('/')[1];
       const filename = hasExtension
-        ? `${uuidv4()}-${filePath}` // Keep original name + uuid to avoid collisions
+        ? `${uuidv4()}-${filePath}`
         : `${uuidv4()}.${extension}`;
 
       const params: PutObjectCommandInput = {
@@ -96,8 +97,6 @@ export class S3Creator {
       };
 
       await this.s3Client?.send(new PutObjectCommand(params));
-
-      // Clean up the local file after upload so it doesn't sit on Heroku's disk
       fs.promises.unlink(filePath).catch(console.error);
 
       return this.getObjectUrl(filename, bucketName);
@@ -134,13 +133,70 @@ export class S3Creator {
       await this.s3Client?.send(new CreateBucketCommand({ Bucket: bucketName }));
       console.log(`Diagnostic bucket '${bucketName}' created successfully.`);
     } catch (e: any) {
-      // AWS throws these specific errors if the bucket is already there
       if (e.name === 'BucketAlreadyOwnedByYou' || e.name === 'BucketAlreadyExists') {
         console.log(`Bucket '${bucketName}' already exists. Proceeding...`);
       } else {
         console.error('Failed to create diagnostic bucket:', e);
         throw e;
       }
+    }
+  }
+
+  /**
+   * Server-side copy of a single object from one bucket to another.
+   * Used for moderation snapshots — we clone the live thumbnail so that
+   * when the original is deleted (by the author or by an upheld removal),
+   * the moderator can still review what was reported.
+   *
+   * Returns the public-looking URL of the cloned object (still in the
+   * snapshot bucket, not the CDN — kept private). Returns null on failure;
+   * callers should never fail a report submission because the snapshot
+   * couldn't be cloned. An incomplete snapshot is better than no report.
+   */
+  async cloneToSnapshot(sourceUrl: string, sourceBucket: CONTAINER): Promise<string | null> {
+    if (!sourceUrl) return null;
+    if (!this.s3Client) return null;
+
+    try {
+      // Extract the key from the URL. Works for both direct S3 URLs and CDN URLs.
+      const key = sourceUrl.substring(sourceUrl.lastIndexOf('/') + 1);
+      if (!key) return null;
+
+      // Snapshot key includes a timestamp prefix so when we list the bucket
+      // for an admin dashboard we can sort by report date naturally.
+      const datePrefix = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+      const destKey = `${datePrefix}/${uuidv4()}-${key}`;
+
+      await this.s3Client.send(new CopyObjectCommand({
+        Bucket: CONTAINER.moderation_snapshots,
+        // CopySource format: "{source-bucket}/{source-key}", URL-encoded
+        CopySource: encodeURIComponent(`${sourceBucket}/${key}`)
+      } as any));
+
+      return this.getObjectUrl(destKey, CONTAINER.moderation_snapshots);
+    } catch (e) {
+      console.error('Snapshot clone failed:', e);
+      return null;
+    }
+  }
+
+  /**
+   * Generates a short-lived signed URL for a snapshot so the mod dashboard
+   * can render it without making the bucket public. 15-minute expiry —
+   * long enough to review, short enough that leaked links die fast.
+   */
+  async getSnapshotSignedUrl(snapshotUrl: string): Promise<string | null> {
+    if (!snapshotUrl || !this.s3Client) return null;
+    try {
+      const key = snapshotUrl.substring(snapshotUrl.lastIndexOf('/') + 1);
+      const getCommand = new GetObjectCommand({
+        Bucket: CONTAINER.moderation_snapshots,
+        Key: key
+      });
+      return await getSignedUrl(this.s3Client as any, getCommand as any, { expiresIn: 900 });
+    } catch (e) {
+      console.error('Failed to sign snapshot URL:', e);
+      return null;
     }
   }
 
@@ -162,7 +218,6 @@ export class S3Creator {
       bucketName
     );
 
-    // Return the CDN URL instead of the S3 URL
     return `${CDN_URL}/${key}`;
   }
 
@@ -195,7 +250,6 @@ export class S3Creator {
 
   async getLatestSnapshotUrl(): Promise<string | null> {
     try {
-      // 1. Get list of all files in the diagnostic bucket
       const listCommand = new ListObjectsV2Command({
         Bucket: CONTAINER.snapshots
       });
@@ -207,18 +261,15 @@ export class S3Creator {
         return null;
       }
 
-      // 2. Sort by date to find the freshest "blood sample"
       const latest = listResponse.Contents.sort((a, b) =>
         (b.LastModified?.getTime() || 0) - (a.LastModified?.getTime() || 0)
       )[0];
 
-      // 3. Generate a signed URL valid for 15 minutes
       const getCommand = new GetObjectCommand({
         Bucket: CONTAINER.snapshots,
         Key: latest.Key
       });
 
-      // This creates a temporary link you can click to download the file
       const url = await getSignedUrl(this.s3Client as any, getCommand as any, { expiresIn: 900 });
       return url;
     } catch (e) {

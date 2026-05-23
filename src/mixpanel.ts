@@ -1,6 +1,5 @@
-import { isDev } from './main';
-
 import Mixpanel from 'mixpanel';
+import { isDev } from './config/app.config';
 
 export enum mixpanelEvents {
   login = 'login',

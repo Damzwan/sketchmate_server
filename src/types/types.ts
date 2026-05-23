@@ -8,6 +8,8 @@ export enum NotificationType {
   friend_request = 'friend_request',
   balloon = 'balloon',
   lobby_invitation = 'lobby_invitation',
+  moderation_strike = 'moderation_strike',
+  moderation_lifted = 'moderation_lifted'
 }
 
 export enum ENDPOINTS {
@@ -20,6 +22,7 @@ export enum ENDPOINTS {
   emblem = '/emblem',
   saved = '/saved',
   balloon = '/balloon',
+  report = '/report',
 }
 
 export enum SOCKET_ENDPONTS {
@@ -39,19 +42,30 @@ export enum SOCKET_ENDPONTS {
   balloon_match_expired = 'balloon_match_expired',
   balloon_expired = 'balloon_expired ',
   receive_new_balloon = 'receive_new_balloon',
+  receive_new_balloon_v3 = 'receive_new_balloon_v3',
   balloon_missed = 'balloon_missed',
   v2_accept_balloon = 'v2_accept_balloon',
+  v3_accept_balloon = 'v3_accept_balloon',
   v2_refuse_balloon = 'v2_refuse_balloon',
   v2_cancel_balloon = 'v2_cancel_balloon',
   balloon_check = 'balloon_check',
   friend_invitation = 'friend-invitation',
+  moderation_strike = 'moderation:strike',
+  moderation_restriction_lifted = 'moderation:restriction_lifted',
 }
 
 // --- SHARED TYPES ---
 
 export type Res<T> = T | undefined | null;
 
-export type ChatStatus = 'none' | 'pending_invite' | 'temporary' | 'expired' | 'pending_mate' | 'mate' | 'blocked';
+export type ChatStatus =
+  | 'none'
+  | 'pending_invite'
+  | 'temporary'
+  | 'expired'
+  | 'pending_mate'
+  | 'mate'
+  | 'blocked';
 
 // Standardized ConversationStatus to match ChatStatus for UI consistency
 export type ConversationStatus = ChatStatus;
@@ -68,16 +82,136 @@ export interface Saved {
   img: string;
 }
 
-// --- USER & PROFILE ---
+// =============================================================================
+// MODERATION
+// =============================================================================
+// These types are also re-exported from /config/moderation.policy.ts so the
+// frontend can import either location. The policy file is the source of truth
+// for the values; this file is the source of truth for the type shapes.
+
+export type ContentModerationStatus = 'active' | 'under_review' | 'removed';
+
+export interface ContentModerationMeta {
+  quarantined_at?: string;
+  removed_at?: string;
+  last_report_at?: string;
+  last_report_reason?: string;
+}
+
+export type ReportReason =
+  | 'minor_safety'
+  | 'nsfw'
+  | 'violence'
+  | 'harassment'
+  | 'hate_speech'
+  | 'spam'
+  | 'impersonation'
+  | 'other';
+
+export type ReportableType =
+  | 'post'
+  | 'comment'
+  | 'user'
+  | 'balloon'
+  | 'dm_message'
+  | 'inbox_drawing'
+  | 'inbox_comment'
+  | 'lobby_message'
+  | 'lobby_drawing';
+
+export type ReportStatus = 'pending' | 'auto_actioned' | 'upheld' | 'dismissed';
+
+// Mirrors the Capability enum in moderation.policy.ts. Kept as a string union
+// here so this file has no imports.
+export type Capability =
+  | 'CREATE_POST'
+  | 'COMMENT_ON_POST'
+  | 'REACT_TO_POST'
+  | 'SEND_INBOX_DRAWING'
+  | 'COMMENT_ON_INBOX'
+  | 'SEND_BALLOON'
+  | 'RECEIVE_BALLOON'
+  | 'SEND_DM'
+  | 'SEND_MATE_REQUEST'
+  | 'CREATE_LOBBY'
+  | 'JOIN_PUBLIC_LOBBY'
+  | 'SEND_LOBBY_MESSAGE'
+  | 'DRAW_IN_LOBBY'
+  | 'CHANGE_NAME'
+  | 'CHANGE_PROFILE_IMG'
+  | 'REPORT_CONTENT';
+
+export interface UserRestriction {
+  level: number;
+  reason?: ReportReason;
+  applied_at?: string;
+  expires_at?: string;
+}
+
+export interface UserStrikeSummary {
+  active_strikes: number;
+  total_strikes: number;
+  last_strike_at?: string;
+}
+
+export interface ModerationStrikePayload {
+  level: number;
+  name: string;
+  description: string;
+  reason: ReportReason;
+  expires_at?: string;
+  blocked_capabilities: Capability[]; // Kept for UI rendering optimization
+}
+
+export interface UserStandingData {
+  level: number;
+  name: string;
+  description: string;
+  restriction:
+    | (UserRestriction & { blocked_capabilities: Capability[] })
+    | null;
+  summary: UserStrikeSummary;
+  history: Array<{
+    action_type: string;
+    level?: number;
+    reason?: ReportReason;
+    created_at: string;
+    expires_at?: string;
+  }>;
+}
+
+// 403 response body from requireCapability — frontend catches and shows sheet
+export interface CapabilityBlockedError {
+  error: 'capability_blocked';
+  capability: Capability;
+  restriction: {
+    level: number;
+    name: string;
+    description: string;
+    reason?: ReportReason;
+    expires_at?: string;
+    applied_at?: string;
+  };
+}
+
+// =============================================================================
+// USER & PROFILE
+// =============================================================================
 
 export interface User {
+  is_admin?: boolean;
   _id: string;
   auth_id: string;
   name: string;
   description?: string;
   img: string;
   subscription_tier?: string;
-  stats: UserStats
+  stats: UserStats;
+
+  // Moderation — both optional so legacy clients don't crash if absent.
+  // Auth middleware always populates these from sub-schema defaults.
+  restriction?: UserRestriction;
+  strike_summary?: UserStrikeSummary;
 
   // UI / Inventory
   stickers: string[];
@@ -157,7 +291,9 @@ export interface UserProfileData {
   }>;
 }
 
-// --- SOCIAL CONTENT (POSTS, COMMENTS, INBOX) ---
+// =============================================================================
+// SOCIAL CONTENT (POSTS, COMMENTS, INBOX)
+// =============================================================================
 
 export interface BasePost {
   _id: string;
@@ -169,7 +305,12 @@ export interface BasePost {
   aspect_ratio: number;
   comment_count: number;
   reports_count: number;
-  status: 'active' | 'under_review' | 'removed';
+  enable_comments: boolean;
+  enable_remix: boolean;
+  views: number;
+  total_reactions: number;
+  status: ContentModerationStatus;
+  moderation?: ContentModerationMeta;
   reaction_counts: Record<string, number>;
 }
 
@@ -196,6 +337,12 @@ export interface InboxItem {
   aspect_ratio: number;
   seen_by: string[];
   comments_seen_by: string[];
+
+  // Moderation — confirmed reports remove the item from ALL recipients,
+  // not just the reporter's view. Filter in inbox queries.
+  status: ContentModerationStatus;
+  reports_count: number;
+  moderation?: ContentModerationMeta;
 }
 
 export interface Comment {
@@ -203,6 +350,8 @@ export interface Comment {
   message: string;
   _id: string;
   date: string;
+  status?: 'active' | 'removed';
+  reports_count?: number;
 }
 
 export interface BasePostComment {
@@ -212,9 +361,14 @@ export interface BasePostComment {
   message: string;
   createdAt: string;
   updatedAt: string;
+
+  // Post-comment moderation — same convention as inbox comments
+  status?: ContentModerationStatus;
+  reports_count?: number;
 }
 
-export interface HydratedPostComment extends Omit<BasePostComment, 'author_id'> {
+export interface HydratedPostComment
+  extends Omit<BasePostComment, 'author_id'> {
   author: {
     _id: string;
     name: string;
@@ -229,16 +383,54 @@ export interface BasePostReaction {
   reaction_type: string;
 }
 
+// =============================================================================
+// REPORT
+// =============================================================================
+// Replaces the legacy shape — supports all reportable surfaces and the full
+// resolution lifecycle.
+
 export interface Report {
   _id: string;
   reporter_id: string;
   target_id: string;
-  target_type: 'post' | 'comment' | 'user';
-  reason: 'spam' | 'nsfw' | 'harassment';
-  created_at: string;
+  target_type: ReportableType;
+  target_author_id: string;
+  reason: ReportReason;
+  details?: string;
+  status: ReportStatus;
+  content_snapshot?: any;
+  resolved_at?: string;
+  resolved_by?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
-// --- BALLOONS ---
+// Append-only audit log entry — visible in the Standing page history
+export interface ModerationAction {
+  _id: string;
+  user_id: string;
+  action_type:
+    | 'strike_applied'
+    | 'strike_decayed'
+    | 'restriction_applied'
+    | 'restriction_lifted'
+    | 'manual_suspension'
+    | 'appeal_granted'
+    | 'appeal_denied';
+  level?: number;
+  reason?: ReportReason;
+  source_report_id?: string;
+  expires_at?: string;
+  blocked_capabilities?: Capability[];
+  admin_id?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// =============================================================================
+// BALLOONS
+// =============================================================================
 
 export type BalloonStatus = 'pending' | 'paired' | 'accepted';
 
@@ -250,7 +442,17 @@ export interface Balloon {
   img: string;
   thumbnail: string;
   aspect_ratio: number;
+
+  // Lifecycle status — pending, paired with another balloon, or accepted
   status: BalloonStatus;
+
+  // Moderation status — separate field because lifecycle and moderation
+  // change independently. Routing layer must check this is 'active' before
+  // circulating a balloon to recipients.
+  moderation_status: ContentModerationStatus;
+  reports_count: number;
+  moderation?: ContentModerationMeta;
+
   createdAt: string;
   matchedAt?: string;
   lastActivityAt: string;
@@ -261,7 +463,9 @@ export interface Balloon {
   rejected_by: string[];
 }
 
-// --- CHAT & RELATIONSHIPS ---
+// =============================================================================
+// CHAT & RELATIONSHIPS
+// =============================================================================
 
 export interface BaseMessage {
   _id: string;
@@ -272,6 +476,22 @@ export interface BaseMessage {
   createdAt: string;
   updatedAt: string;
   status?: string;
+
+  // Message kind. Default 'user'; 'system' for things like balloon matches.
+  type?: 'user' | 'system';
+  system_kind?: 'balloon_match';
+  system_payload?: {
+    acceptor_id?: string;
+    acceptor_name?: string;
+    sender_id?: string;
+    balloon_id?: string;
+    thumbnail?: string;
+  };
+
+  moderation_status?: 'active' | 'removed';
+  reports_count?: number;
+  shared_post_id?: string;
+  shared_inbox_item_id?: string;
 }
 
 export interface BaseConversation {
@@ -284,7 +504,8 @@ export interface BaseConversation {
   deleted_at?: string;
 }
 
-export interface PopulatedConversation extends Omit<BaseConversation, 'participants' | 'last_message'> {
+export interface PopulatedConversation
+  extends Omit<BaseConversation, 'participants' | 'last_message'> {
   participants: Mate[];
   last_message?: BaseMessage;
 
@@ -332,7 +553,9 @@ export interface BaseRelationship {
   deleted_at?: string;
 }
 
-// --- API PARAMETERS & RESPONSES ---
+// =============================================================================
+// API PARAMETERS & RESPONSES
+// =============================================================================
 
 export interface NotificationSubscription {
   token: string;
@@ -505,6 +728,7 @@ export interface CommentParams {
   message: string;
   followers: string[];
   name: string;
+  img: string;
 }
 
 export interface CommentRes {
@@ -542,67 +766,106 @@ export interface MatchBalloonRes {
   received_balloon: Balloon;
 }
 
-// --- INTERFACES ---
+// --- REPORT API PARAMS ---
 
-export interface API {
-  getUser(params: GetUserParams): Promise<Res<GetUserRes>>;
-
-  updateUser(params: UpdateUserParams): Promise<Res<void>>;
-
-  getPartialUsers(params: { _ids: string[] }): Promise<Res<Mate[]>>;
-
-  subscribe(params: RegisterNotificationParams): Promise<Res<void>>;
-
-  unsubscribe(params: UnRegisterNotificationParams): Promise<Res<void>>;
-
-  getInbox(params: GetInboxItemsParams): Promise<GetInboxRes>;
-
-  removeFromInbox(params: RemoveFromInboxParams): Promise<Res<void>>;
-
-  changeUserName(params: ChangeUserNameParams): Promise<Res<void>>;
-
-  uploadProfileImg(params: UploadProfileImgParams): Promise<Res<string>>;
-
-  deleteProfileImg(params: DeleteProfileImgParams): Promise<void>;
-
-  createSticker(params: CreateStickerParams): Promise<Res<string>>;
-
-  createEmblem(params: CreateEmblemParams): Promise<Res<string>>;
-
-  deleteSticker(params: DeleteStickerParams): Promise<void>;
-
-  deleteEmblem(params: DeleteEmblemParams): Promise<void>;
-
-  createSaved(params: CreateSavedParams): Promise<Res<Saved>>;
-
-  deleteSaved(params: DeleteSavedParams): Promise<void>;
-
-  seeInboxItem(params: SeeInboxParams): Promise<void>;
-
-  onLoginEvent(params: OnLoginEventParams): Promise<void>;
-
-  searchMate(params: SearchMateParams): Promise<Res<Mate[]>>;
-
-  createBalloon(params: CreateBalloonPostParams): Promise<Res<CreateBalloonPostRes>>;
-
-  getBalloon(params: { balloonId: string }): Promise<Res<Balloon>>;
+export interface SubmitReportParams {
+  target_id: string;
+  target_type: ReportableType;
+  reason: ReportReason;
+  details?: string;
 }
 
-export interface SocketAPI {
-  connect: () => Promise<void>;
-  disconnect: () => Promise<void>;
-  match: (params: MatchParams) => Promise<void>;
-  send: (params: SendParams) => Promise<void>;
+export interface SubmitReportRes {
+  success: boolean;
+  alreadyReported?: boolean;
+  message?: string;
+}
 
-  unMatch(params: UnMatchParams): Promise<void>;
+export type SubscriptionTier = 'free' | 'pro';
 
-  comment(params: CommentParams): Promise<void>;
+// todo rename
+export interface DailyQuota {
+  balloons_per_day: number;
+  posts_per_day: number;
+  max_mates: number;
+}
 
-  login(params: SocketLoginParams): Promise<void>;
+export interface QuotaState {
+  used: number;
+  limit: number;
+  remaining: number;
+  reset_at?: string;
+}
 
-  sendMateRequest(params: SendMateRequestParams): Promise<void>;
+export interface QuotaSummary {
+  tier: string;
+  balloons: QuotaState;
+  posts: QuotaState;
+  mates: QuotaState;
+}
 
-  cancelSendMateRequest(params: SendMateRequestParams): Promise<void>;
+// =============================================================================
+// NOTIFICATIONS
+// =============================================================================
 
-  refuseSendMateRequest(params: SendMateRequestParams): Promise<void>;
+export type NotificationKind =
+  | 'post_reaction'
+  | 'post_comment'
+  | 'inbox_drawing'
+  | 'inbox_comment'
+  | 'dm_message'
+  | 'follow'
+  | 'moderation_strike'
+  | 'moderation_lifted'
+  | 'announcement';
+
+export type NotificationTargetType =
+  | 'post'
+  | 'inbox_item'
+  | 'comment'
+  | 'user'
+  | 'system';
+
+export interface NotificationActor {
+  _id: string;
+  name: string;
+  img: string;
+}
+
+export interface NotificationTargetPreview {
+  thumbnail?: string;
+  text?: string;
+}
+
+export interface Notification {
+  _id: string;
+  recipient_id: string;
+  type: NotificationKind;
+
+  // Aggregation key — entries sharing this within the merge window get merged.
+  // Absent = never aggregate (one entry per event).
+  aggregation_key?: string;
+
+  // Denormalized actors so the feed renders without N+1 user lookups.
+  // Capped at MAX_STORED_ACTORS (3) — actor_count holds the true total.
+  actors: NotificationActor[];
+  actor_count: number;
+
+  // What the notification points to when tapped
+  target_type?: NotificationTargetType;
+  target_id?: string;
+  target_preview?: NotificationTargetPreview;
+
+  // State — split intentionally:
+  //   seen = appeared in the bell (bulk-cleared when opening the feed)
+  //   read = user actually tapped this specific entry
+  read: boolean;
+  seen: boolean;
+
+  // Free-form payload for moderation/announcement types that need
+  // structured data beyond the standard fields (level, expires_at, etc.)
+  payload?: any;
+
+  createdAt: string;
+  updatedAt: string;
 }
