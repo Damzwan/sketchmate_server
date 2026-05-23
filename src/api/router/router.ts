@@ -31,12 +31,10 @@ import {
   deleteSticker,
   getBalloon,
   getInboxItems,
-  getInboxItemsV2,
   getPartialUsers,
   getUser,
   onLoginEvent,
   removeFromInbox,
-  s3Creator,
   searchMate,
   seeInbox,
   subscribe,
@@ -54,18 +52,28 @@ import { promises as fsPromises } from 'fs';
 import { inbox_model } from '../../models/inbox.model';
 import postRouter from './post.router';
 import { userRouter } from './user.router';
-import { reportRouter } from './report.router';
 import { chatRouter } from './chat.router';
 import { relationshipRouter } from './relationship.router';
 import { InboxDocument } from '../../types/mongoose.types';
+import { moderationRouter } from './moderation.router';
+import devModerationRouter from './devModeration.router';
+import { inboxRouter } from './inbox.router';
+import { balloonRouter } from './balloon.router';
+import { quotaRouter } from './quota.router';
+import { notificationRouter } from './notification.router';
 
 export const router = new Router();
 
-router.use('/post', postRouter.routes(), postRouter.allowedMethods());
-router.use('/user', userRouter.routes(), userRouter.allowedMethods());
-router.use('/report', reportRouter.routes(), reportRouter.allowedMethods());
-router.use('/chats', chatRouter.routes(), chatRouter.allowedMethods());
-router.use('/relationship', relationshipRouter.routes(), relationshipRouter.allowedMethods());
+router.use('/v2/post', postRouter.routes(), postRouter.allowedMethods());
+router.use('/v2/user', userRouter.routes(), userRouter.allowedMethods());
+router.use('/v2/moderation', moderationRouter.routes(), moderationRouter.allowedMethods());
+router.use('/v2/chats', chatRouter.routes(), chatRouter.allowedMethods());
+router.use('/v2/relationship', relationshipRouter.routes(), relationshipRouter.allowedMethods());
+router.use('/v2/inbox', inboxRouter.routes(), inboxRouter.allowedMethods());
+router.use('/v2/balloon', balloonRouter.routes(), balloonRouter.allowedMethods());
+router.use('/v2/quota', quotaRouter.routes(), quotaRouter.allowedMethods());
+router.use('/v2/notification', notificationRouter.routes(), notificationRouter.allowedMethods());
+router.use('/dev/moderation', devModerationRouter.routes(), devModerationRouter.allowedMethods());
 
 router.get(ENDPOINTS.user, async (ctx) => {
   const res = await getUser(parseParams<GetUserParams>(ctx.query));
@@ -225,6 +233,7 @@ router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
 
   const decompressedBuffer = await inflateAsync(compressedBuffer);
   params.drawing = JSON.parse(decompressedBuffer.toString('utf-8'));
+  params.version = 1
 
   const balloon = await createBalloon(params);
   if (!balloon) return;
@@ -283,20 +292,8 @@ router.get(`${ENDPOINTS.balloon}/:id`, async (ctx) => {
   return ctx.body = await getBalloon(balloon_id);
 });
 
-router.get('/admin/latest-vitals', async (ctx) => {
-  const url = await s3Creator.getLatestSnapshotUrl();
 
-  if (url) {
-    ctx.body = {
-      message: 'Latest vitals found.',
-      download_url: url
-    };
-  } else {
-    ctx.status = 404;
-    ctx.body = { message: 'No snapshots available.' };
-  }
-});
-
+// used by the widget
 router.get('/user/inbox/latest', async (ctx) => {
   const userId = ctx.query.user_id as string;
   const offset = parseInt(ctx.query.offset as string) || 0;
@@ -336,11 +333,3 @@ router.get('/user/inbox/latest', async (ctx) => {
   }
 });
 
-router.get('/v2/inbox', async (ctx) => {
-  const { user_id, limit, lastDate } = ctx.query as any;
-  ctx.body = await getInboxItemsV2({
-    user_id,
-    limit: parseInt(limit) || 20,
-    lastDate: lastDate ? new Date(lastDate) : undefined
-  });
-});

@@ -18,15 +18,16 @@ import { inbox_model } from '../models/inbox.model';
 import { CONTAINER } from '../s3';
 import { compareVersions, isOldEnough } from '../helper';
 
-const BALLOON_COOLDOWN_MS = 3 * 60 * 60 * 1000; // 3 Hours
-const HOT_POTATO_TIMEOUT_MS = 60000;          // 60 Seconds
-const MAX_LIVE_ROUTING_ATTEMPTS = 5;
+// Dynamic Policy Integration Imports
+import { Capability, getLevelConfig } from '../types/moderation.policy';
 
+export const BALLOON_COOLDOWN_MS = 3 * 60 * 60 * 1000; // 3 Hours
+export const HOT_POTATO_TIMEOUT_MS = 60000;          // 60 Seconds
+export const MAX_LIVE_ROUTING_ATTEMPTS = 5;
 
 export const activeBalloonTimeouts = new Map<string, any>();
 export const activeBalloonHolders = new Map<string, string>();
 export const activeBalloonSkips = new Map<string, Set<string>>();
-
 
 export async function routeBalloonToOnlineUser(
   senderId: string,
@@ -41,23 +42,22 @@ export async function routeBalloonToOnlineUser(
     return false;
   }
 
-  // 1. Fetch balloon first so we know who permanently rejected it
   const currentBalloon = balloonData || await balloon_model.findById(balloonId);
-  if (!currentBalloon || currentBalloon.status !== 'pending') {
+  if (
+    !currentBalloon ||
+    currentBalloon.status !== 'pending' ||
+    currentBalloon.moderation_status !== 'active' || currentBalloon.version === 3
+  ) {
     activeBalloonSkips.delete(balloonId);
     return false;
   }
 
-  // 2. Gather all exclusion lists
   const busyUserIds = Array.from(activeBalloonHolders.values());
   const sender = await user_model.findById(senderId).select('mates');
   const mateIds = sender?.mates?.map(m => m._id.toString()) || [];
   const currentSkips = activeBalloonSkips.get(balloonId) || new Set<string>();
-
-  // Extract persistent rejections from the DB
   const dbRejects = currentBalloon.rejected_by?.map((id: any) => id.toString()) || [];
 
-  // 3. Filter online users
   const onlineUserIds = Object.keys(userSocketMap);
 
   const filteredCandidates = onlineUserIds.filter(id => {
@@ -65,7 +65,6 @@ export async function routeBalloonToOnlineUser(
     const oldEnough = userSocket.data.user.date_of_birth ? isOldEnough(userSocket.data.user.date_of_birth) : true;
     const hasRecentVersion = compareVersions(userSocket.data.user.version, '0.4.1') >= 0;
 
-    // High-speed check: must be logged in, eligible, and not a friend/busy
     return (
       hasRecentVersion &&
       id !== senderId &&
@@ -77,7 +76,6 @@ export async function routeBalloonToOnlineUser(
     );
   });
 
-
   if (filteredCandidates.length === 0) {
     console.log(`No eligible candidates for ${balloonId}.`);
     activeBalloonSkips.delete(balloonId); // CLEANUP
@@ -86,24 +84,29 @@ export async function routeBalloonToOnlineUser(
 
   const cooldownDate = new Date(Date.now() - BALLOON_COOLDOWN_MS);
 
-  // 4. THE AGGREGATION: Find an eligible user from our meticulously filtered list
-  const eligibleUser = await user_model.aggregate([
-    {
-      $match: {
-        _id: { $in: filteredCandidates.map(id => new mongoose.Types.ObjectId(id)) },
-        'balloon.disabled': { $ne: true },
-        $or: [
-          { 'balloon.last_received_at': { $lte: cooldownDate } },
-          { 'balloon.last_received_at': null },
-          { 'balloon.last_received_at': { $exists: false } }
-        ]
-      }
-    },
-    { $sample: { size: 1 } } // Pick one random eligible patient
-  ]);
+  // 1. Pull potential matching candidates out of the db with their restriction metrics
+  const prospectiveHolders = await user_model.find({
+    _id: { $in: filteredCandidates.map(id => new mongoose.Types.ObjectId(id)) },
+    'balloon.disabled': { $ne: true },
+    $or: [
+      { 'balloon.last_received_at': { $lte: cooldownDate } },
+      { 'balloon.last_received_at': null },
+      { 'balloon.last_received_at': { $exists: false } }
+    ]
+  }).select('_id restriction').lean();
 
-  if (!eligibleUser || eligibleUser.length === 0) return false;
-  const matchedUserId = eligibleUser[0]._id.toString();
+  // 2. MODERATION: Filter candidates dynamically against level rule definitions
+  const allowedCandidates = prospectiveHolders.filter(user => {
+    const level = user.restriction?.level ?? 0;
+    const policy = getLevelConfig(level);
+    return !policy.blocks.includes(Capability.RECEIVE_BALLOON);
+  });
+
+  if (allowedCandidates.length === 0) return false;
+
+  // Pick a target randomly out of our clean, permitted group
+  const luckyWinner = allowedCandidates[Math.floor(Math.random() * allowedCandidates.length)];
+  const matchedUserId = luckyWinner._id.toString();
 
   const currentlyBusy = Array.from(activeBalloonHolders.values());
   if (currentlyBusy.includes(matchedUserId)) {
@@ -111,7 +114,6 @@ export async function routeBalloonToOnlineUser(
     return routeBalloonToOnlineUser(senderId, balloonId, userSocketMap, attempts, currentBalloon);
   }
 
-  // 5. Administer the balloon
   activeBalloonHolders.set(balloonId, matchedUserId);
 
   if (userSocketMap[matchedUserId]) {
@@ -121,19 +123,21 @@ export async function routeBalloonToOnlineUser(
     trackEvent(matchedUserId, mixpanelEvents.balloon_v2_receive);
   }
 
-  // 6. Start the Hot Potato Timer
   const timeout = setTimeout(async () => {
     activeBalloonTimeouts.delete(balloonId);
     activeBalloonHolders.delete(balloonId);
 
-    // Use findByIdAndUpdate to push the miss to the database immediately
     const updatedBalloon = await balloon_model.findByIdAndUpdate(
       balloonId,
       { $addToSet: { rejected_by: matchedUserId } },
       { new: true }
     );
 
-    if (updatedBalloon && updatedBalloon.status === 'pending') {
+    if (
+      updatedBalloon &&
+      updatedBalloon.status === 'pending' &&
+      updatedBalloon.moderation_status === 'active' && updatedBalloon.version !== 3
+    ) {
       if (userSocketMap[matchedUserId]) {
         userSocketMap[matchedUserId].forEach((s: any) => s.emit(SOCKET_ENDPONTS.balloon_missed, { balloonId }));
       }
@@ -142,8 +146,10 @@ export async function routeBalloonToOnlineUser(
       if (!activeBalloonSkips.has(balloonId)) activeBalloonSkips.set(balloonId, new Set());
       activeBalloonSkips.get(balloonId)!.add(matchedUserId);
 
-      // Recurse with the newly updated balloon document
       routeBalloonToOnlineUser(senderId, balloonId, userSocketMap, attempts + 1, updatedBalloon).catch(err => console.error(`Hot potato reroute failed for ${balloonId}:`, err));
+    } else if (updatedBalloon && updatedBalloon.moderation_status !== 'active') {
+      activeBalloonSkips.delete(balloonId);
+      console.log(`Balloon ${balloonId} quarantined mid-flight; circulation halted.`);
     }
   }, HOT_POTATO_TIMEOUT_MS);
 
@@ -154,35 +160,32 @@ export async function routeBalloonToOnlineUser(
 export async function pairBalloons() {
   console.log('Starting optimized V1 matching cycle...');
 
-  // 1. Bulk Fetch: Get all pending balloons.
-  // Using .lean() strips heavy Mongoose methods and saves massive amounts of RAM.
   const pendingBalloons = await balloon_model
-    .find({ status: 'pending', version: { $ne: 2 } })
+    .find({
+      status: 'pending',
+      $or: [{ version: { $exists: false } }, { version: 1 }],   // ← NEW
+      moderation_status: 'active'
+    })
     .sort({ createdAt: 1 })
     .lean();
 
   if (pendingBalloons.length < 2) return;
 
-  // 2. Extract unique sender IDs to avoid fetching the same user twice
   const senderIds = [...new Set(pendingBalloons.map(b => b.sender.toString()))];
 
-  // 3. Bulk Fetch Users: Ask the database for all these users in a single trip
   const users = await user_model
     .find({ _id: { $in: senderIds } })
-    .select('mates') // We only need their mates array to verify constraints
+    .select('mates restriction')
     .lean();
 
-  // 4. Build a high-speed Memory Dictionary mapping UserID -> User Object
   const userMap = new Map();
   for (const user of users) {
     userMap.set(user._id.toString(), user);
   }
 
-  // 5. Track who has been matched so we don't double-book them
   const matchedBalloonIds = new Set<string>();
-  const dbUpdates = []; // Collect DB updates to execute at the very end
+  const dbUpdates = [];
 
-  // 6. The In-Memory Match Loop (Lightning Fast)
   for (let i = 0; i < pendingBalloons.length; i++) {
     const balloon1 = pendingBalloons[i];
     const b1Id = balloon1._id.toString();
@@ -191,10 +194,14 @@ export async function pairBalloons() {
 
     const user1 = userMap.get(balloon1.sender.toString());
     if (!user1) {
-      // Cleanup orphaned balloons if the user was deleted
       dbUpdates.push(balloon_model.findByIdAndDelete(balloon1._id));
       continue;
     }
+
+    // MODERATION: Dynamic resolution replaces inline inclusion array check
+    const level1 = user1.restriction?.level ?? 0;
+    const policy1 = getLevelConfig(level1);
+    if (policy1.blocks.includes(Capability.SEND_BALLOON)) continue;
 
     for (let j = i + 1; j < pendingBalloons.length; j++) {
       const balloon2 = pendingBalloons[j];
@@ -206,23 +213,24 @@ export async function pairBalloons() {
       const user2 = userMap.get(balloon2.sender.toString());
       if (!user2) continue;
 
-      // Check Cancellation History
+      // Same fluid check for the target recipient side
+      const level2 = user2.restriction?.level ?? 0;
+      const policy2 = getLevelConfig(level2);
+      if (policy2.blocks.includes(Capability.SEND_BALLOON)) continue;
+
       const cancelled1 = balloon1.cancelledBalloons?.map((id: any) => id.toString()) || [];
       const cancelled2 = balloon2.cancelledBalloons?.map((id: any) => id.toString()) || [];
 
       if (cancelled1.includes(b2Id) || cancelled2.includes(b1Id)) continue;
 
-      // Check Friendship Mates
       const mates1 = user1.mates?.map((m: any) => m._id.toString()) || [];
       const mates2 = user2.mates?.map((m: any) => m._id.toString()) || [];
 
       if (mates1.includes(user2._id.toString()) || mates2.includes(user1._id.toString())) continue;
 
-      // ✅ MATCH FOUND
       matchedBalloonIds.add(b1Id);
       matchedBalloonIds.add(b2Id);
 
-      // Package all the promises for this match to be executed concurrently later
       dbUpdates.push((async () => {
         await Promise.all([
           balloon_model.updateOne(
@@ -265,21 +273,19 @@ export async function pairBalloons() {
         trackEvent(balloon1.sender.toString(), mixpanelEvents.balloon_pair);
       })());
 
-      break; // Match found, break the inner loop and move to the next balloon1
+      break;
     }
   }
 
-  // 7. Fire off all database updates simultaneously at the end
   await Promise.all(dbUpdates);
-
   console.log(`Matching cycle complete. Formed ${matchedBalloonIds.size / 2} pairs.`);
 }
 
 export async function unPairBalloons() {
-  // --- MODIFICATION: Exclude v2 balloons entirely ---
   const balloons = await balloon_model.find({
     status: { $in: ['paired', 'accepted'] },
-    version: { $ne: 2 }
+    $or: [{ version: { $exists: false } }, { version: 1 }],   // ← NEW
+    moderation_status: 'active'
   });
 
   const expirationTime = 1000 * 60 * 60 * 24 * 1; // 1 day
@@ -316,25 +322,22 @@ export async function unPairBalloons() {
       );
 
       trackEvent(balloon.sender.toString(), mixpanelEvents.balloon_unpaired);
-
       console.log(`⏳ [V1] Balloon ${balloon._id} expired and reset.`);
     }
   }
 }
 
-
 export async function removeExpiredBalloons() {
   const expirationDate = new Date(Date.now() - 1000 * 60 * 60 * 24 * 3); // 3 days
 
-  // --- MODIFICATION: Exclude v2 balloons entirely ---
   const balloons = await balloon_model.find({
     lastActivityAt: { $lt: expirationDate },
-    version: { $ne: 2 }
+    $or: [{ version: { $exists: false } }, { version: 1 }],   // ← NEW
+    moderation_status: { $ne: 'removed' }
   });
 
   await Promise.all(
     balloons.map(async (balloon) => {
-      // Remove the balloon
       await Promise.all([
         deleteBalloonS3(balloon as any as Balloon),
         balloon_model.findByIdAndDelete(balloon._id),
@@ -354,7 +357,6 @@ export async function removeExpiredBalloons() {
         {}
       );
 
-      // Handle paired balloon
       if (balloon.pairedBalloon) {
         const otherBalloon = await balloon_model.findById(balloon.pairedBalloon);
         if (otherBalloon) {
@@ -372,7 +374,6 @@ export async function removeExpiredBalloons() {
               otherBalloonExpiredNotification()
             )
           ]);
-
           console.log(`🔄 [V1] Paired balloon ${otherBalloon._id} set to pending`);
         }
       }
@@ -383,9 +384,7 @@ export async function removeExpiredBalloons() {
   );
 }
 
-export async function acceptBalloonCleanUp(params: { balloon: Balloon, otherBalloon: Balloon } & {
-  otherBalloon: Balloon
-}): Promise<void> {
+export async function acceptBalloonCleanUp(params: { balloon: Balloon, otherBalloon: Balloon }): Promise<void> {
   try {
     const inboxItem1: InboxItem = {
       _id: new ObjectId().toString(),
@@ -399,7 +398,9 @@ export async function acceptBalloonCleanUp(params: { balloon: Balloon, otherBall
       seen_by: [],
       comments_seen_by: [],
       comments: [],
-      aspect_ratio: params.balloon.aspect_ratio
+      aspect_ratio: params.balloon.aspect_ratio,
+      status: 'active',
+      reports_count: 0
     };
 
     const inboxItem2: InboxItem = {
@@ -414,7 +415,9 @@ export async function acceptBalloonCleanUp(params: { balloon: Balloon, otherBall
       seen_by: [],
       comments_seen_by: [],
       comments: [],
-      aspect_ratio: params.otherBalloon.aspect_ratio
+      aspect_ratio: params.otherBalloon.aspect_ratio,
+      status: 'active',
+      reports_count: 0
     };
 
     await Promise.all([
@@ -450,22 +453,20 @@ export async function acceptBalloonCleanUp(params: { balloon: Balloon, otherBall
         { _id: params.otherBalloon.sender },
         { $set: { balloon: {} } }
       )
-
-    ])
-    ;
+    ]);
 
     trackEvent(params.balloon.sender, mixpanelEvents.balloon_match);
-
-
   } catch (e) {
     throw new Error('Failed to accept balloon' + e);
   }
 }
 
 export async function deleteBalloonS3(balloon: Balloon): Promise<void> {
-  await Promise.all([s3Creator.deleteBlob(balloon.img, CONTAINER.drawings),
+  await Promise.all([
+    s3Creator.deleteBlob(balloon.img, CONTAINER.drawings),
     s3Creator.deleteBlob(balloon.thumbnail, CONTAINER.drawings),
-    s3Creator.deleteBlob(balloon.drawingJsonUrl, CONTAINER.drawings)]);
+    s3Creator.deleteBlob(balloon.drawingJsonUrl, CONTAINER.drawings)
+  ]);
 }
 
 export async function refuseBalloon(params: AcceptBalloonParams): Promise<Balloon[] | null> {
@@ -479,7 +480,6 @@ export async function refuseBalloon(params: AcceptBalloonParams): Promise<Balloo
       )
     ]);
     trackEvent(params.user_id, mixpanelEvents.balloon_refuse);
-
     return [otherBalloon as unknown as Balloon, balloon as unknown as Balloon];
   } catch (e) {
     throw new Error('Failed to accept balloon');
@@ -489,15 +489,10 @@ export async function refuseBalloon(params: AcceptBalloonParams): Promise<Balloo
 export async function cancelBalloon(params: CancelBalloonParams): Promise<Balloon | null> {
   try {
     const balloon = await balloon_model.findByIdAndDelete(params.balloon_id);
-
-    // Always prepare updates array
     const updates: Promise<any>[] = [];
-
     trackEvent(params.user_id, mixpanelEvents.balloon_cancel);
 
-
     if (balloon) {
-      // fetch other balloon in parallel with S3 deletion
       const [otherBalloon] = await Promise.all([
         balloon_model.findOne({ pairedUser: params.user_id }),
         deleteBalloonS3(balloon as any as Balloon)
@@ -516,7 +511,6 @@ export async function cancelBalloon(params: CancelBalloonParams): Promise<Balloo
         );
       }
 
-      // clean up user's balloon reference
       updates.push(
         user_model.updateOne(
           { _id: params.user_id },
@@ -525,10 +519,8 @@ export async function cancelBalloon(params: CancelBalloonParams): Promise<Balloo
       );
 
       await Promise.all(updates);
-
       return otherBalloon as unknown as Balloon;
     } else {
-      // balloon already deleted, still cleanup user reference
       await user_model.updateOne(
         { _id: params.user_id },
         { $set: { balloon: {} } }
@@ -542,6 +534,11 @@ export async function cancelBalloon(params: CancelBalloonParams): Promise<Balloo
 
 export async function acceptBalloon(params: AcceptBalloonParams): Promise<Balloon[] | null> {
   try {
+    const target = await balloon_model.findById(params.balloon_id).select('moderation_status').lean() as any;
+    if (target && target.moderation_status !== 'active') {
+      return null;
+    }
+
     const [otherBalloon, balloon] = await Promise.all([
       balloon_model.findOne({ sender: params.user_id }),
       balloon_model.findOneAndUpdate(
@@ -598,26 +595,25 @@ export async function rejectBalloonCleanUp(params: { balloon: Balloon; otherBall
   }
 }
 
-
 export async function v2AcceptBalloonCleanUp(balloon: any, acceptorId: string): Promise<InboxItem> {
   try {
-    // 1. Synthesize the single shared Inbox Item
     const inboxItem: InboxItem = {
       _id: new ObjectId().toString(),
       drawing: balloon.drawingJsonUrl,
       image: balloon.img,
       thumbnail: balloon.thumbnail,
       date: new Date().toString(),
-      sender: balloon.sender, // The original creator
+      sender: balloon.sender,
       followers: [balloon.sender.toString(), acceptorId],
       original_followers: [balloon.sender.toString(), acceptorId],
       seen_by: [],
       comments_seen_by: [],
       comments: [],
-      aspect_ratio: balloon.aspect_ratio
+      aspect_ratio: balloon.aspect_ratio,
+      status: 'active',
+      reports_count: 0
     };
 
-    // 2. Perform the database transplant
     await Promise.all([
       inbox_model.create(inboxItem),
       user_model.updateOne(
@@ -628,11 +624,9 @@ export async function v2AcceptBalloonCleanUp(balloon: any, acceptorId: string): 
         { _id: acceptorId },
         { $push: { inbox: inboxItem._id } }
       ),
-      // We delete the balloon since it has fully transformed into an Inbox Item
       balloon_model.findByIdAndDelete(balloon._id)
     ]);
 
-    // Optional: Track the successful operation for your analytics
     trackEvent(balloon.sender.toString(), mixpanelEvents.balloon_match);
     trackEvent(acceptorId, mixpanelEvents.balloon_match);
 
@@ -641,59 +635,56 @@ export async function v2AcceptBalloonCleanUp(balloon: any, acceptorId: string): 
     activeBalloonTimeouts.delete(balloon._id.toString());
 
     return inboxItem;
-
   } catch (e) {
     throw new Error('Failed to run V2 balloon cleanup: ' + e);
   }
 }
 
 export async function triageWaitingRoom(userId: string, socket: any) {
-  // 1. Fetch user with mates
-  const user = await user_model.findById(userId).select('balloon mates');
+  const user = await user_model.findById(userId).select('balloon mates restriction').lean() as any;
   if (!user || user.balloon?.disabled === true) return;
+
+  const userLevel = user.restriction?.level ?? 0;
+  const userPolicy = getLevelConfig(userLevel);
+  if (userPolicy.blocks.includes(Capability.RECEIVE_BALLOON)) return;
 
   const cooldownDate = new Date(Date.now() - BALLOON_COOLDOWN_MS);
   const lastReceived = user.balloon?.last_received_at;
   if (lastReceived && new Date(lastReceived) > cooldownDate) return;
 
-  // 2. Prepare exclusion lists
-  const mateIds = user.mates?.map(m => new mongoose.Types.ObjectId(m._id)) || [];
+  const mateIds = user.mates?.map((m: any) => new mongoose.Types.ObjectId(m._id)) || [];
   const excludedSenders = [new mongoose.Types.ObjectId(userId), ...mateIds];
-
-  // NEW: Get IDs of balloons currently being held by online users
   const activeBalloons = Array.from(activeBalloonHolders.keys()).map(id => new mongoose.Types.ObjectId(id));
 
-  // 3. Find the oldest pending v2 balloon that is NOT in circulation and NOT from a friend
   const waitingBalloon = await balloon_model.findOne({
     _id: { $nin: activeBalloons },
     status: 'pending',
+    moderation_status: 'active',
     version: 2,
     sender: { $nin: excludedSenders },
     rejected_by: { $ne: new mongoose.Types.ObjectId(userId) }
   }).sort({ createdAt: 1 });
 
-
   if (!waitingBalloon) return;
 
   const balloonId = waitingBalloon._id.toString();
-
-  // 4. Lock the balloon to this user
   activeBalloonHolders.set(balloonId, userId);
   socket.emit(SOCKET_ENDPONTS.receive_new_balloon, {
     balloon: waitingBalloon
   });
 
-  // 5. Start the Hot Potato timer
-// Inside triageWaitingRoom timeout
   const timeout = setTimeout(async () => {
     activeBalloonTimeouts.delete(balloonId);
     activeBalloonHolders.delete(balloonId);
 
     const currentBalloon = await balloon_model.findById(balloonId);
-    if (currentBalloon && currentBalloon.status === 'pending') {
+    if (
+      currentBalloon &&
+      currentBalloon.status === 'pending' &&
+      currentBalloon.moderation_status === 'active'
+    ) {
       socket.emit(SOCKET_ENDPONTS.balloon_missed, { balloonId });
 
-      // Throw back with the current userId (the one who just logged in) in the skip list
       routeBalloonToOnlineUser(
         currentBalloon.sender.toString(),
         balloonId,

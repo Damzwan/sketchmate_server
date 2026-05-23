@@ -9,11 +9,10 @@ import process from 'process';
 import v8 from 'v8';
 import { s3Creator } from './mongodb';
 import { CONTAINER } from './s3';
-import { isDev } from './main';
 import { user_model } from './models/user.model';
 import { relationship_model } from './models/relationship.model';
-import { AnyBulkWriteOperation, Types } from 'mongoose';
-import { RelationshipDocument, UserDocument } from './types/mongoose.types';
+import { Types } from 'mongoose';
+import { UserDocument } from './types/mongoose.types';
 import { post_model } from './models/post.model';
 
 export function parseParams<T>(params: ParsedUrlQuery | string): T {
@@ -135,44 +134,6 @@ export function compareVersions(currentVersion: string, minimumVersion: string):
   return 0; // Exactly the same
 }
 
-// This lock ensures we only ever take ONE snapshot per server lifecycle
-let hasTakenEmergencySnapshot = false;
-
-export function startVitalsMonitor() {
-  if (isDev) return true;
-  setInterval(async () => {
-    const memoryData = process.memoryUsage();
-    const rssMB = Math.round(memoryData.rss / 1024 / 1024);
-
-    console.log(`[Vitals] RAM Usage: ${rssMB}MB`);
-
-    if (rssMB > 450 && !hasTakenEmergencySnapshot) {
-      console.warn('Memory critically high! Taking ONE emergency heap snapshot...');
-      hasTakenEmergencySnapshot = true;
-
-      try {
-        const fileName = `heapdump-${Date.now()}.heapsnapshot`;
-        v8.writeHeapSnapshot(fileName);
-        console.log(`Snapshot saved as ${fileName}. Uploading to lab...`);
-
-
-        // 2. Upload the file using your existing method
-        await s3Creator.uploadFile(
-          fileName,
-          'application/octet-stream',
-          CONTAINER.snapshots
-        );
-
-        console.log('Labs successfully sent to S3!');
-
-      } catch (err) {
-        console.error('Failed to take or upload snapshot:', err);
-        hasTakenEmergencySnapshot = false;
-      }
-    }
-  }, 5000);
-}
-
 export function escapeRegExp(string: string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -196,26 +157,17 @@ export async function migrateMatesToRelationships(userId: string, legacyMates: a
     return {
       updateOne: {
         filter: {
-          // Match the unique compound index exactly
           'users.0': sortedOIDs[0],
           'users.1': sortedOIDs[1]
         },
         update: {
           $setOnInsert: {
-            users: sortedOIDs, // Only set on creation to avoid "matched twice"
+            users: sortedOIDs,
             createdAt: new Date()
           },
           $set: {
             chat_status: 'mate',
             updatedAt: new Date()
-          },
-          $addToSet: {
-            follows: {
-              $each: [
-                { follower: userOID, followed: mateOID },
-                { follower: mateOID, followed: userOID }
-              ]
-            }
           }
         },
         upsert: true

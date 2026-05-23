@@ -3,25 +3,35 @@ import Router from 'koa-router';
 import dayjs from 'dayjs';
 import { Types } from 'mongoose';
 import { requireAuth } from '../../middleware/auth';
+import { requireCapability } from '../../middleware/moderation.middleware';
+import { Capability, isCapabilityBlocked } from '../../types/moderation.policy';
 import { user_model } from '../../models/user.model';
 import { post_model, post_reaction_model } from '../../models/post.model';
 import { relationship_model } from '../../models/relationship.model';
-import { s3Creator } from '../../mongodb';
+import {
+  changeUserName, createEmblem,
+  createSaved, createSticker, deleteEmblem,
+  deleteProfileImg, deleteSaved, deleteSticker,
+  getUser,
+  s3Creator, subscribe, unsubscribe,
+  updateUser,
+  uploadProfileImg
+} from '../../mongodb';
 import { CONTAINER } from '../../s3';
-import { FeedPost } from '../../types/types';
+import {
+  ChangeUserNameParams,
+  FeedPost,
+  RegisterNotificationParams, UnRegisterNotificationParams,
+  UpdateUserParams,
+  UploadProfileImgParams
+} from '../../types/types';
 import { LeanPost, RelationshipDocument, UserDocument } from '../../types/mongoose.types';
 import { isUserOnline } from '../socket/socket';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
+import { migrateMatesToRelationships, parseParams, syncAndFinalizeMigrationStats } from '../../helper';
 
 export const userRouter = new Router();
 
-/**
- * USER POSTS: Get hydrated active posts for a user
- *
- * The author projection here is intentionally minimal (just _id/name/img).
- * The viewer's frontend cache already holds the author's full public
- * customization — populating it here would be redundant bytes.
- */
 userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
   const { user_id: targetUserId } = ctx.params;
   const viewer_id = ctx.state.user._id.toString();
@@ -74,10 +84,14 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
         image_url: post.image_url,
         thumbnail_url: post.thumbnail_url,
         aspect_ratio: post.aspect_ratio,
+        enable_remix: post.enable_remix ?? true,
+        enable_comments: post.enable_comments ?? true,
         description: post.description || '',
         status: post.status || 'active',
         comment_count: post.comment_count || 0,
         reports_count: post.reports_count || 0,
+        views: post.views || 0,
+        total_reactions: post.total_reactions || 0,
         author,
         user_reaction: userReactionMap[postIdStr] || null,
         reaction_counts: post.reaction_counts instanceof Map
@@ -88,7 +102,6 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
         updatedAt: new Date(post.updatedAt).toISOString()
       };
     });
-
     ctx.body = { posts: hydratedPosts };
   } catch (error) {
     console.error('Fetch user posts error:', error);
@@ -97,9 +110,6 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
   }
 });
 
-/**
- * UPDATE PROFILE: Handle name changes, bio, and customization
- */
 const NAME_CHANGE_COOLDOWN_DAYS = 31;
 userRouter.put('/profile', requireAuth, async (ctx) => {
   const { name, description, customization, subscription_tier } = ctx.request.body;
@@ -115,6 +125,24 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
   }
 
   if (name && name !== user.name) {
+    // MODERATION: Swapped to complete dynamic calculation based on operational levels
+    const userRestriction = ctx.state.user.restriction;
+    const userLevel = userRestriction?.level ?? 0;
+
+    if (isCapabilityBlocked(userLevel, Capability.CHANGE_NAME)) {
+      ctx.status = 403;
+      ctx.body = {
+        error: 'capability_blocked',
+        capability: Capability.CHANGE_NAME,
+        restriction: {
+          level: userLevel,
+          reason: userRestriction?.reason,
+          expires_at: userRestriction?.expires_at
+        }
+      };
+      return;
+    }
+
     const isPro = user.subscription_tier === 'pro';
     const daysSinceChange = user.last_name_change
       ? dayjs().diff(dayjs(user.last_name_change), 'day')
@@ -149,10 +177,7 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
   ctx.body = { message: 'Profile updated' };
 });
 
-/**
- * UPLOAD IMAGE: Profile picture handling
- */
-userRouter.post('/upload-image', requireAuth, async (ctx) => {
+userRouter.post('/upload-image', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
   const { _id } = ctx.state.user;
   const file = (ctx.request as any).files?.img;
   const { previousImage } = ctx.request.body;
@@ -176,20 +201,18 @@ userRouter.post('/upload-image', requireAuth, async (ctx) => {
   }
 });
 
-
 userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
   const { user_id: targetId } = ctx.params;
   const viewer_id = ctx.state.user._id.toString();
 
   try {
     const sortedUsers = [viewer_id, targetId].sort();
-``
+
     const [
       user,
       connection,
       posts
     ] = await Promise.all([
-      // Use FULL_USER_FIELDS so the response includes signature + description
       user_model.findById(targetId).select(PUBLIC_USER_FIELDS).lean() as Promise<UserDocument | null>,
       relationship_model.findOne({ users: sortedUsers }).lean() as Promise<RelationshipDocument | null>,
       post_model.find({
@@ -220,10 +243,14 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
         image_url: post.image_url,
         thumbnail_url: post.thumbnail_url,
         aspect_ratio: post.aspect_ratio,
+        enable_remix: post.enable_remix ?? true,
+        enable_comments: post.enable_comments ?? true,
         description: post.description || '',
         status: post.status || 'active',
         comment_count: post.comment_count || 0,
         reports_count: post.reports_count || 0,
+        views: post.views || 0,
+        total_reactions: post.total_reactions || 0,
         author: { _id: user._id.toString(), name: user.name, img: user.img },
         user_reaction: userReactionMap[postIdStr] || null,
         reaction_counts: post.reaction_counts instanceof Map
@@ -242,10 +269,7 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
         description: user.description || '',
         img: user.img,
         last_seen_version: user.last_seen_version,
-        // Customization (full, with signature) — frontend ProfileCard
-        // expects this nested object exactly as stored
         customization: user.customization || {},
-        // Stats sourced directly from the User document
         stats: user.stats || { followers: 0, following: 0, mates: 0, posts: 0 },
         chat_status: connection?.chat_status || 'none',
         relationship: {
@@ -261,12 +285,6 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
   }
 });
 
-/**
- * ONLINE FRIENDS: list of currently-online mates
- *
- * Projection updated to include public customization so online friends
- * render with their decorations/titles without an extra cache fill.
- */
 userRouter.get('/online-friends', requireAuth, async (ctx) => {
   const viewerId = ctx.state.user._id.toString();
   const io = ctx.app.context.io;
@@ -296,7 +314,6 @@ userRouter.get('/online-friends', requireAuth, async (ctx) => {
   ctx.body = onlineIds;
 });
 
-
 userRouter.get('/public_users', requireAuth, async (ctx) => {
   const _ids = (ctx.query._ids as string) || '';
 
@@ -322,4 +339,102 @@ userRouter.get('/public_users', requireAuth, async (ctx) => {
     .lean();
 
   ctx.body = users;
+});
+
+userRouter.get('/', requireAuth, async (ctx) => {
+  const auth_id = ctx.state.user.auth_id;
+  const _id = ctx.state.user._id.toString();
+
+  const res = await getUser({ auth_id, _id });
+  if (!res?.user) return ctx.throw(404, 'User not found');
+
+  const user = res.user as any;
+
+  if ((user.migration_version || 0) < 1) {
+    const newStats = await syncAndFinalizeMigrationStats(user);
+
+    migrateMatesToRelationships(user._id, user.mates)
+      .catch(err => console.error('Mates migration failed:', err));
+
+    user.stats = newStats;
+    user.mates = [];
+    user.migration_version = 1;
+  }
+
+  if (!user.customization) user.customization = {};
+  ctx.body = res;
+});
+
+userRouter.put('/name', requireAuth, requireCapability(Capability.CHANGE_NAME), async (ctx) => {
+  const params = parseParams<ChangeUserNameParams>(ctx.request.body);
+  params._id = ctx.state.user._id.toString();
+  ctx.body = await changeUserName(params);
+});
+
+userRouter.put('/update', requireAuth, requireCapability(Capability.CHANGE_NAME), async (ctx) => {
+  const params = parseParams<UpdateUserParams>(ctx.request.body);
+  params._id = ctx.state.user._id.toString();
+  ctx.body = await updateUser(params);
+});
+
+userRouter.put('/img', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
+  if (!ctx.request.files) throw new Error('No files');
+  const params: UploadProfileImgParams = {
+    _id: ctx.state.user._id.toString(),
+    img: ctx.request.files.file,
+    previousImage: ctx.request.query.previousImage as string
+  };
+  ctx.body = await uploadProfileImg(params);
+});
+
+userRouter.delete('/img', requireAuth, async (ctx) => {
+  const stock_img = ctx.request.query.stockImage as string;
+  ctx.body = await deleteProfileImg(ctx.state.user._id.toString(), stock_img);
+});
+
+userRouter.post('/sticker', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
+  if (!ctx.request.files) throw new Error('No files');
+  ctx.body = await createSticker({ _id: ctx.state.user._id.toString(), img: ctx.request.files.file });
+});
+
+userRouter.delete('/sticker', requireAuth, async (ctx) => {
+  ctx.body = await deleteSticker({
+    user_id: ctx.state.user._id.toString(),
+    sticker_url: ctx.query.sticker_url as string
+  });
+});
+
+userRouter.post('/emblem', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
+  if (!ctx.request.files) throw new Error('No files');
+  ctx.body = await createEmblem({ _id: ctx.state.user._id.toString(), img: ctx.request.files.file });
+});
+
+userRouter.delete('/emblem', requireAuth, async (ctx) => {
+  ctx.body = await deleteEmblem({ user_id: ctx.state.user._id.toString(), emblem_url: ctx.query.emblem_url as string });
+});
+
+userRouter.post('/saved', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
+  if (!ctx.request.files) throw new Error('No files');
+  const files = ctx.request.files as any;
+  ctx.body = await createSaved({
+    _id: ctx.state.user._id.toString(),
+    img: files.img,
+    drawing: files.drawing
+  });
+});
+
+userRouter.delete('/saved', requireAuth, async (ctx) => {
+  ctx.body = await deleteSaved({
+    user_id: ctx.state.user._id.toString(),
+    drawing_url: ctx.query.drawing_url as string,
+    img_url: ctx.query.img_url as string
+  });
+});
+
+userRouter.put('/subscribe', requireAuth, async (ctx) => {
+  ctx.body = await subscribe(parseParams<RegisterNotificationParams>(ctx.request.body));
+});
+
+userRouter.put('/unsubscribe', requireAuth, async (ctx) => {
+  ctx.body = await unsubscribe(parseParams<UnRegisterNotificationParams>(ctx.request.body));
 });

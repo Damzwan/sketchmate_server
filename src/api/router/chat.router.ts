@@ -9,6 +9,7 @@ import { PUBLIC_USER_FIELDS } from '../../types/projections';
 export const chatRouter = new Router();
 chatRouter.use(requireAuth);
 
+
 chatRouter.get('/active', async (ctx) => {
   const user_id = ctx.state.user._id.toString();
 
@@ -29,7 +30,6 @@ chatRouter.get('/active', async (ctx) => {
     users: user_id
   }).lean();
 
-  // ADDED 'blocked' to the allowed statuses!
   const activeStatuses = ['temporary', 'mate', 'pending_mate', 'pending_invite', 'expired', 'blocked'];
 
   const activeConvos = conversations.map(c => {

@@ -74,7 +74,7 @@ export async function createUser(auth_id: string): Promise<Res<User>> {
       mates: [], // @deprecated
       inbox: [], // @deprecated
       mate_requests_sent: [], // @deprecated
-      mate_requests_received: [], // @deprecated
+      mate_requests_received: [] // @deprecated
     });
 
     if (user._id) trackEvent(user._id.toString(), mixpanelEvents.create_account);
@@ -583,6 +583,7 @@ export async function seeInbox(params: SeeInboxParams) {
   }
 }
 
+// @deprecated
 export async function createBalloon(params: CreateBalloonPostParams): Promise<Res<Balloon>> {
   const alreadyExistingBalloon = await balloon_model.findOne({ sender: new Types.ObjectId(params.sender) });
 
@@ -771,13 +772,19 @@ export async function searchMate(
     throw new Error(e.message || e);
   }
 }
+
 export async function getInboxItemsV2(params: {
   user_id: string,
   limit: number,
   lastDate?: Date
 }): Promise<GetInboxRes> {
   try {
-    const query: any = { followers: params.user_id };
+    // SECURE & BACKWARDS COMPATIBLE: Exclude only quarantined/removed items.
+    // Legacy items without a status field will be safely included.
+    const query: any = {
+      followers: params.user_id,
+      status: { $nin: ['under_review', 'removed'] }
+    };
 
     if (params.lastDate) {
       query.date = { $lt: params.lastDate };
@@ -789,12 +796,20 @@ export async function getInboxItemsV2(params: {
       .limit(params.limit)
       .lean() as InboxDocument[];
 
-    const inboxItems: InboxItem[] = docs.map(doc => ({
-      ...doc,
-      _id: doc._id.toString(),
-      sender: doc.sender.toString(),
-      date: doc.date.toISOString()
-    })) as unknown as InboxItem[];
+    const inboxItems: InboxItem[] = docs.map((doc: any) => {
+      if (doc.comments && Array.isArray(doc.comments)) {
+        doc.comments = doc.comments.filter((c: any) =>
+          c.status !== 'under_review' && c.status !== 'removed'
+        );
+      }
+
+      return {
+        ...doc,
+        _id: doc._id.toString(),
+        sender: doc.sender.toString(),
+        date: doc.date.toISOString()
+      };
+    }) as unknown as InboxItem[];
 
     const uniqueUserIds = Array.from(new Set(
       inboxItems.reduce((acc: string[], curr) => acc.concat(curr.original_followers), [])
