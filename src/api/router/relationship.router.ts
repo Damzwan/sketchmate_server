@@ -10,7 +10,13 @@ import { RelationshipDocument } from '../../types/mongoose.types';
 import { isUserOnline, sendSocketNotificationToUser } from '../socket/socket';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
 import { requireCapability } from '../../middleware/moderation.middleware';
-import { userRouter } from './user.router';
+import { assertMateQuota } from '../services/quota.service';
+import { dispatchNotification } from '../services/notification.service';
+import {
+  matchNotification,
+  mateRequestPushNotification,
+  requestAcceptedPushNotification
+} from '../../config/notification.config';
 
 export const relationshipRouter = new Router();
 relationshipRouter.use(requireAuth);
@@ -57,14 +63,33 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       populatedConvo.initiator_id = rel.action_user_id?.toString();
 
       if (partnerId) {
-        sendSocketNotificationToUser(partnerId.toString(), 'chat:request_accepted', {
-          conversation: populatedConvo
-        });
+        // ─── REPLACES: sendSocketNotificationToUser('chat:request_accepted', ...) ───
+        dispatchNotification({
+          recipient_id: partnerId.toString(),
+          type: 'dm_message',
+          actor: {
+            _id: user_id,
+            name: ctx.state.user.name,
+            img: ctx.state.user.img
+          },
+          channels: {
+            in_app: false,
+            socket: {
+              event: 'chat:request_accepted',
+              data: { conversation: populatedConvo }
+            },
+            push: requestAcceptedPushNotification(ctx.state.user.name)
+          }
+        }).catch(err => console.error('Request accept dispatch failed:', err));
       }
 
       ctx.body = { success: true, conversation: populatedConvo };
-
     } else if (rel.chat_status === 'pending_mate') {
+      await assertMateQuota(user_id);
+      if (partnerId) {
+        await assertMateQuota(partnerId.toString());
+      }
+
       rel.chat_status = 'mate';
       rel.expires_at = undefined;
       rel.cooldown_until = undefined;
@@ -90,9 +115,24 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       }
 
       if (partnerId) {
-        sendSocketNotificationToUser(partnerId.toString(), 'chat:mate_matched', {
-          conversation: populatedConvo
-        });
+        // ─── REPLACES: sendSocketNotificationToUser('chat:mate_matched', ...) ───
+        dispatchNotification({
+          recipient_id: partnerId.toString(),
+          type: 'dm_message',
+          actor: {
+            _id: user_id,
+            name: ctx.state.user.name,
+            img: ctx.state.user.img
+          },
+          channels: {
+            in_app: false,
+            socket: {
+              event: 'chat:mate_matched',
+              data: { conversation: populatedConvo }
+            },
+            push: matchNotification(ctx.state.user.name)
+          }
+        }).catch(err => console.error('Mate match dispatch failed:', err));
       }
 
       ctx.body = { success: true, conversation: populatedConvo };
@@ -164,7 +204,7 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
   }
 });
 
-userRouter.put('/follow/:target_id', async (ctx) => {
+relationshipRouter.put('/follow/:target_id', async (ctx) => {
   const followerId = ctx.state.user._id.toString();
   const targetId = ctx.params.target_id;
   if (followerId === targetId) return ctx.throw(400, 'Cannot follow yourself');
@@ -180,6 +220,7 @@ userRouter.put('/follow/:target_id', async (ctx) => {
   });
 
   if (existing) {
+    // UNFOLLOW — silent. No notification on unfollow.
     await Promise.all([
       relationship_model.updateOne(
         { users: sortedUsers },
@@ -192,7 +233,6 @@ userRouter.put('/follow/:target_id', async (ctx) => {
     return;
   }
 
-  // MODERATION: Swapped out static array checking loops to use policy levels cleanly
   const userRestriction = ctx.state.user.restriction;
   const userLevel = userRestriction?.level ?? 0;
 
@@ -222,6 +262,21 @@ userRouter.put('/follow/:target_id', async (ctx) => {
     user_model.updateOne({ _id: followedOID }, { $inc: { 'stats.followers': 1 } }),
     user_model.updateOne({ _id: followerOID }, { $inc: { 'stats.following': 1 } })
   ]);
+
+  dispatchNotification({
+    recipient_id: targetId,
+    type: 'follow',
+    actor: {
+      _id: followerId,
+      name: ctx.state.user.name,
+      img: ctx.state.user.img
+    },
+    aggregation_key: `follow:${targetId}`,
+    target_type: 'user',
+    target_id: followerId,
+    channels: { in_app: true}
+  }).catch(err => console.error('Follow dispatch failed:', err));
+
   ctx.body = { isFollowing: true };
 });
 
@@ -350,6 +405,8 @@ relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capa
   const { conversation_id } = ctx.params;
   const user_id = ctx.state.user._id;
 
+  await assertMateQuota(user_id.toString());
+
   const rel = await relationship_model.findOneAndUpdate(
     { conversation_id: new Types.ObjectId(conversation_id) },
     { $set: { chat_status: 'pending_mate', action_user_id: user_id } },
@@ -371,11 +428,24 @@ relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capa
     populatedConvo.initiator_id = user_id.toString();
     populatedConvo.relationship_id = rel._id.toString();
 
-    sendSocketNotificationToUser(partnerId.toString(), 'chat:mate_requested', {
-      conversation_id,
-      conversation: populatedConvo,
-      wasExpired: false
-    });
+    // ─── REPLACES: sendSocketNotificationToUser('chat:mate_requested', ...) ───
+    dispatchNotification({
+      recipient_id: partnerId.toString(),
+      type: 'dm_message',
+      actor: {
+        _id: user_id.toString(),
+        name: ctx.state.user.name,
+        img: ctx.state.user.img
+      },
+      channels: {
+        in_app: false,
+        socket: {
+          event: 'chat:mate_requested',
+          data: { conversation_id, conversation: populatedConvo, wasExpired: false }
+        },
+        push: mateRequestPushNotification(ctx.state.user.name)
+      }
+    }).catch(err => console.error('Mate request dispatch failed:', err));
   }
 
   ctx.body = { success: true };

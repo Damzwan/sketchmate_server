@@ -21,9 +21,9 @@ import { compareVersions, isOldEnough } from '../helper';
 // Dynamic Policy Integration Imports
 import { Capability, getLevelConfig } from '../types/moderation.policy';
 
-const BALLOON_COOLDOWN_MS = 3 * 60 * 60 * 1000; // 3 Hours
-const HOT_POTATO_TIMEOUT_MS = 60000;          // 60 Seconds
-const MAX_LIVE_ROUTING_ATTEMPTS = 5;
+export const BALLOON_COOLDOWN_MS = 3 * 60 * 60 * 1000; // 3 Hours
+export const HOT_POTATO_TIMEOUT_MS = 60000;          // 60 Seconds
+export const MAX_LIVE_ROUTING_ATTEMPTS = 5;
 
 export const activeBalloonTimeouts = new Map<string, any>();
 export const activeBalloonHolders = new Map<string, string>();
@@ -46,7 +46,7 @@ export async function routeBalloonToOnlineUser(
   if (
     !currentBalloon ||
     currentBalloon.status !== 'pending' ||
-    currentBalloon.moderation_status !== 'active'
+    currentBalloon.moderation_status !== 'active' || currentBalloon.version === 3
   ) {
     activeBalloonSkips.delete(balloonId);
     return false;
@@ -136,7 +136,7 @@ export async function routeBalloonToOnlineUser(
     if (
       updatedBalloon &&
       updatedBalloon.status === 'pending' &&
-      updatedBalloon.moderation_status === 'active'
+      updatedBalloon.moderation_status === 'active' && updatedBalloon.version !== 3
     ) {
       if (userSocketMap[matchedUserId]) {
         userSocketMap[matchedUserId].forEach((s: any) => s.emit(SOCKET_ENDPONTS.balloon_missed, { balloonId }));
@@ -163,7 +163,7 @@ export async function pairBalloons() {
   const pendingBalloons = await balloon_model
     .find({
       status: 'pending',
-      version: { $ne: 2 },
+      $or: [{ version: { $exists: false } }, { version: 1 }],   // ← NEW
       moderation_status: 'active'
     })
     .sort({ createdAt: 1 })
@@ -284,7 +284,7 @@ export async function pairBalloons() {
 export async function unPairBalloons() {
   const balloons = await balloon_model.find({
     status: { $in: ['paired', 'accepted'] },
-    version: { $ne: 2 },
+    $or: [{ version: { $exists: false } }, { version: 1 }],   // ← NEW
     moderation_status: 'active'
   });
 
@@ -332,7 +332,7 @@ export async function removeExpiredBalloons() {
 
   const balloons = await balloon_model.find({
     lastActivityAt: { $lt: expirationDate },
-    version: { $ne: 2 },
+    $or: [{ version: { $exists: false } }, { version: 1 }],   // ← NEW
     moderation_status: { $ne: 'removed' }
   });
 

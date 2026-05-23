@@ -60,6 +60,7 @@ import devModerationRouter from './devModeration.router';
 import { inboxRouter } from './inbox.router';
 import { balloonRouter } from './balloon.router';
 import { quotaRouter } from './quota.router';
+import { notificationRouter } from './notification.router';
 
 export const router = new Router();
 
@@ -71,6 +72,7 @@ router.use('/v2/relationship', relationshipRouter.routes(), relationshipRouter.a
 router.use('/v2/inbox', inboxRouter.routes(), inboxRouter.allowedMethods());
 router.use('/v2/balloon', balloonRouter.routes(), balloonRouter.allowedMethods());
 router.use('/v2/quota', quotaRouter.routes(), quotaRouter.allowedMethods());
+router.use('/v2/notification', notificationRouter.routes(), notificationRouter.allowedMethods());
 router.use('/dev/moderation', devModerationRouter.routes(), devModerationRouter.allowedMethods());
 
 router.get(ENDPOINTS.user, async (ctx) => {
@@ -231,6 +233,7 @@ router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
 
   const decompressedBuffer = await inflateAsync(compressedBuffer);
   params.drawing = JSON.parse(decompressedBuffer.toString('utf-8'));
+  params.version = 1
 
   const balloon = await createBalloon(params);
   if (!balloon) return;

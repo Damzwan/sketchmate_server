@@ -151,3 +151,15 @@ export interface BalloonDocument extends Omit<Balloon, '_id' | 'sender' | 'paire
   cancelledBalloons: Types.ObjectId[];
   rejected_by: Types.ObjectId[];
 }
+
+import { Notification, NotificationActor } from './types';
+
+export interface NotificationDocument
+  extends Omit<Notification, '_id' | 'recipient_id' | 'target_id' | 'actors' | 'createdAt' | 'updatedAt'> {
+  _id: Types.ObjectId;
+  recipient_id: Types.ObjectId;
+  target_id?: Types.ObjectId;
+  actors: Array<Omit<NotificationActor, '_id'> & { _id: Types.ObjectId }>;
+  createdAt: Date;
+  updatedAt: Date;
+}

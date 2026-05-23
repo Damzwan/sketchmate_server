@@ -26,7 +26,28 @@ const MessageSchema = new Schema<MessageDocument>({
     ref: 'posts',
     default: null,
     index: true
+  },
+  shared_inbox_item_id: {
+    type: Schema.Types.ObjectId,
+    ref: 'inbox',
+    default: null,
+    index: true
+  },
+  type: {
+    type: String,
+    enum: ['user', 'system'],
+    default: 'user'
+  },
+  system_kind: {
+    type: String,
+    enum: ['balloon_match'],
+    required: false
+  },
+  system_payload: {
+    type: Schema.Types.Mixed,
+    required: false
   }
+
 }, {
   timestamps: true,
   toObject: { virtuals: true },

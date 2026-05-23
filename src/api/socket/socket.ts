@@ -34,7 +34,7 @@ export function registerSocketHandlers(io: Server) {
 
         const [user, relationships] = await Promise.all([
           user_model.findById(userIdString)
-            .select(PUBLIC_USER_FIELDS + ' date_of_birth')
+            .select(PUBLIC_USER_FIELDS + ' date_of_birth subscription_tier')
             .lean() as unknown as UserDocument | null,
           relationship_model.find({
             users: new Types.ObjectId(userIdString),
@@ -53,7 +53,8 @@ export function registerSocketHandlers(io: Server) {
           img: user.img,
           date_of_birth: user.date_of_birth,
           version: params.version || null,
-          customization: user.customization
+          customization: user.customization,
+          subscription_tier: user.subscription_tier
         };
         socket.join(userIdString);
 

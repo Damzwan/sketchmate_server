@@ -1,15 +1,14 @@
 import { user_model } from '../../models/user.model';
 import { DailyQuota, QuotaState, QuotaSummary } from '../../types/types';
-import { balloon_model } from '../../models/balloon.model';
 import { Types } from 'mongoose';
 import { nextResetAt, quotaForTier, startOfUtcDay } from '../../config/quota.config';
-import { post_model } from '../../models/post.model';
+import { quota_usage_model } from '../../models/quota_usage.model';
 
 export class QuotaExceededError extends Error {
-  public readonly kind: 'balloon' | 'post';
+  public readonly kind: 'balloon' | 'post' | 'mate';
   public readonly state: QuotaState;
 
-  constructor(kind: 'balloon' | 'post', state: QuotaState) {
+  constructor(kind: 'balloon' | 'post' | 'mate', state: QuotaState) {
     super(`Daily ${kind} quota exceeded`);
     this.name = 'QuotaExceededError';
     this.kind = kind;
@@ -31,10 +30,12 @@ async function getTier(userId: string): Promise<string> {
  * the slot for the day.
  */
 async function countBalloonsToday(userId: string): Promise<number> {
-  return balloon_model.countDocuments({
-    sender: new Types.ObjectId(userId),
-    createdAt: { $gte: startOfUtcDay() }
-  });
+  const usage = await quota_usage_model.findOne({
+    user_id: new Types.ObjectId(userId),
+    date: startOfUtcDay()
+  }).lean();
+
+  return usage?.balloons_sent || 0;
 }
 
 /**
@@ -42,11 +43,12 @@ async function countBalloonsToday(userId: string): Promise<number> {
  * delete and re-post, that's fine.
  */
 async function countPostsToday(userId: string): Promise<number> {
-  return post_model.countDocuments({
-    author_id: new Types.ObjectId(userId),
-    status: 'active',
-    createdAt: { $gte: startOfUtcDay() }
-  });
+  const usage = await quota_usage_model.findOne({
+    user_id: new Types.ObjectId(userId),
+    date: startOfUtcDay()
+  }).lean();
+
+  return usage?.posts_created || 0;
 }
 
 function buildState(used: number, limit: number): QuotaState {
@@ -72,27 +74,42 @@ export async function getPostQuota(userId: string): Promise<QuotaState> {
   return buildState(used, limit);
 }
 
+export async function getMateQuota(userId: string): Promise<QuotaState> {
+  const user = await user_model
+    .findById(userId)
+    .select('subscription_tier stats.mates')
+    .lean() as any;
+
+  const tier = user?.subscription_tier ?? 'free';
+  const limit = quotaForTier(tier).max_mates;
+  const used = user?.stats?.mates || 0;
+
+  return {
+    used,
+    limit,
+    remaining: Math.max(0, limit - used)
+  };
+}
+
 export async function getQuotaSummary(userId: string): Promise<QuotaSummary> {
   const tier = await getTier(userId);
   const q: DailyQuota = quotaForTier(tier);
 
-  const [balloonsUsed, postsUsed] = await Promise.all([
+  const [balloonsUsed, postsUsed, mateState] = await Promise.all([
     countBalloonsToday(userId),
-    countPostsToday(userId)
+    countPostsToday(userId),
+    getMateQuota(userId)
   ]);
 
   return {
     tier,
     balloons: buildState(balloonsUsed, q.balloons_per_day),
-    posts: buildState(postsUsed, q.posts_per_day)
+    posts: buildState(postsUsed, q.posts_per_day),
+    mates: mateState
   };
 }
 
-/**
- * Throw if the user has no balloon budget remaining. Call this at the
- * start of `createBalloonV2`. Returns the fresh state for callers that
- * want to attach it to a success response.
- */
+
 export async function assertBalloonQuota(userId: string): Promise<QuotaState> {
   const state = await getBalloonQuota(userId);
   if (state.remaining <= 0) {
@@ -105,6 +122,14 @@ export async function assertPostQuota(userId: string): Promise<QuotaState> {
   const state = await getPostQuota(userId);
   if (state.remaining <= 0) {
     throw new QuotaExceededError('post', state);
+  }
+  return state;
+}
+
+export async function assertMateQuota(userId: string): Promise<QuotaState> {
+  const state = await getMateQuota(userId);
+  if (state.remaining <= 0) {
+    throw new QuotaExceededError('mate', state);
   }
   return state;
 }

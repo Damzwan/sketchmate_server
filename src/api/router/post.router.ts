@@ -18,6 +18,9 @@ import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
 import { shapeFeedPost } from '../services/post.service';
+import { quota_usage_model } from '../../models/quota_usage.model';
+import { startOfUtcDay } from '../../config/quota.config';
+import { dispatchNotification } from '../services/notification.service';
 
 const postRouter = new Router();
 
@@ -42,7 +45,15 @@ postRouter.post('/upload-urls', requireAuth, requireCapability(Capability.CREATE
 });
 
 postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POST), async (ctx) => {
-  const { drawing_url, image_url, thumbnail_url, aspect_ratio, description } = ctx.request.body;
+  const {
+    drawing_url,
+    image_url,
+    thumbnail_url,
+    aspect_ratio,
+    description,
+    enable_comments,
+    enable_remix
+  } = ctx.request.body;
   const authorObjectId = new Types.ObjectId(ctx.state.user._id);
 
   try {
@@ -53,7 +64,9 @@ postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POS
         image_url,
         thumbnail_url,
         aspect_ratio,
-        description
+        description,
+        enable_comments,
+        enable_remix
       }) as Promise<PostDocument>,
       user_model
         .findById(authorObjectId)
@@ -62,6 +75,11 @@ postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POS
       user_model.updateOne(
         { _id: authorObjectId },
         { $inc: { 'stats.posts': 1 } }
+      ),
+      quota_usage_model.updateOne(
+        { user_id: authorObjectId, date: startOfUtcDay() },
+        { $inc: { posts_created: 1 } },
+        { upsert: true }
       )
     ]);
 
@@ -242,7 +260,7 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
 
     const users = await user_model.find({
       _id: { $in: allUserIdsToFetch }
-    }).select('_id name img').lean() as unknown as UserDocument[];
+    }).select('_id name img customization').lean() as unknown as UserDocument[];
 
     const userMap = users.reduce((acc, user) => {
       acc[user._id.toString()] = user;
@@ -302,11 +320,16 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
         reports_count: post.reports_count || 0,
         views: post.views || 0,
         total_reactions: post.total_reactions || 0,
-        enable_remix: post.enable_remix || true,
-        enable_comments: post.enable_comments || true,
+        enable_remix: post.enable_remix ?? true,
+        enable_comments: post.enable_comments ?? true,
 
         author: authorDoc
-          ? { _id: authorDoc._id.toString(), name: authorDoc.name, img: authorDoc.img }
+          ? {
+            _id: authorDoc._id.toString(),
+            name: authorDoc.name,
+            img: authorDoc.img,
+            customization: authorDoc.customization
+          }
           : { _id: authorIdStr, name: 'Unknown', img: '' },
 
         reaction_counts: post.reaction_counts instanceof Map
@@ -358,6 +381,26 @@ postRouter.post('/:post_id/comment', requireAuth, requireCapability(Capability.C
     }) as PostCommentDocument;
 
     await post_model.updateOne({ _id: new Types.ObjectId(post_id) }, { $inc: { comment_count: 1 } });
+
+    if (post.author_id.toString() !== author_id.toString()) {
+      dispatchNotification({
+        recipient_id: post.author_id.toString(),
+        type: 'post_comment',
+        aggregation_mode: 'merge_count',
+        actor: {
+          _id: author_id.toString(),
+          name: ctx.state.user.name,
+          img: ctx.state.user.img
+        },
+        target_type: 'post',
+        target_id: post_id,
+        target_preview: {
+          thumbnail: post.thumbnail_url,
+          text: message.slice(0, 100)
+        },
+        channels: { in_app: true }
+      }).catch(err => console.error('Notification dispatch failed:', err));
+    }
 
     ctx.status = 201;
     ctx.body = { comment: newComment.toObject() };
@@ -448,6 +491,8 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
       return;
     }
 
+    const isNewReaction = !existing;
+
     if (existing) {
       await Promise.all([
         post_reaction_model.updateOne({ _id: existing._id }, { reaction_type }),
@@ -478,6 +523,23 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
           }
         )
       ]);
+    }
+
+    if (isNewReaction && post.author_id.toString() !== user_id) {
+      dispatchNotification({
+        recipient_id: post.author_id.toString(),
+        type: 'post_reaction',
+        actor: {
+          _id: user_id,
+          name: ctx.state.user.name,
+          img: ctx.state.user.img
+        },
+        aggregation_key: `post_reaction:${post_id}`,
+        target_type: 'post',
+        target_id: post_id,
+        target_preview: { thumbnail: post.thumbnail_url },
+        channels: { in_app: true }
+      }).catch(err => console.error('Notification dispatch failed:', err));
     }
 
     ctx.body = { current_reaction: reaction_type };
