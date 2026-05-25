@@ -31,18 +31,18 @@ const statsSchema = new Schema({
 }, { _id: false });
 
 // ---------------------------------------------------------------------------
-// MODERATION SUB-SCHEMAS (Cleaned up - completely dropping database tracking)
+// MODERATION SUB-SCHEMAS
 // ---------------------------------------------------------------------------
 const restrictionSchema = new Schema({
-  level: { type: Number, default: 0 },                // 0..3 (matches modern STRIKE_LADDER)
-  reason: { type: String },                           // last triggering ReportReason
+  level: { type: Number, default: 0 },
+  reason: { type: String },
   applied_at: { type: Date },
-  expires_at: { type: Date }                          // null = until manual review
+  expires_at: { type: Date }
 }, { _id: false });
 
 const strikeSummarySchema = new Schema({
-  active_strikes: { type: Number, default: 0 },       // non-decayed upheld reports
-  total_strikes: { type: Number, default: 0 },        // lifetime, for analytics
+  active_strikes: { type: Number, default: 0 },
+  total_strikes: { type: Number, default: 0 },
   last_strike_at: { type: Date }
 }, { _id: false });
 
@@ -101,7 +101,8 @@ const user_schema = new Schema<UserDocument>({
   last_name_change: { type: Date, default: null },
   subscription_tier: { type: String, default: 'free' },
   migration_version: { type: Number, default: 0 },
-  is_admin: { type: Boolean, required: false }
+  is_admin: { type: Boolean, required: false },
+  inventory: { type: [String], default: [] }
 }, {
   timestamps: true,
   toJSON: { virtuals: true },
@@ -119,5 +120,8 @@ user_schema.index(
   { _id: 1, 'subscriptions.fingerprint': 1 },
   { unique: false }
 );
+// Sparse index — only users who have purchased anything appear here. Used by
+// the admin "give me users who own X" query and by analytics.
+user_schema.index({ inventory: 1 }, { sparse: true });
 
 export const user_model = mongoose.model<UserDocument>('users', user_schema);
