@@ -45,6 +45,7 @@ import * as fs from 'fs';
 import { minimum_supported_version } from './main';
 import { balloon_model } from './models/balloon.model';
 import { mixpanelEvents, trackEvent } from './mixpanel';
+import { PUBLIC_USER_FIELDS } from './types/projections';
 
 export let s3Creator: S3Creator;
 
@@ -753,20 +754,17 @@ export async function searchMate(
     const safeSearchTerm = escapeRegExp(mateName);
 
     const docs = await user_model
-      .find(
-        {
-          _id: { $ne: userId },
-          name: { $regex: safeSearchTerm, $options: 'i' }
-        },
-        { _id: 1, img: 1, name: 1 }
-      )
+      .find({
+        _id: { $ne: userId },
+        name: { $regex: safeSearchTerm, $options: 'i' }
+      })
+      .select(PUBLIC_USER_FIELDS)
       .limit(limit)
       .lean() as any[];
 
     return docs.map(doc => ({
+      ...doc,
       _id: doc._id.toString(),
-      name: doc.name,
-      img: doc.img
     })) as Mate[];
   } catch (e: any) {
     throw new Error(e.message || e);

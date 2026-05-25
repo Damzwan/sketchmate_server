@@ -251,7 +251,7 @@ export async function acceptBalloonV2(params: {
 
   await sendNotificationUser(
     params.sender_id,
-    balloonMatchNotification(`${acceptor.name} caught your balloon!`)
+    balloonMatchNotification(`${acceptor.name}`)
   );
 
   const senderPayload = { mate: matchRes.user, acceptorId: params.user_id, inboxItem };
