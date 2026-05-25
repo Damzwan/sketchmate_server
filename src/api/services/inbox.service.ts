@@ -19,6 +19,7 @@ export interface CreateInboxItemParams {
   image_url: string;
   thumbnail_url: string;
   aspect_ratio: number;
+  sender_img: string;
 }
 
 
@@ -106,7 +107,8 @@ export async function createInboxItem(params: CreateInboxItemParams): Promise<In
           params.sender_id,
           params.sender_name,
           inboxItem.thumbnail,
-          inboxItem._id
+          inboxItem._id,
+          params.sender_img,
         )
       }
     }).catch(err => console.error('Inbox drawing dispatch failed:', err));

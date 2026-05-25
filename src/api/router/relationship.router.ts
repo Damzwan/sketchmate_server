@@ -78,7 +78,7 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
               event: 'chat:request_accepted',
               data: { conversation: populatedConvo }
             },
-            push: requestAcceptedPushNotification(ctx.state.user.name)
+            push: requestAcceptedPushNotification(ctx.state.user.name, ctx.state.user.img, rel.conversation_id.toString())
           }
         }).catch(err => console.error('Request accept dispatch failed:', err));
       }
@@ -443,7 +443,7 @@ relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capa
           event: 'chat:mate_requested',
           data: { conversation_id, conversation: populatedConvo, wasExpired: false }
         },
-        push: mateRequestPushNotification(ctx.state.user.name)
+        push: mateRequestPushNotification(ctx.state.user._id, ctx.state.user.name, ctx.state.user.img, conversation_id)
       }
     }).catch(err => console.error('Mate request dispatch failed:', err));
   }

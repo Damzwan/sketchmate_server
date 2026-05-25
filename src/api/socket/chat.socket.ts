@@ -12,21 +12,21 @@ import { dmPushNotification } from '../../config/notification.config';
 export function registerChatHandlers(io: Server, socket: Socket) {
 
   socket.on('chat:send_message', async (
-    payload: { receiver_id: string, content: string, shared_post_id?: string },
+    payload: { receiver_id: string, content: string, shared_post_id?: string, shared_inbox_item_id?: string },
     callback
   ) => {
     try {
       const sender_id = socket.data.user?._id?.toString();
       if (!sender_id) return callback({ error: 'Not authenticated' });
 
-      const { receiver_id, content, shared_post_id } = payload;
+      const { receiver_id, content, shared_post_id, shared_inbox_item_id} = payload;
 
       // 1. Basic Validations
       if (sender_id === receiver_id) {
         return callback({ error: 'Cannot send a message to yourself.' });
       }
 
-      if (!content?.trim() && !shared_post_id) {
+      if (!content?.trim() && !shared_post_id && !shared_inbox_item_id) {
         return callback({ error: 'Message cannot be empty.' });
       }
 
@@ -49,6 +49,7 @@ export function registerChatHandlers(io: Server, socket: Socket) {
             _id: new Types.ObjectId().toString(),
             content: content || '',
             shared_post_id: shared_post_id || null,
+            shared_inbox_item_id: shared_inbox_item_id || null,
             sender_id,
             createdAt: new Date().toISOString(),
             status: 'sent'
@@ -72,7 +73,8 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         receiver_id,
         content || '',
         rel,
-        shared_post_id
+        shared_post_id,
+        {shared_inbox_item_id}
       );
 
       // 5. Dispatch Notification via new Architecture
@@ -92,10 +94,11 @@ export function registerChatHandlers(io: Server, socket: Socket) {
             data: { message, conversation, conversation_id: conversation._id }
           },
           push: dmPushNotification(
+            sender_id.toString(),
             socket.data.user.name,
             content || '[Shared a drawing]',
             socket.data.user.img,
-            conversation._id
+            conversation._id.toString(),
           )
         }
       }).catch(err => console.error('DM dispatch failed:', err));

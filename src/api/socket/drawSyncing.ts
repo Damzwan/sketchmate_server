@@ -8,6 +8,7 @@ import { mixpanelEvents, trackEvent } from '../../mixpanel';
 import { s3Creator } from '../../mongodb';
 import { checkSocketCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
+import { dispatchNotification } from '../services/notification.service';
 
 interface PublicLobby {
   id: string;
@@ -501,16 +502,26 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
   });
 
 
+  // socket handler
   socket.on('friend-invite', ({ roomId, friendId }) => {
-    if (userSocketMap[friendId]) {
-      userSocketMap[friendId].forEach((mateSocket) => {
-        mateSocket.emit(SOCKET_ENDPONTS.friend_invitation, {
-          friend: socket.data.user,
-          roomId: roomId
-        });
-      });
-    }
-    sendNotificationUser(friendId, lobbyInvitationNotification(socket.data.user.name, roomId));
+    dispatchNotification({
+      recipient_id: friendId,
+      type: 'lobby_invitation',
+      actor: {
+        _id: socket.data.user._id,
+        name: socket.data.user.name,
+        img: socket.data.user.img
+      },
+      channels: {
+        in_app: false,
+        socket: {
+          event: SOCKET_ENDPONTS.friend_invitation,
+          data: { friend: socket.data.user, roomId }
+        },
+        push: lobbyInvitationNotification(socket.data.user.name, socket.data.user.img, roomId)
+      }
+    }).catch(err => console.error('Lobby invite dispatch failed:', err));
+
     trackEvent(socket.data.user._id, mixpanelEvents.inviteLobby);
   });
 

@@ -67,7 +67,6 @@ export async function dispatchNotification(params: DispatchParams) {
 
     if (channels.socket && typeof channels.socket === 'object') {
       sockets.forEach((s: any) => {
-          console.log('second step');
           if (channels.socket && typeof channels.socket === 'object' && channels.socket?.event && channels.socket.data) s.emit(channels.socket.event, channels.socket.data);
         }
       );
