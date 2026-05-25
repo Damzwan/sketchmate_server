@@ -61,6 +61,8 @@ import { inboxRouter } from './inbox.router';
 import { balloonRouter } from './balloon.router';
 import { quotaRouter } from './quota.router';
 import { notificationRouter } from './notification.router';
+import { revenuecatWebhookRouter } from './revenuecat.webhook';
+import adminInventoryRouter from './admin.inventory.router';
 
 export const router = new Router();
 
@@ -74,6 +76,8 @@ router.use('/v2/balloon', balloonRouter.routes(), balloonRouter.allowedMethods()
 router.use('/v2/quota', quotaRouter.routes(), quotaRouter.allowedMethods());
 router.use('/v2/notification', notificationRouter.routes(), notificationRouter.allowedMethods());
 router.use('/dev/moderation', devModerationRouter.routes(), devModerationRouter.allowedMethods());
+router.use('/webhooks', revenuecatWebhookRouter.routes());
+router.use('/admin/inventory', adminInventoryRouter.routes());
 
 router.get(ENDPOINTS.user, async (ctx) => {
   const res = await getUser(parseParams<GetUserParams>(ctx.query));

@@ -255,6 +255,7 @@ export interface User {
     tasks_completed_since_last_prompt?: number;
     feedback_opted_out?: boolean;
   };
+  inventory: string[]
 }
 
 export interface UserCustomization {
