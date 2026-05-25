@@ -42,7 +42,7 @@ import { user_model } from './models/user.model';
 import { createThumbnail, escapeRegExp, imgToEmblem, removeBackground } from './helper';
 import { inbox_model } from './models/inbox.model';
 import * as fs from 'fs';
-import { minimum_supported_version } from './main';
+import { minimum_online_version, minimum_supported_version } from './main';
 import { balloon_model } from './models/balloon.model';
 import { mixpanelEvents, trackEvent } from './mixpanel';
 import { PUBLIC_USER_FIELDS } from './types/projections';
@@ -100,9 +100,12 @@ export async function getUser(params: GetUserParams): Promise<Res<GetUserRes>> {
       return {
         user: { ...user, _id: user._id.toString() } as unknown as User,
         new_account: false,
-        minimum_supported_version
+        minimum_supported_version,
+        minimum_online_version
+
       };
     }
+
 
     if (params._id) {
       user = await user_model.findById(params._id).lean() as UserDocument | null;
@@ -111,13 +114,15 @@ export async function getUser(params: GetUserParams): Promise<Res<GetUserRes>> {
         return {
           user: { ...user, _id: user._id.toString(), auth_id: params.auth_id } as unknown as User,
           new_account: false,
-          minimum_supported_version
+          minimum_supported_version,
+          minimum_online_version
         };
       }
     }
 
+
     const newUser = await createUser(params.auth_id);
-    return { user: newUser!, new_account: true, minimum_supported_version };
+    return { user: newUser!, new_account: true, minimum_supported_version, minimum_online_version };
 
   } catch (e) {
     throw new Error('User not found');

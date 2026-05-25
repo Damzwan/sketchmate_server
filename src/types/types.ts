@@ -1,5 +1,7 @@
 // --- ENUMS & CONSTANTS ---
 
+import { minimum_online_version } from '../main';
+
 export enum NotificationType {
   // Current
   balloon_match = 'balloon_match',
@@ -247,6 +249,12 @@ export interface User {
   inbox: string[];
   mate_requests_sent: string[];
   mate_requests_received: string[];
+  engagement_metadata?: {
+    last_thought_prompt_at?: string;
+    total_thought_prompts_shown?: number;
+    tasks_completed_since_last_prompt?: number;
+    feedback_opted_out?: boolean;
+  };
 }
 
 export interface UserCustomization {
@@ -572,6 +580,7 @@ export interface NotificationSubscription {
   platform: string;
   model: string;
   os: string;
+  updated_at?: string;
 }
 
 export interface GetUserParams {
@@ -583,6 +592,7 @@ export interface GetUserRes {
   user: User;
   new_account: boolean;
   minimum_supported_version: string;
+  minimum_online_version: string;
 }
 
 export interface UpdateUserParams extends Partial<User> {

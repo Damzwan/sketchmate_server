@@ -612,22 +612,6 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
   socket.on('watch-public-lobbies', () => {
     socket.join('public-lobby-watchers');
-
-
-    // Send initial snapshot immediately
-    const lobbies = Array.from(PUBLIC_LOBBY_ROOMS.values()).map(room => {
-      const clients = io.sockets.adapter.rooms.get(room.id);
-      return {
-        id: room.id,
-        name: room.name,
-        users: clients ? clients.size : 0,
-        maxUsers: room.maxUsers,
-        premiumSlots: room.premiumSlots,
-        thumbnailUrl: room.thumbnailUrl
-      };
-    });
-
-    socket.emit('public-lobbies-update', lobbies);
   });
 
   socket.on('unwatch-public-lobbies', () => {
@@ -681,3 +665,18 @@ You will be disconnected. I am sorry :(`,
 
   socket.emit('lobby-message', payload);
 }
+
+export function getPublicLobbiesSnapshot(io: Server) {
+  return Array.from(PUBLIC_LOBBY_ROOMS.values()).map(room => {
+    const clients = io.sockets.adapter.rooms.get(room.id);
+    return {
+      id: room.id,
+      name: room.name,
+      users: clients ? clients.size : 0,
+      maxUsers: room.maxUsers,
+      premiumSlots: room.premiumSlots,
+      thumbnailUrl: room.thumbnailUrl,
+    };
+  });
+}
+

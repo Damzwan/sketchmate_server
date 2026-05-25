@@ -39,6 +39,7 @@ app.context.io = io;
 
 const port = process.env.PORT || 4000;
 export const minimum_supported_version = '0.2.0';
+export const minimum_online_version = '0.4.0';
 
 registerSocketHandlers(io);
 

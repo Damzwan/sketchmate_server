@@ -627,7 +627,7 @@ postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
 
     const authors = await user_model.find({
       _id: { $in: authorIds }
-    }).select('_id name img').lean() as unknown as UserDocument[];
+    }).select(PUBLIC_USER_FIELDS).lean() as unknown as UserDocument[];
 
     const authorMap = authors.reduce((acc, author) => {
       acc[author._id.toString()] = author;
@@ -642,7 +642,7 @@ postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
         post_id: comment.post_id.toString(),
         createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
         author: author
-          ? { _id: author._id.toString(), name: author.name, img: author.img }
+          ? author
           : { _id: comment.author_id.toString(), name: 'Unknown', img: '' }
       };
     });
