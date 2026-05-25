@@ -1,11 +1,17 @@
 import { FBNotification } from '../types/notification.type';
 import { NotificationType } from '../types/types';
 
-export const matchNotification = (mateName: string): FBNotification => {
+// ============================================================
+// CURRENT NOTIFICATIONS
+// ============================================================
+export const balloonMatchNotificationV2 = (
+  mateName: string,
+  conversation_id: string
+): FBNotification => {
   return {
     notification: {
-      title: `You became mates with ${mateName}`,
-      body: ''
+      title: `${mateName} accepted your balloon request!`,
+      body: 'You can now send drawings to each other'
     },
     android: {
       priority: 'high',
@@ -15,16 +21,138 @@ export const matchNotification = (mateName: string): FBNotification => {
       }
     },
     data: {
-      type: NotificationType.match
+      type: NotificationType.balloon_match,
+      conversation_id
     }
   };
 };
 
-export const balloonMatchNotification = (mateName: string): FBNotification => {
+export const drawingReceivedNotification = (
+  mate_id: string,
+  mateName: string,
+  drawingImg: string,
+  inbox_id: string,
+  img?: string,
+) => ({
+  android: { priority: 'high' },
+  data: {
+    type: NotificationType.drawing_received,
+    conversation_id: inbox_id,
+    sender_name: mateName,
+    sender_img: img ?? '',
+    image_url: drawingImg,
+    message_body: '🎨 Sent a drawing'
+  }
+});
+
+
+export const lobbyInvitationNotification = (
+  mateName: string,
+  mateImg: string,
+  lobby_id: string
+): FBNotification => ({
+  android: { priority: 'high' },
+  data: {
+    type: NotificationType.lobby_invitation,
+    lobby_id,
+    sender_name: mateName,
+    sender_img: mateImg
+  }
+});
+
+export const dmPushNotification = (
+  senderId: string,
+  senderName: string,
+  content: string,
+  senderImg: string,
+  conversationId: string
+) => ({
+  android: { priority: 'high' },
+  data: {
+    type: NotificationType.dm_message,
+    sender_id: senderId,
+    conversation_id: conversationId,
+    sender_name: senderName,
+    sender_img: senderImg,
+    message_body: content
+  }
+});
+
+export const moderationStrikePushNotification = (
+  levelName: string,
+  description: string
+): FBNotification => ({
+  notification: {
+    title: levelName,
+    body: description.slice(0, 140)
+  },
+  android: {
+    priority: 'high',
+    notification: { priority: 'max', channelId: '1' }
+  },
+  data: { type: NotificationType.moderation_strike }
+});
+
+export const moderationLiftedPushNotification = (): FBNotification => {
   return {
     notification: {
-      title: `${mateName} accepted your balloon request!`,
-      body: 'You can now send drawings to each other'
+      title: 'Restriction Lifted',
+      body: 'Your account is back in good standing. Welcome back to sketching!'
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        priority: 'max',
+        channelId: '1'
+      }
+    },
+    data: {
+      type: NotificationType.moderation_lifted
+    }
+  };
+};
+
+export const mateRequestPushNotification = (
+  senderId: string,
+  senderName: string,
+  senderImg: string,
+  conversation_id: string
+) => ({
+  android: { priority: 'high' },
+  data: {
+    type: NotificationType.mate_request,
+    sender_id: senderId,
+    conversation_id,
+    sender_name: senderName,
+    sender_img: senderImg,
+    message_body: 'wants to be your mate'
+  }
+});
+
+export const requestAcceptedPushNotification = (
+  mateName: string,
+  mateImg: string,
+  conversation_id: string
+) => ({
+  android: { priority: 'high' },
+  data: {
+    type: NotificationType.request_accepted,
+    conversation_id,
+    sender_name: mateName,
+    sender_img: mateImg,
+    message_body: 'accepted your request! You have 24 hours to see if you vibe.'
+  }
+});
+
+// ============================================================
+// LEGACY NOTIFICATIONS — to be removed
+// ============================================================
+
+export const matchNotification = (mateName: string): FBNotification => {
+  return {
+    notification: {
+      title: `You became mates with ${mateName}`,
+      body: ''
     },
     android: {
       priority: 'high',
@@ -134,7 +262,6 @@ export const otherBalloonExpiredNotification = (): FBNotification => {
   };
 };
 
-
 export const balloonRejectNotification = (): FBNotification => {
   return {
     notification: {
@@ -165,7 +292,6 @@ export const unmatchNotification = (mateName: string, mate_id: string, unmatcher
       notification: {
         priority: 'max',
         channelId: '1'
-
       }
     },
     data: {
@@ -176,7 +302,7 @@ export const unmatchNotification = (mateName: string, mate_id: string, unmatcher
   };
 };
 
-export const drawingReceivedNotification = (mate_id: string, mateName: string, drawingImg: string, inbox_id: string): FBNotification => {
+export const drawingReceivedNotificationV1 = (mate_id: string, mateName: string, drawingImg: string, inbox_id: string): FBNotification => {
   return {
     notification: {
       title: `${mateName} sent you a drawing`,
@@ -238,11 +364,11 @@ export const sendFriendRequestNotification = (senderName: string): FBNotificatio
   };
 };
 
-export const lobbyInvitationNotification = (mateName: string, lobby_id: string): FBNotification => {
+export const balloonMatchNotification = (mateName: string): FBNotification => {
   return {
     notification: {
-      title: `${mateName} invited you to draw together`,
-      body: 'Tap to join'
+      title: `${mateName} accepted your balloon request!`,
+      body: 'You can now send drawings to each other'
     },
     android: {
       priority: 'high',
@@ -252,101 +378,7 @@ export const lobbyInvitationNotification = (mateName: string, lobby_id: string):
       }
     },
     data: {
-      type: NotificationType.lobby_invitation,
-      lobby_id: lobby_id
+      type: NotificationType.balloon_match
     }
   };
 };
-
-export const dmPushNotification = (
-  senderName: string,
-  content: string,
-  senderImg: string,
-  conversationId: string
-): FBNotification => {
-  return {
-    notification: {
-      title: senderName,
-      body: content
-    },
-    android: {
-      priority: 'high',
-      notification: {
-        priority: 'max',
-        channelId: '1'
-      }
-    },
-    data: {
-      type: NotificationType.message,
-      conversation_id: conversationId,
-      sender_name: senderName,
-      sender_img: senderImg
-    }
-  };
-};
-
-export const moderationStrikePushNotification = (
-  levelName: string,
-  description: string
-): FBNotification => ({
-  notification: {
-    title: levelName,
-    body: description.slice(0, 140)
-  },
-  android: {
-    priority: 'high',
-    notification: { priority: 'max', channelId: '1' }
-  },
-  data: { type: NotificationType.moderation_strike }
-});
-
-
-export const moderationLiftedPushNotification = (): FBNotification => {
-  return {
-    notification: {
-      title: 'Restriction Lifted',
-      body: 'Your account is back in good standing. Welcome back to sketching!'
-    },
-    android: {
-      priority: 'high',
-      notification: {
-        priority: 'max',
-        channelId: '1'
-      }
-    },
-    data: {
-      type: NotificationType.moderation_lifted
-    }
-  };
-};
-
-export const requestAcceptedPushNotification = (mateName: string): FBNotification => {
-  return {
-    notification: {
-      title: `${mateName} accepted your request`,
-      body: 'You have 24 hours to see if you vibe!'
-    },
-    android: {
-      priority: 'high',
-      notification: {
-        priority: 'max',
-        channelId: '1'
-      }
-    },
-    data: {
-      type: NotificationType.message
-    }
-  };
-};
-
-export const mateRequestPushNotification = (senderName: string): FBNotification => ({
-  notification: {
-    title: senderName,
-    body: 'wants to be your mate'
-  },
-  android: {
-    priority: 'high',
-    notification: { priority: 'max', channelId: '1' }
-  },
-  data: { type: NotificationType.friend_request }
-});

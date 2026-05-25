@@ -27,7 +27,7 @@ import {
 } from '../../notifications';
 import {
   commentReceivedNotification,
-  drawingReceivedNotification,
+  drawingReceivedNotification, drawingReceivedNotificationV1,
   matchNotification,
   sendFriendRequestNotification,
   unmatchNotification
@@ -218,7 +218,7 @@ export function registerV1Handlers(io: Server, socket: Socket) {
         if (retrievedFollower && retrievedFollower.subscriptions.length > 0) {
           await sendNotificationIncludingSilent(
             retrievedFollower.subscriptions,
-            drawingReceivedNotification(params._id, params.name, inboxItem!.thumbnail, inboxItem!._id)
+            drawingReceivedNotificationV1(params._id, params.name, inboxItem!.thumbnail, inboxItem!._id)
           );
         }
       }

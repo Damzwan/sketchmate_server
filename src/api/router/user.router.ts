@@ -13,13 +13,13 @@ import {
   createSaved, createSticker, deleteEmblem,
   deleteProfileImg, deleteSaved, deleteSticker,
   getUser,
-  s3Creator, subscribe, unsubscribe,
+  s3Creator, searchMate, subscribe, unsubscribe,
   updateUser,
   uploadProfileImg
 } from '../../mongodb';
 import { CONTAINER } from '../../s3';
 import {
-  ChangeUserNameParams,
+  ChangeUserNameParams, ENDPOINTS,
   FeedPost,
   RegisterNotificationParams, UnRegisterNotificationParams,
   UpdateUserParams,
@@ -29,6 +29,7 @@ import { LeanPost, RelationshipDocument, UserDocument } from '../../types/mongoo
 import { isUserOnline } from '../socket/socket';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
 import { migrateMatesToRelationships, parseParams, syncAndFinalizeMigrationStats } from '../../helper';
+import { router } from './router';
 
 export const userRouter = new Router();
 
@@ -437,4 +438,9 @@ userRouter.put('/subscribe', requireAuth, async (ctx) => {
 
 userRouter.put('/unsubscribe', requireAuth, async (ctx) => {
   ctx.body = await unsubscribe(parseParams<UnRegisterNotificationParams>(ctx.request.body));
+});
+
+userRouter.get(`/search_mate`, requireAuth, async (ctx) => {
+  const params = parseParams<{ mateName: string, user_id: string }>(ctx.query);
+  ctx.body = await searchMate(params.mateName, params.user_id);
 });

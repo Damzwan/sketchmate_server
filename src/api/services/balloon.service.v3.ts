@@ -6,7 +6,7 @@ import { BalloonDocument, RelationshipDocument } from '../../types/mongoose.type
 import { balloon_model } from '../../models/balloon.model';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
 import { userSocketMap } from '../socket/socket';
-import { balloonMatchNotification } from '../../config/notification.config';
+import { balloonMatchNotification, balloonMatchNotificationV2 } from '../../config/notification.config';
 import { sendNotificationUser } from '../../notifications';
 import dayjs from 'dayjs';
 import {
@@ -161,11 +161,6 @@ export async function acceptBalloonV3(params: {
     }
   );
 
-  // 7. Push notification to the original balloon sender
-  await sendNotificationUser(
-    params.sender_id,
-    balloonMatchNotification(`${acceptor.name} caught your balloon!`)
-  );
 
   const chatPayload = {
     message,
@@ -179,7 +174,7 @@ export async function acceptBalloonV3(params: {
     channels: {
       in_app: false,  // the convo is the record
       socket: { event: 'chat:receive_message', data: chatPayload },
-      push: balloonMatchNotification(`${acceptor.name} caught your balloon!`)
+      push: balloonMatchNotificationV2(acceptor.name, conversation._id.toString())
     }
   }).catch(err => console.error('Balloon match sender dispatch failed:', err));
 

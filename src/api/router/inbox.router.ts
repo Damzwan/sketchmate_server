@@ -96,7 +96,8 @@ inboxRouter.post(
         drawing_url,
         image_url,
         thumbnail_url,
-        aspect_ratio
+        aspect_ratio,
+        sender_img: ctx.state.user.img
       });
 
       ctx.status = 201;

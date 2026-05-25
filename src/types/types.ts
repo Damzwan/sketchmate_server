@@ -1,15 +1,23 @@
 // --- ENUMS & CONSTANTS ---
 
 export enum NotificationType {
+  // Current
+  balloon_match = 'balloon_match',
+  drawing_received = 'drawing_received',
+  lobby_invitation = 'lobby_invitation',
+  dm_message = 'dm_message',
+  moderation_strike = 'moderation_strike',
+  moderation_lifted = 'moderation_lifted',
+  mate_request = 'mate_request',
+  request_accepted = 'request_accepted',
+
+  // Legacy — remove with legacy config
   match = 'match',
   unmatch = 'unmatch',
   message = 'message',
   comment = 'comment',
   friend_request = 'friend_request',
-  balloon = 'balloon',
-  lobby_invitation = 'lobby_invitation',
-  moderation_strike = 'moderation_strike',
-  moderation_lifted = 'moderation_lifted'
+  balloon = 'balloon'
 }
 
 export enum ENDPOINTS {
@@ -817,6 +825,7 @@ export type NotificationKind =
   | 'follow'
   | 'moderation_strike'
   | 'moderation_lifted'
+  | 'lobby_invitation'
   | 'announcement';
 
 export type NotificationTargetType =
