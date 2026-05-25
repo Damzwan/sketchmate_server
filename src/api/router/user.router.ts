@@ -9,26 +9,40 @@ import { user_model } from '../../models/user.model';
 import { post_model, post_reaction_model } from '../../models/post.model';
 import { relationship_model } from '../../models/relationship.model';
 import {
-  changeUserName, createEmblem,
-  createSaved, createSticker, deleteEmblem,
-  deleteProfileImg, deleteSaved, deleteSticker,
-  getUser,
-  s3Creator, searchMate, subscribe, unsubscribe,
+  changeUserName,
+  createEmblem,
+  createSaved,
+  createSticker,
+  deleteEmblem,
+  deleteProfileImg,
+  deleteSaved,
+  deleteSticker,
+  getUser, onLoginEvent,
+  s3Creator,
+  searchMate,
   updateUser,
   uploadProfileImg
 } from '../../mongodb';
 import { CONTAINER } from '../../s3';
 import {
   ChangeUserNameParams, ENDPOINTS,
-  FeedPost,
-  RegisterNotificationParams, UnRegisterNotificationParams,
+  FeedPost, OnLoginEventParams,
+  RegisterNotificationParams,
+  UnRegisterNotificationParams,
   UpdateUserParams,
   UploadProfileImgParams
 } from '../../types/types';
 import { LeanPost, RelationshipDocument, UserDocument } from '../../types/mongoose.types';
 import { isUserOnline } from '../socket/socket';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
-import { migrateMatesToRelationships, parseParams, syncAndFinalizeMigrationStats } from '../../helper';
+import {
+  migrateMatesToRelationships,
+  parseParams,
+  shouldShowThoughtPrompt,
+  syncAndFinalizeMigrationStats
+} from '../../helper';
+import { subscribeV2, unsubscribeV2 } from '../services/user.service';
+import { getPublicLobbiesSnapshot } from '../socket/drawSyncing';
 import { router } from './router';
 
 export const userRouter = new Router();
@@ -343,10 +357,11 @@ userRouter.get('/public_users', requireAuth, async (ctx) => {
 });
 
 userRouter.get('/', requireAuth, async (ctx) => {
-  const auth_id = ctx.state.user.auth_id;
-  const _id = ctx.state.user._id.toString();
+  const auth_id = ctx.state.auth_id;
+  const _id = ctx.state.user?._id?.toString();
 
   const res = await getUser({ auth_id, _id });
+
   if (!res?.user) return ctx.throw(404, 'User not found');
 
   const user = res.user as any;
@@ -433,14 +448,69 @@ userRouter.delete('/saved', requireAuth, async (ctx) => {
 });
 
 userRouter.put('/subscribe', requireAuth, async (ctx) => {
-  ctx.body = await subscribe(parseParams<RegisterNotificationParams>(ctx.request.body));
+  ctx.body = await subscribeV2(parseParams<RegisterNotificationParams>(ctx.request.body));
 });
 
 userRouter.put('/unsubscribe', requireAuth, async (ctx) => {
-  ctx.body = await unsubscribe(parseParams<UnRegisterNotificationParams>(ctx.request.body));
+  ctx.body = await unsubscribeV2(parseParams<UnRegisterNotificationParams>(ctx.request.body));
 });
 
 userRouter.get(`/search_mate`, requireAuth, async (ctx) => {
   const params = parseParams<{ mateName: string, user_id: string }>(ctx.query);
   ctx.body = await searchMate(params.mateName, params.user_id);
+});
+
+userRouter.get(`/lobbies`, async (ctx) => {
+  ctx.body = getPublicLobbiesSnapshot(ctx.app.context.io);
+});
+
+userRouter.put(`/login`, async (ctx) => {
+  ctx.body = await onLoginEvent(parseParams<OnLoginEventParams>(ctx.request.body));
+});
+
+userRouter.post('/engagement/action', requireAuth, async (ctx) => {
+  const userId = ctx.state.user._id;
+
+  // Atomic increment of the counter
+  const updated = await user_model.findByIdAndUpdate(
+    userId,
+    { $inc: { 'engagement_metadata.tasks_completed_since_last_prompt': 1 } },
+    { new: true }
+  );
+
+  if (!updated) {
+    ctx.status = 404;
+    return;
+  }
+
+  const shouldPrompt = shouldShowThoughtPrompt(updated);
+
+  if (shouldPrompt) {
+    // Atomically: stamp the time, reset counter, bump lifetime total
+    await user_model.updateOne(
+      { _id: userId },
+      {
+        $set: {
+          'engagement_metadata.last_thought_prompt_at': new Date(),
+          'engagement_metadata.tasks_completed_since_last_prompt': 0
+        },
+        $inc: { 'engagement_metadata.total_thought_prompts_shown': 1 }
+      }
+    );
+  }
+
+  ctx.body = { should_prompt: shouldPrompt };
+});
+
+// PUT /user/engagement/opt-out
+userRouter.put('/engagement/opt-out', requireAuth, async (ctx) => {
+  const userId = ctx.state.user._id;
+  const { opted_out } = ctx.request.body as { opted_out: boolean };
+
+  await user_model.updateOne(
+    { _id: userId },
+    { $set: { 'engagement_metadata.feedback_opted_out': !!opted_out } }
+  );
+
+  ctx.status = 204;
 });

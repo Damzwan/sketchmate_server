@@ -16,6 +16,13 @@ const customizationSchema = new Schema({
   minimize: false
 });
 
+const engagementMetadataSchema = new Schema({
+  last_thought_prompt_at: { type: Date, default: null },
+  total_thought_prompts_shown: { type: Number, default: 0 },
+  tasks_completed_since_last_prompt: { type: Number, default: 0 },
+  feedback_opted_out: { type: Boolean, default: false }
+}, { _id: false });
+
 const statsSchema = new Schema({
   posts: { type: Number, default: 0 },
   followers: { type: Number, default: 0 },
@@ -55,7 +62,8 @@ export const notificationSchema = new Schema<NotificationSubscription>({
   fingerprint: { type: String, required: true },
   model: { type: String, required: true },
   os: { type: String, required: true },
-  logged_in: { type: Boolean, required: true }
+  logged_in: { type: Boolean, required: true },
+  updated_at: { type: Date, required: false }
 });
 
 const user_schema = new Schema<UserDocument>({
@@ -69,6 +77,7 @@ const user_schema = new Schema<UserDocument>({
 
   restriction: { type: restrictionSchema, default: () => ({}) },
   strike_summary: { type: strikeSummarySchema, default: () => ({}) },
+  engagement_metadata: { type: engagementMetadataSchema, default: () => ({}) },
 
   mate_requests_received: { type: [String], default: [] },
   mate_requests_sent: { type: [String], default: [] },
@@ -106,5 +115,9 @@ user_schema.index({ name: 'text' });
 user_schema.index({ migration_version: 1 });
 user_schema.index({ 'restriction.level': 1, 'restriction.expires_at': 1 });
 user_schema.index({ 'strike_summary.active_strikes': -1 });
+user_schema.index(
+  { _id: 1, 'subscriptions.fingerprint': 1 },
+  { unique: false }
+);
 
 export const user_model = mongoose.model<UserDocument>('users', user_schema);

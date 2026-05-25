@@ -81,17 +81,6 @@ router.get(ENDPOINTS.user, async (ctx) => {
 
   const user = res.user as any;
 
-  if ((user.migration_version || 0) < 1) {
-    const newStats = await syncAndFinalizeMigrationStats(user);
-
-    migrateMatesToRelationships(user._id, user.mates)
-      .catch(err => console.error('Mates migration failed:', err));
-
-    user.stats = newStats;
-    user.mates = [];
-    user.migration_version = 1;
-  }
-
   if (!user.customization) user.customization = {};
   ctx.body = res;
 });
@@ -233,7 +222,7 @@ router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
 
   const decompressedBuffer = await inflateAsync(compressedBuffer);
   params.drawing = JSON.parse(decompressedBuffer.toString('utf-8'));
-  params.version = 1
+  params.version = 1;
 
   const balloon = await createBalloon(params);
   if (!balloon) return;

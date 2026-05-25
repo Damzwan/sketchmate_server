@@ -14,6 +14,7 @@ import { relationship_model } from './models/relationship.model';
 import { Types } from 'mongoose';
 import { UserDocument } from './types/mongoose.types';
 import { post_model } from './models/post.model';
+import { User } from './types/types';
 
 export function parseParams<T>(params: ParsedUrlQuery | string): T {
   const newParams = typeof params === 'string' ? JSON.parse(params) : params;
@@ -211,4 +212,31 @@ export async function syncAndFinalizeMigrationStats(user: UserDocument) {
   );
 
   return initialStats;
+}
+
+const MAX_LIFETIME_PROMPTS = 5;
+const MIN_TASKS_BEFORE_PROMPT = 3;
+const BASE_COOLDOWN_DAYS = 7;
+
+export function shouldShowThoughtPrompt(user: UserDocument): boolean {
+  const meta = user.engagement_metadata;
+  if (!meta) return false;
+  if (meta.feedback_opted_out) return false;
+
+  const totalShown = meta.total_thought_prompts_shown ?? 0;
+  if (totalShown >= MAX_LIFETIME_PROMPTS) return false;
+
+  const tasksDone = meta.tasks_completed_since_last_prompt ?? 0;
+  if (tasksDone < MIN_TASKS_BEFORE_PROMPT) return false;
+
+  // First-ever prompt: qualifies as soon as task threshold is met
+  if (!meta.last_thought_prompt_at) return true;
+
+  const daysSinceLastPrompt =
+    (Date.now() - new Date(meta.last_thought_prompt_at).getTime()) / (1000 * 60 * 60 * 24);
+
+  // Cooldown grows each time: 7, 14, 21, 28 days
+  const requiredCooldown = BASE_COOLDOWN_DAYS * totalShown;
+
+  return daysSinceLastPrompt >= requiredCooldown;
 }
