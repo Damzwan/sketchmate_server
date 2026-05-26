@@ -612,6 +612,21 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
   socket.on('watch-public-lobbies', () => {
     socket.join('public-lobby-watchers');
+
+
+    const lobbies = Array.from(PUBLIC_LOBBY_ROOMS.values()).map(room => {
+      const clients = io.sockets.adapter.rooms.get(room.id);
+
+      return {
+        id: room.id,
+        name: room.name,
+        users: clients ? clients.size : 0,
+        maxUsers: room.maxUsers,
+        thumbnailUrl: room.thumbnailUrl
+      };
+    });
+
+    socket.emit('public-lobbies-update', lobbies);
   });
 
   socket.on('unwatch-public-lobbies', () => {
