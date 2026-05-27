@@ -4,12 +4,12 @@ export const QUOTAS: Record<SubscriptionTier, DailyQuota> = {
   free: {
     balloons_per_day: 2,
     posts_per_day: 2,
-    max_mates: 5
+    max_mates: 10
   },
   pro: {
     balloons_per_day: 5,
     posts_per_day: 6,
-    max_mates: 10
+    max_mates: 50
   }
 };
 
