@@ -34,7 +34,7 @@ import {
 } from '../../types/types';
 import { LeanPost, RelationshipDocument, UserDocument } from '../../types/mongoose.types';
 import { isUserOnline } from '../socket/socket';
-import { PUBLIC_USER_FIELDS } from '../../types/projections';
+import { COMPLETE_PUBLIC_USER_FIELDS, PUBLIC_USER_FIELDS } from '../../types/projections';
 import {
   migrateMatesToRelationships,
   parseParams,
@@ -228,7 +228,7 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
       connection,
       posts
     ] = await Promise.all([
-      user_model.findById(targetId).select(PUBLIC_USER_FIELDS).lean() as Promise<UserDocument | null>,
+      user_model.findById(targetId).select(COMPLETE_PUBLIC_USER_FIELDS).lean() as Promise<UserDocument | null>,
       relationship_model.findOne({ users: sortedUsers }).lean() as Promise<RelationshipDocument | null>,
       post_model.find({
         author_id: targetId,
