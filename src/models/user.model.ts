@@ -2,6 +2,7 @@ import mongoose, { Schema } from 'mongoose';
 import { Mate, NotificationSubscription, Saved } from '../types/types';
 import { UserDocument } from '../types/mongoose.types';
 
+
 const customizationSchema = new Schema({
   themeId: { type: String, default: 'classic' },
   fontId: { type: String, default: 'sketch' },
@@ -10,7 +11,9 @@ const customizationSchema = new Schema({
   effectId: { type: String, default: 'none' },
   titleId: { type: String, default: '' },
   signaturePath: { type: String, default: '' },
-  signatureViewBox: { type: String, default: '' }
+  signatureViewBox: { type: String, default: '' },
+  backgroundSketchPath: { type: String, default: '' },
+  backgroundSketchViewBox: { type: String, default: '' }
 }, {
   _id: false,
   minimize: false

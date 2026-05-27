@@ -12,5 +12,7 @@ export const PUBLIC_USER_FIELDS = [
   'customization.decorationId',
   'customization.titleId',
   'customization.signaturePath',
-  'customization.signatureViewBox'
+  'customization.signatureViewBox',
+  'customization.backgroundSketchPath',
+  'customization.backgroundSketchViewBox',
 ].join(' ');
