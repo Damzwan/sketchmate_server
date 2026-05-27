@@ -622,7 +622,8 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
         name: room.name,
         users: clients ? clients.size : 0,
         maxUsers: room.maxUsers,
-        thumbnailUrl: room.thumbnailUrl
+        thumbnailUrl: room.thumbnailUrl,
+        premiumSlots: room.premiumSlots,
       };
     });
 
@@ -654,7 +655,8 @@ function broadcastLobbyOccupancy(io: Server) {
         name: room.name,
         users: clients ? clients.size : 0,
         maxUsers: room.maxUsers,
-        thumbnailUrl: room.thumbnailUrl
+        thumbnailUrl: room.thumbnailUrl,
+        premiumSlots: room.premiumSlots,
       };
     });
 
