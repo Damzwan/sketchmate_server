@@ -274,7 +274,7 @@ relationshipRouter.put('/follow/:target_id', async (ctx) => {
     aggregation_key: `follow:${targetId}`,
     target_type: 'user',
     target_id: followerId,
-    channels: { in_app: true}
+    channels: { in_app: true }
   }).catch(err => console.error('Follow dispatch failed:', err));
 
   ctx.body = { isFollowing: true };
@@ -377,7 +377,6 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
     { users: sortedUsers },
     {
       $set: {
-        conversation_id: null,
         chat_status: 'expired',
         cooldown_until: dayjs().add(48, 'hours').toDate(),
         deleted_at: dayjs().add(30, 'days').toDate(),
@@ -405,14 +404,17 @@ relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capa
   const { conversation_id } = ctx.params;
   const user_id = ctx.state.user._id;
 
+
   await assertMateQuota(user_id.toString());
 
+  console.log(conversation_id);
   const rel = await relationship_model.findOneAndUpdate(
     { conversation_id: new Types.ObjectId(conversation_id) },
     { $set: { chat_status: 'pending_mate', action_user_id: user_id } },
     { new: true }
   );
 
+  console.log(rel)
   if (!rel) return ctx.throw(404, 'Relationship not found');
 
   const partnerId = rel.users.find(u => u.toString() !== user_id.toString());

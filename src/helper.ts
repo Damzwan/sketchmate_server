@@ -200,13 +200,17 @@ export async function syncAndFinalizeMigrationStats(user: UserDocument) {
     posts: postsCount
   };
 
-  // Atomic update: Mark as migrated, set stats, and clear legacy array
   await user_model.updateOne(
     { _id: user._id },
     {
       $set: {
         migration_version: 1,
         stats: initialStats
+      },
+      $unset: {
+        inbox: '',
+        mate_requests_received: '',
+        mate_requests_sent: ''
       }
     }
   );
