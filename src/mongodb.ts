@@ -145,6 +145,7 @@ export async function getInboxItems(params: GetInboxItemsParams): Promise<GetInb
       reply: doc.reply ? (doc.reply as any) : undefined // Maintain current reply logic
     })) as unknown as InboxItem[];
 
+
     const uniqueUserIds = Array.from(new Set(inboxItems.reduce((acc: string[], curr) => acc.concat(curr.original_followers), [])));
     const userInfo = await getPartialUsers(uniqueUserIds);
 
@@ -769,7 +770,7 @@ export async function searchMate(
 
     return docs.map(doc => ({
       ...doc,
-      _id: doc._id.toString(),
+      _id: doc._id.toString()
     })) as Mate[];
   } catch (e: any) {
     throw new Error(e.message || e);
