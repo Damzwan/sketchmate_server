@@ -106,7 +106,12 @@ router.get(ENDPOINTS.partial_users, async (ctx) => {
 
 router.get(ENDPOINTS.inbox, async (ctx) => {
   const params = ctx.query as any;
-  params._ids = params._ids.split(',');
+  let ids = (params._ids || '').split(',');
+  if (ids.length > 50) {
+    ids = ids.slice(-50);
+  }
+
+  params._ids = ids;
   ctx.body = await getInboxItems(parseParams<GetInboxItemsParams>(params));
 });
 

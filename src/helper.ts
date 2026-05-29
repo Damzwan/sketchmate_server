@@ -207,11 +207,6 @@ export async function syncAndFinalizeMigrationStats(user: UserDocument) {
         migration_version: 1,
         stats: initialStats
       },
-      $unset: {
-        inbox: '',
-        mate_requests_received: '',
-        mate_requests_sent: ''
-      }
     }
   );
 
