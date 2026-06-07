@@ -50,6 +50,7 @@ export async function createInboxItem(params: CreateInboxItemParams): Promise<In
     original_followers: followerObjectIds as any,
     seen_by: [senderObjectId],
     comments_seen_by: [senderObjectId],
+    comments_migrated: true,
     comments: []
   };
 
