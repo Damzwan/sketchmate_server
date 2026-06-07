@@ -8,11 +8,11 @@ import {
   CreateStickerParams,
   DeleteEmblemParams,
   DeleteSavedParams,
-  DeleteStickerParams,
+  DeleteStickerParams, GetInboxCommentsRes,
   GetInboxItemsParams,
   GetInboxRes,
   GetUserParams,
-  GetUserRes,
+  GetUserRes, InboxComment,
   InboxItem,
   MatchParams,
   Mate,
@@ -46,6 +46,8 @@ import { minimum_online_version, minimum_supported_version } from './main';
 import { balloon_model } from './models/balloon.model';
 import { mixpanelEvents, trackEvent } from './mixpanel';
 import { PUBLIC_USER_FIELDS } from './types/projections';
+import { inbox_comment_model } from './models/inbox-comment.model';
+import { serializeInboxComment } from './api/services/inbox.service';
 
 export let s3Creator: S3Creator;
 
@@ -132,21 +134,42 @@ export async function getUser(params: GetUserParams): Promise<Res<GetUserRes>> {
 export async function getInboxItems(params: GetInboxItemsParams): Promise<GetInboxRes> {
   try {
     const docs = await inbox_model
-      .find({
-        _id: { $in: params._ids }
-      })
+      .find({ _id: { $in: params._ids } })
       .lean() as InboxDocument[];
 
-    const inboxItems: InboxItem[] = docs.map(doc => ({
-      ...doc,
-      _id: doc._id.toString(),
-      sender: doc.sender.toString(),
-      date: doc.date.toISOString(),
-      reply: doc.reply ? (doc.reply as any) : undefined // Maintain current reply logic
-    })) as unknown as InboxItem[];
+    const migratedIds = docs.filter((d: any) => d.comments_migrated).map((d: any) => d._id);
 
+    // full comment lists for migrated items, ascending to match the old embedded (insertion) order
+    const grouped = migratedIds.length
+      ? await inbox_comment_model.aggregate([
+        { $match: { inbox_id: { $in: migratedIds }, status: 'active' } },
+        { $sort: { date: 1 } },
+        { $group: { _id: '$inbox_id', comments: { $push: '$$ROOT' } } }
+      ])
+      : [];
+    const byInbox = new Map(grouped.map((g: any) => [g._id.toString(), g.comments]));
 
-    const uniqueUserIds = Array.from(new Set(inboxItems.reduce((acc: string[], curr) => acc.concat(curr.original_followers), [])));
+    const inboxItems: InboxItem[] = docs.map((doc: any) => {
+      const comments: InboxComment[] = doc.comments_migrated
+        ? (byInbox.get(doc._id.toString()) ?? []).map((c: any) => serializeInboxComment(c))
+        : (Array.isArray(doc.comments) ? doc.comments : [])
+          .filter((c: any) => c.status !== 'under_review' && c.status !== 'removed')
+          .map((c: any) => serializeInboxComment(c, doc._id.toString()));
+
+      return {
+        ...doc,
+        comments,
+        comment_count: comments.length, // extra field, old clients ignore it
+        _id: doc._id.toString(),
+        sender: doc.sender.toString(),
+        date: doc.date.toISOString(),
+        reply: doc.reply ? (doc.reply as any) : undefined
+      };
+    }) as unknown as InboxItem[];
+
+    const uniqueUserIds = Array.from(new Set(
+      inboxItems.reduce((acc: string[], curr) => acc.concat(curr.original_followers), [])
+    ));
     const userInfo = await getPartialUsers(uniqueUserIds);
 
     return { inboxItems, userInfo };
@@ -314,7 +337,8 @@ export async function storeMessage(params: SendParams): Promise<Res<InboxItem>> 
       original_followers: params.followers,
       seen_by: [new Types.ObjectId(params._id)],
       comments_seen_by: [new Types.ObjectId(params._id)],
-      comments: []
+      comments: [],
+      comments_migrated: true
     };
 
     await Promise.all([
@@ -777,52 +801,4 @@ export async function searchMate(
   }
 }
 
-export async function getInboxItemsV2(params: {
-  user_id: string,
-  limit: number,
-  lastDate?: Date
-}): Promise<GetInboxRes> {
-  try {
-    // SECURE & BACKWARDS COMPATIBLE: Exclude only quarantined/removed items.
-    // Legacy items without a status field will be safely included.
-    const query: any = {
-      followers: params.user_id,
-      status: { $nin: ['under_review', 'removed'] }
-    };
 
-    if (params.lastDate) {
-      query.date = { $lt: params.lastDate };
-    }
-
-    const docs = await inbox_model
-      .find(query)
-      .sort({ date: -1 })
-      .limit(params.limit)
-      .lean() as InboxDocument[];
-
-    const inboxItems: InboxItem[] = docs.map((doc: any) => {
-      if (doc.comments && Array.isArray(doc.comments)) {
-        doc.comments = doc.comments.filter((c: any) =>
-          c.status !== 'under_review' && c.status !== 'removed'
-        );
-      }
-
-      return {
-        ...doc,
-        _id: doc._id.toString(),
-        sender: doc.sender.toString(),
-        date: doc.date.toISOString()
-      };
-    }) as unknown as InboxItem[];
-
-    const uniqueUserIds = Array.from(new Set(
-      inboxItems.reduce((acc: string[], curr) => acc.concat(curr.original_followers), [])
-    ));
-
-    const userInfo = await getPartialUsers(uniqueUserIds);
-
-    return { inboxItems, userInfo };
-  } catch (e) {
-    throw new Error('Failed to fetch inbox batch');
-  }
-}
