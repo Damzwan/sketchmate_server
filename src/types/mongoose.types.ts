@@ -6,7 +6,7 @@ import {
   BasePost,
   BasePostComment,
   BasePostReaction,
-  BaseRelationship, Comment, InboxItem,
+  BaseRelationship, Comment, InboxComment, InboxItem,
   User
 } from './types';
 import { Document } from 'mongodb';
@@ -134,6 +134,7 @@ export interface InboxDocument extends Omit<InboxItem, '_id' | 'sender' | 'reply
   seen_by: Types.ObjectId[];
   comments_seen_by: Types.ObjectId[];
   date: Date;
+  comments_migrated?: boolean;
 }
 
 export interface BalloonDocument extends Omit<Balloon, '_id' | 'sender' | 'pairedUser' | 'pairedBalloon' | 'cancelledBalloons' | 'rejected_by' | 'createdAt' | 'matchedAt' | 'lastActivityAt'> {
@@ -162,4 +163,11 @@ export interface NotificationDocument
   actors: Array<Omit<NotificationActor, '_id'> & { _id: Types.ObjectId }>;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface InboxCommentDocumentV2 extends Omit<InboxComment, '_id' | 'sender' | 'inbox_id' | 'date'> {
+  _id: Types.ObjectId;
+  inbox_id: Types.ObjectId;
+  sender: Types.ObjectId;
+  date: Date;
 }

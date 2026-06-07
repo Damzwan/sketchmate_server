@@ -35,6 +35,7 @@ import {
 import { checkSocketCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
 import { userSocketMap } from './socket';
+import { createInboxComment } from '../services/inbox.service';
 
 const inflateAsync = promisify(zlib.inflate);
 
@@ -203,7 +204,8 @@ export function registerV1Handlers(io: Server, socket: Socket) {
 
       resetChunkState();
 
-      const inboxItem = await storeMessage(params);
+      let inboxItem: any = await storeMessage(params);
+      inboxItem = {...inboxItem, comment_count: 0}
       if (!inboxItem) return;
 
       for (const follower of inboxItem.followers) {
@@ -249,25 +251,36 @@ export function registerV1Handlers(io: Server, socket: Socket) {
       return;
     }
 
-    const createdComment = await comment(params);
-    const commentRes: CommentRes = {
-      comment: createdComment,
-      inbox_item_id: params.inbox_id
-    };
+    try {
+      // collection write — lazy-migrates the item's embedded comments on first write
+      const createdComment = await createInboxComment(params);
+      const commentRes: CommentRes = {
+        comment: createdComment,
+        inbox_item_id: params.inbox_id
+      };
 
-    for (const follower of params.followers) {
-      if (userSocketMap[follower]) {
-        userSocketMap[follower].forEach((mateSocket) => {
-          mateSocket.emit(SOCKET_ENDPONTS.comment, commentRes);
-        });
+      for (const follower of params.followers) {
+        if (userSocketMap[follower]) {
+          userSocketMap[follower].forEach((mateSocket) => {
+            mateSocket.emit(SOCKET_ENDPONTS.comment, commentRes);
+          });
+        }
+
+        if (follower == params.sender) continue;
+        const retrievedFollower = await getUserSubscription({ _id: follower });
+        if (retrievedFollower && retrievedFollower.subscriptions.length > 0)
+          await sendNotification(
+            retrievedFollower.subscriptions,
+            commentReceivedNotification(params.name, params.inbox_id)
+          );
       }
-
-      if (follower == params.sender) continue;
-      const retrievedFollower = await getUserSubscription({ _id: follower });
-      if (retrievedFollower && retrievedFollower.subscriptions.length > 0)
-        await sendNotification(retrievedFollower.subscriptions, commentReceivedNotification(params.name, params.inbox_id));
+    } catch (err) {
+      // new write can throw (e.g. item not found) — old handler swallowed this silently
+      console.error('inbox comment (v2) failed:', err);
+      socket.emit('comment-error', { inbox_id: params.inbox_id });
     }
   });
+
 
   // ─────────────────────────────────────────────────────────────
   // LEGACY MATE REQUESTS (v1)
