@@ -51,7 +51,8 @@ export async function createInboxItem(params: CreateInboxItemParams): Promise<In
     seen_by: [senderObjectId],
     comments_seen_by: [senderObjectId],
     comments_migrated: true,
-    comments: []
+    comments: [],
+    comment_count: 0
   };
 
   await Promise.all([
@@ -190,8 +191,8 @@ export async function getInboxItemsV2(params: {
     const docs = await inbox_model
       .find(query).sort({ date: -1 }).limit(params.limit).lean() as InboxDocument[];
 
-    // Pull newest-N + active count for migrated items in a single round-trip.
-    // $topN keeps only N docs per group (not all of them), $sum gives the count for free.
+    // Pull newest-N for migrated items.
+    // We add $sum back here specifically to calculate the count for items that need on-the-fly migration.
     const migratedIds = docs.filter((d: any) => d.comments_migrated).map((d: any) => d._id);
     const grouped = migratedIds.length
       ? await inbox_comment_model.aggregate([
@@ -207,19 +208,42 @@ export async function getInboxItemsV2(params: {
       : [];
     const byInbox = new Map(grouped.map((g: any) => [g._id.toString(), g]));
 
+    const backfillPromises: Promise<any>[] = []; // Track missing comment_count migrations
+
     const inboxItems: InboxItem[] = docs.map((doc: any) => {
       let comments: InboxComment[] = [];
       let comment_count: number;
 
       if (doc.comments_migrated) {
         const g = byInbox.get(doc._id.toString());
-        comment_count = g?.count ?? 0;
+        const dynamicCount = g?.count ?? 0;
+
+        // If count is missing from the document, migrate it as we go
+        if (typeof doc.comment_count === 'number') {
+          comment_count = doc.comment_count;
+        } else {
+          comment_count = dynamicCount;
+          backfillPromises.push(
+            inbox_model.updateOne({ _id: doc._id }, { $set: { comment_count: dynamicCount } })
+          );
+        }
+
         // $topN returns newest-first; reverse to oldest->newest for the drawer
         comments = (g?.newest ?? []).reverse().map(serializeInboxComment);
       } else {
         const active = (Array.isArray(doc.comments) ? doc.comments : [])
           .filter((c: any) => c.status !== 'under_review' && c.status !== 'removed');
-        comment_count = active.length;
+
+        // If count is missing from the document, migrate it as we go
+        if (typeof doc.comment_count === 'number') {
+          comment_count = doc.comment_count;
+        } else {
+          comment_count = active.length;
+          backfillPromises.push(
+            inbox_model.updateOne({ _id: doc._id }, { $set: { comment_count: active.length } })
+          );
+        }
+
         comments = active
           .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime())
           .slice(0, GALLERY_COMMENT_LIMIT)
@@ -236,6 +260,13 @@ export async function getInboxItemsV2(params: {
         date: doc.date.toISOString()
       };
     }) as unknown as InboxItem[];
+
+    // Fire and forget the background migrations so we don't delay the API response
+    if (backfillPromises.length > 0) {
+      Promise.all(backfillPromises).catch(err => {
+        console.error('Failed to backfill missing comment_counts during getInboxItemsV2:', err);
+      });
+    }
 
     const uniqueUserIds = Array.from(new Set(
       inboxItems.reduce((acc: string[], curr) => acc.concat(curr.original_followers), [])
@@ -301,7 +332,7 @@ export async function createInboxComment(params: CommentParams): Promise<InboxCo
   const inboxObjectId = new Types.ObjectId(params.inbox_id);
 
   const doc = await inbox_model
-    .findById(inboxObjectId).select('comments comments_migrated').lean() as any;
+    .findById(inboxObjectId).select('comments comments_migrated comment_count').lean() as any;
   if (!doc) throw new Error('Inbox item not found');
 
   if (!doc.comments_migrated) {
@@ -314,12 +345,20 @@ export async function createInboxComment(params: CommentParams): Promise<InboxCo
       status: c.status === 'removed' ? 'removed' : 'active',
       reports_count: c.reports_count ?? 0
     }));
+
     if (legacy.length) {
       await inbox_comment_model.insertMany(legacy, { ordered: false });
     }
+
     await inbox_model.updateOne(
       { _id: inboxObjectId },
-      { $set: { comments_migrated: true, comments: [] } }
+      {
+        $set: {
+          comments_migrated: true,
+          comments: [],
+          comment_count: legacy.length // Initialize to current array length when migrating
+        }
+      }
     );
   }
 
@@ -331,6 +370,12 @@ export async function createInboxComment(params: CommentParams): Promise<InboxCo
     status: 'active',
     reports_count: 0
   });
+
+  // Increment the native count
+  await inbox_model.updateOne(
+    { _id: inboxObjectId },
+    { $inc: { comment_count: 1 } }
+  );
 
   return serializeInboxComment(created.toObject());
 }

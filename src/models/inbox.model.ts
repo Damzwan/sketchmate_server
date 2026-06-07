@@ -45,6 +45,7 @@ const inbox_schema = new Schema<InboxDocument>(
     reply: { type: ObjectId, ref: 'inbox', required: false },
     comments: { type: [comment_schema], required: false },
     comments_migrated: { type: Boolean, default: false },
+    comment_count: { type: Number, default: 0 },
 
     status: {
       type: String,

@@ -604,26 +604,33 @@ postRouter.delete('/:post_id', requireAuth, async (ctx) => {
 
 postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
   const { post_id } = ctx.params;
-  const page = parseInt(ctx.query.page as string) || 1;
   const limit = parseInt(ctx.query.limit as string) || 20;
-  const skip = (page - 1) * limit;
+  const beforeDate = ctx.query.beforeDate ? new Date(ctx.query.beforeDate as string) : undefined;
 
   try {
-    const comments = await post_comment_model.find({
+    const query: any = {
       post_id: new Types.ObjectId(post_id),
       status: { $nin: ['under_review', 'removed'] }
-    })
-      .sort({ createdAt: 1 }) // Chronological order (oldest first) so chat feels natural
-      .skip(skip)
-      .limit(limit)
+    };
+
+    if (beforeDate) {
+      query.createdAt = { $lte: beforeDate }; // <= includes boundary, frontend dedupes by _id
+    }
+
+    const comments = await post_comment_model.find(query)
+      .sort({ createdAt: -1 }) // Get newest first
+      .limit(limit + 1)
       .lean() as any[];
 
-    if (comments.length === 0) {
-      ctx.body = { comments: [] };
+    const hasMore = comments.length > limit;
+    const pageComments = comments.slice(0, limit).reverse(); // Reverse so UI maps top to bottom chronologically
+
+    if (pageComments.length === 0) {
+      ctx.body = { comments: [], hasMore: false };
       return;
     }
 
-    const authorIds = [...new Set(comments.map(c => c.author_id.toString()))].map(id => new Types.ObjectId(id));
+    const authorIds = [...new Set(pageComments.map(c => c.author_id.toString()))].map(id => new Types.ObjectId(id));
 
     const authors = await user_model.find({
       _id: { $in: authorIds }
@@ -634,7 +641,7 @@ postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
       return acc;
     }, {} as Record<string, UserDocument>);
 
-    const hydratedComments: BasePostComment[] = comments.map(comment => {
+    const hydratedComments: BasePostComment[] = pageComments.map(comment => {
       const author = authorMap[comment.author_id.toString()];
       return {
         ...comment,
@@ -648,7 +655,7 @@ postRouter.get('/:post_id/comments', requireAuth, async (ctx) => {
     });
 
     ctx.status = 200;
-    ctx.body = { comments: hydratedComments };
+    ctx.body = { comments: hydratedComments, hasMore };
   } catch (error) {
     console.error('Fetch comments error:', error);
     ctx.status = 500;

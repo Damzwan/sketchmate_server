@@ -400,7 +400,8 @@ export async function acceptBalloonCleanUp(params: { balloon: Balloon, otherBall
       comments: [],
       aspect_ratio: params.balloon.aspect_ratio,
       status: 'active',
-      reports_count: 0
+      reports_count: 0,
+      comment_count: 0,
     };
 
     const inboxItem2: InboxItem = {
@@ -417,7 +418,8 @@ export async function acceptBalloonCleanUp(params: { balloon: Balloon, otherBall
       comments: [],
       aspect_ratio: params.otherBalloon.aspect_ratio,
       status: 'active',
-      reports_count: 0
+      reports_count: 0,
+      comment_count: 0
     };
 
     await Promise.all([
@@ -611,7 +613,8 @@ export async function v2AcceptBalloonCleanUp(balloon: any, acceptorId: string): 
       comments: [],
       aspect_ratio: balloon.aspect_ratio,
       status: 'active',
-      reports_count: 0
+      reports_count: 0,
+      comment_count: 0,
     };
 
     await Promise.all([

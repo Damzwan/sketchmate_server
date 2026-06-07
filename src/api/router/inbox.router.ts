@@ -65,6 +65,23 @@ inboxRouter.post('/see/:inboxId', requireAuth, async (ctx) => {
   });
 });
 
+inboxRouter.get('/:inboxId/comments', requireAuth, async (ctx) => {
+  const { inboxId } = ctx.params;
+  const { limit, beforeDate } = ctx.query as any;
+
+  if (!inboxId) {
+    ctx.status = 400;
+    ctx.body = { error: 'inboxId is required' };
+    return;
+  }
+
+  ctx.body = await getInboxCommentsV2({
+    inbox_id: inboxId,
+    limit: parseInt(limit) || 20,
+    beforeDate: beforeDate ? new Date(beforeDate) : undefined
+  });
+});
+
 /**
  * V2 PRESIGNED UPLOAD URLs
  * Client uploads the drawing blob, image, and thumbnail directly to S3,

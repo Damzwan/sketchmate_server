@@ -350,6 +350,7 @@ export interface InboxItem {
   sender: string;
   reply?: InboxItem;
   comments: Comment[]; // @deprecated
+  comment_count: number;
   aspect_ratio: number;
   seen_by: string[];
   comments_seen_by: string[];
@@ -904,5 +905,3 @@ export interface Notification {
   createdAt: string;
   updatedAt: string;
 }
-
-
