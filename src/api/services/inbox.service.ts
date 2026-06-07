@@ -12,7 +12,7 @@ import { InboxDocument } from '../../types/mongoose.types';
 import { inbox_model } from '../../models/inbox.model';
 import { user_model } from '../../models/user.model';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
-import { comment, getPartialUsers } from '../../mongodb';
+import { getPartialUsers } from '../../mongodb';
 import { relationship_model } from '../../models/relationship.model';
 import { saveMessageLogic } from './chat.service';
 import { dispatchNotification } from './notification.service';
@@ -191,56 +191,87 @@ export async function getInboxItemsV2(params: {
     const docs = await inbox_model
       .find(query).sort({ date: -1 }).limit(params.limit).lean() as InboxDocument[];
 
-    // Pull newest-N for migrated items.
-    // We add $sum back here specifically to calculate the count for items that need on-the-fly migration.
+    // 1. Identify which items need what
     const migratedIds = docs.filter((d: any) => d.comments_migrated).map((d: any) => d._id);
-    const grouped = migratedIds.length
-      ? await inbox_comment_model.aggregate([
-        { $match: { inbox_id: { $in: migratedIds }, status: 'active' } },
-        {
-          $group: {
-            _id: '$inbox_id',
-            count: { $sum: 1 },
-            newest: { $topN: { n: GALLERY_COMMENT_LIMIT, sortBy: { date: -1 }, output: '$$ROOT' } }
+    const idsNeedingCount = docs.filter((d: any) => d.comments_migrated && typeof d.comment_count !== 'number').map((d: any) => d._id);
+
+    let groupedComments: any[] = [];
+    let groupCounts: any[] = [];
+
+    // 2. Fetch comments and counts optimally in parallel
+    if (migratedIds.length > 0) {
+      const promises: Promise<any>[] = [
+        // Always fetch the first 4 comments (highly optimized Top-K scan)
+        inbox_comment_model.aggregate([
+          { $match: { inbox_id: { $in: migratedIds }, status: 'active' } },
+          {
+            $group: {
+              _id: '$inbox_id',
+              newest: { $topN: { n: GALLERY_COMMENT_LIMIT, sortBy: { date: 1 }, output: '$$ROOT' } }
+            }
           }
-        }
-      ])
-      : [];
-    const byInbox = new Map(grouped.map((g: any) => [g._id.toString(), g]));
+        ])
+      ];
 
-    const backfillPromises: Promise<any>[] = []; // Track missing comment_count migrations
+      // Only perform the expensive full-scan $sum for items actually missing the count
+      if (idsNeedingCount.length > 0) {
+        promises.push(
+          inbox_comment_model.aggregate([
+            { $match: { inbox_id: { $in: idsNeedingCount }, status: 'active' } },
+            {
+              $group: {
+                _id: '$inbox_id',
+                count: { $sum: 1 }
+              }
+            }
+          ])
+        );
+      }
 
+      const results = await Promise.all(promises);
+      groupedComments = results[0];
+      if (idsNeedingCount.length > 0) {
+        groupCounts = results[1];
+      }
+    }
+
+    // 3. Create lookup maps for O(1) assignment
+    const commentsMap = new Map(groupedComments.map((g: any) => [g._id.toString(), g.newest]));
+    const countsMap = new Map(groupCounts.map((g: any) => [g._id.toString(), g.count]));
+
+    const backfillPromises: Promise<any>[] = [];
+
+    // 4. Map everything together
     const inboxItems: InboxItem[] = docs.map((doc: any) => {
       let comments: InboxComment[] = [];
-      let comment_count: number;
+      let comment_count = 0;
 
       if (doc.comments_migrated) {
-        const g = byInbox.get(doc._id.toString());
-        const dynamicCount = g?.count ?? 0;
+        const docIdStr = doc._id.toString();
+        const newestComments = commentsMap.get(docIdStr) ?? [];
 
-        // If count is missing from the document, migrate it as we go
         if (typeof doc.comment_count === 'number') {
           comment_count = doc.comment_count;
         } else {
-          comment_count = dynamicCount;
+          // Pull from the secondary aggregation and trigger the backfill
+          comment_count = countsMap.get(docIdStr) ?? 0;
           backfillPromises.push(
-            inbox_model.updateOne({ _id: doc._id }, { $set: { comment_count: dynamicCount } })
+            inbox_model.updateOne({ _id: doc._id }, { $set: { comment_count } })
           );
         }
 
-        // $topN returns newest-first; reverse to oldest->newest for the drawer
-        comments = (g?.newest ?? []).reverse().map(serializeInboxComment);
+        // Reverse to oldest->newest for the drawer
+        comments = newestComments.reverse().map(serializeInboxComment);
       } else {
         const active = (Array.isArray(doc.comments) ? doc.comments : [])
           .filter((c: any) => c.status !== 'under_review' && c.status !== 'removed');
 
-        // If count is missing from the document, migrate it as we go
         if (typeof doc.comment_count === 'number') {
           comment_count = doc.comment_count;
         } else {
           comment_count = active.length;
           backfillPromises.push(
-            inbox_model.updateOne({ _id: doc._id }, { $set: { comment_count: active.length } })
+            inbox_model.updateOne({ _id: doc._id }, { $set: { comment_count } })
           );
         }
 
@@ -261,7 +292,7 @@ export async function getInboxItemsV2(params: {
       };
     }) as unknown as InboxItem[];
 
-    // Fire and forget the background migrations so we don't delay the API response
+    // 5. Fire and forget the background migrations so we don't delay the API response
     if (backfillPromises.length > 0) {
       Promise.all(backfillPromises).catch(err => {
         console.error('Failed to backfill missing comment_counts during getInboxItemsV2:', err);
@@ -310,6 +341,7 @@ export async function getInboxCommentsV2(params: {
     }
     const hasMore = comments.length > params.limit;
     const ordered = comments.slice(0, params.limit).reverse().map(serializeInboxComment);
+
     return { comments: ordered, hasMore };
   } catch (e) {
     throw new Error('Failed to fetch comments batch');
