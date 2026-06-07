@@ -160,7 +160,7 @@ export async function migrateEmbeddedComments(doc: any): Promise<void> {
   }));
 
   if (legacy.length) {
-    await inbox_comment_model.insertMany(legacy, { ordered: false })
+    await inbox_comment_model.insertMany(legacy, { ordered: false });
   }
   await inbox_model.updateOne(
     { _id: doc._id },

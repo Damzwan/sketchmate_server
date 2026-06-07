@@ -204,7 +204,8 @@ export function registerV1Handlers(io: Server, socket: Socket) {
 
       resetChunkState();
 
-      const inboxItem = await storeMessage(params);
+      let inboxItem: any = await storeMessage(params);
+      inboxItem = {...inboxItem, comment_count: 0}
       if (!inboxItem) return;
 
       for (const follower of inboxItem.followers) {

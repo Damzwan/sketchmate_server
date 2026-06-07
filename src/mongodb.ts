@@ -139,7 +139,6 @@ export async function getInboxItems(params: GetInboxItemsParams): Promise<GetInb
 
     const migratedIds = docs.filter((d: any) => d.comments_migrated).map((d: any) => d._id);
 
-    // full comment lists for migrated items, ascending to match the old embedded (insertion) order
     const grouped = migratedIds.length
       ? await inbox_comment_model.aggregate([
         { $match: { inbox_id: { $in: migratedIds }, status: 'active' } },
