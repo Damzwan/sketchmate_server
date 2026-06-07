@@ -288,5 +288,25 @@ export class S3Creator {
     return this.getObjectUrl(`stock_${randomNum}.webp`, CONTAINER.account);
   }
 
+  async getLobbySnapshotUploadTarget(roomId: string): Promise<{ uploadUrl: string; key: string; fetchUrl: string }> {
+    const key = `lobbies/snapshots/${roomId}/${uuidv4()}.gz`;
+    const command = new PutObjectCommand({
+      Bucket: CONTAINER.drawings,
+      Key: key
+    });
+    const uploadUrl = await getSignedUrl(this.s3Client as any, command as any, { expiresIn: 300 });
+    return { uploadUrl, key, fetchUrl: `${CDN_URL}/${key}` };
+  }
+
+  async getLobbyThumbnailUploadTarget(roomId: string): Promise<{ uploadUrl: string; key: string; fetchUrl: string }> {
+    const key = `public-lobbies/${roomId}/${uuidv4()}.webp`;
+    const command = new PutObjectCommand({
+      Bucket: CONTAINER.drawings,
+      Key: key
+    });
+    const uploadUrl = await getSignedUrl(this.s3Client as any, command as any, { expiresIn: 300 });
+    return { uploadUrl, key, fetchUrl: `${CDN_URL}/${key}` };
+  }
+
 
 }

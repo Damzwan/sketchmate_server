@@ -1,14 +1,45 @@
 import Router from 'koa-router';
 import { requireAuth } from '../../middleware/auth';
-import { getInboxItemsV2, removeFromInbox, seeInbox, s3Creator } from '../../mongodb';
+import { removeFromInbox, seeInbox, s3Creator } from '../../mongodb';
 import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
-import { commentOnInbox, createInboxItem } from '../services/inbox.service';
+import { commentOnInbox, createInboxItem, getInboxCommentsV2, getInboxItemsV2 } from '../services/inbox.service';
 import { inbox_model } from '../../models/inbox.model';
 import { user_model } from '../../models/user.model';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
 
 export const inboxRouter = new Router();
+
+inboxRouter.get('/legacy', async (ctx) => {
+  const { user_id, limit, lastDate } = ctx.query as any;
+  if (!user_id) {
+    ctx.status = 400;
+    ctx.body = { error: 'user_id required' };
+    return;
+  }
+
+  ctx.body = await getInboxItemsV2({
+    user_id,
+    limit: parseInt(limit) || 20,
+    lastDate: lastDate ? new Date(lastDate) : undefined
+  });
+});
+
+inboxRouter.get('/legacy/comments', async (ctx) => {
+  const { inbox_id, limit, beforeDate } = ctx.query as any;
+  if (!inbox_id) {
+    ctx.status = 400;
+    ctx.body = { error: 'inbox_id required' };
+    return;
+  }
+
+  ctx.body = await getInboxCommentsV2({
+    inbox_id,
+    limit: parseInt(limit) || 20,
+    beforeDate: beforeDate ? new Date(beforeDate) : undefined
+  });
+});
+
 
 inboxRouter.get('/', requireAuth, async (ctx) => {
   const { limit, lastDate } = ctx.query as any;
@@ -122,7 +153,7 @@ inboxRouter.post(
     const { message, followers } = ctx.request.body;
     const sender = ctx.state.user._id.toString();
     const name = ctx.state.user.name;
-    const img = ctx.state.user.img
+    const img = ctx.state.user.img;
 
     if (!message?.trim()) {
       ctx.status = 400;

@@ -13,7 +13,7 @@ const moderationSubSchema = new Schema({
 /**
  * COMMENT SCHEMA (Nested)
  */
-const comment_schema = new Schema<InboxCommentDocument>({
+const comment_schema = new Schema<any>({
   sender: { type: String, required: true },
   message: { type: String, required: true },
   date: { type: Date, required: true },
@@ -44,6 +44,7 @@ const inbox_schema = new Schema<InboxDocument>(
     aspect_ratio: { type: Number, required: false },
     reply: { type: ObjectId, ref: 'inbox', required: false },
     comments: { type: [comment_schema], required: false },
+    comments_migrated: { type: Boolean, default: false },
 
     status: {
       type: String,

@@ -1,14 +1,23 @@
 import { Types } from 'mongoose';
-import { CommentParams, CommentRes, InboxItem, SOCKET_ENDPONTS } from '../../types/types';
+import {
+  CommentParams,
+  CommentRes,
+  GetInboxCommentsRes,
+  GetInboxRes,
+  InboxComment,
+  InboxItem,
+  SOCKET_ENDPONTS
+} from '../../types/types';
 import { InboxDocument } from '../../types/mongoose.types';
 import { inbox_model } from '../../models/inbox.model';
 import { user_model } from '../../models/user.model';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
-import { comment } from '../../mongodb';
+import { comment, getPartialUsers } from '../../mongodb';
 import { relationship_model } from '../../models/relationship.model';
 import { saveMessageLogic } from './chat.service';
 import { dispatchNotification } from './notification.service';
 import { drawingReceivedNotification } from '../../config/notification.config';
+import { inbox_comment_model } from '../../models/inbox-comment.model';
 
 
 export interface CreateInboxItemParams {
@@ -108,7 +117,7 @@ export async function createInboxItem(params: CreateInboxItemParams): Promise<In
           params.sender_name,
           inboxItem.thumbnail,
           inboxItem._id,
-          params.sender_img,
+          params.sender_img
         )
       }
     }).catch(err => console.error('Inbox drawing dispatch failed:', err));
@@ -118,7 +127,7 @@ export async function createInboxItem(params: CreateInboxItemParams): Promise<In
 }
 
 export async function commentOnInbox(params: CommentParams & { name: string }): Promise<CommentRes> {
-  const createdComment = await comment(params);
+  const createdComment = await createInboxComment(params);
 
   const commentRes: CommentRes = {
     comment: createdComment,
@@ -161,4 +170,166 @@ export async function commentOnInbox(params: CommentParams & { name: string }): 
   }
 
   return commentRes;
+}
+
+const GALLERY_COMMENT_LIMIT = 4;
+
+export async function getInboxItemsV2(params: {
+  user_id: string,
+  limit: number,
+  lastDate?: Date
+}): Promise<GetInboxRes> {
+  try {
+    const query: any = {
+      followers: params.user_id,
+      status: { $nin: ['under_review', 'removed'] }
+    };
+    if (params.lastDate) query.date = { $lt: params.lastDate };
+
+    const docs = await inbox_model
+      .find(query).sort({ date: -1 }).limit(params.limit).lean() as InboxDocument[];
+
+    // Pull newest-N + active count for migrated items in a single round-trip.
+    // $topN keeps only N docs per group (not all of them), $sum gives the count for free.
+    const migratedIds = docs.filter((d: any) => d.comments_migrated).map((d: any) => d._id);
+    const grouped = migratedIds.length
+      ? await inbox_comment_model.aggregate([
+        { $match: { inbox_id: { $in: migratedIds }, status: 'active' } },
+        {
+          $group: {
+            _id: '$inbox_id',
+            count: { $sum: 1 },
+            newest: { $topN: { n: GALLERY_COMMENT_LIMIT, sortBy: { date: -1 }, output: '$$ROOT' } }
+          }
+        }
+      ])
+      : [];
+    const byInbox = new Map(grouped.map((g: any) => [g._id.toString(), g]));
+
+    const inboxItems: InboxItem[] = docs.map((doc: any) => {
+      let comments: InboxComment[] = [];
+      let comment_count: number;
+
+      if (doc.comments_migrated) {
+        const g = byInbox.get(doc._id.toString());
+        comment_count = g?.count ?? 0;
+        // $topN returns newest-first; reverse to oldest->newest for the drawer
+        comments = (g?.newest ?? []).reverse().map(serializeInboxComment);
+      } else {
+        const active = (Array.isArray(doc.comments) ? doc.comments : [])
+          .filter((c: any) => c.status !== 'under_review' && c.status !== 'removed');
+        comment_count = active.length;
+        comments = active
+          .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime())
+          .slice(0, GALLERY_COMMENT_LIMIT)
+          .reverse()
+          .map(serializeInboxComment);
+      }
+
+      return {
+        ...doc,
+        comments,
+        comment_count,
+        _id: doc._id.toString(),
+        sender: doc.sender.toString(),
+        date: doc.date.toISOString()
+      };
+    }) as unknown as InboxItem[];
+
+    const uniqueUserIds = Array.from(new Set(
+      inboxItems.reduce((acc: string[], curr) => acc.concat(curr.original_followers), [])
+    ));
+    const userInfo = await getPartialUsers(uniqueUserIds);
+
+    return { inboxItems, userInfo };
+  } catch (e) {
+    throw new Error('Failed to fetch inbox batch');
+  }
+}
+
+export async function getInboxCommentsV2(params: {
+  inbox_id: string,
+  limit: number,
+  beforeDate?: Date
+}): Promise<GetInboxCommentsRes> {
+  try {
+    const doc = await inbox_model
+      .findById(params.inbox_id).select('comments comments_migrated').lean() as any;
+    if (!doc) throw new Error('Inbox item not found');
+
+    if (doc.comments_migrated) {
+      const q: any = { inbox_id: new Types.ObjectId(params.inbox_id), status: 'active' };
+      if (params.beforeDate) q.date = { $lte: params.beforeDate }; // <= so boundary re-included; client de-dupes by _id
+
+      const rows = await inbox_comment_model
+        .find(q).sort({ date: -1 }).limit(params.limit + 1).lean();
+      const hasMore = rows.length > params.limit;
+      const ordered = rows.slice(0, params.limit).reverse().map((c) => serializeInboxComment(c, doc._id.toString()));
+      return { comments: ordered, hasMore };
+    }
+
+    // --- legacy embedded path (unchanged) ---
+    let comments = (Array.isArray(doc.comments) ? doc.comments : [])
+      .filter((c: any) => c.status !== 'under_review' && c.status !== 'removed');
+    comments.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    if (params.beforeDate) {
+      const cursor = params.beforeDate.getTime();
+      comments = comments.filter((c: any) => new Date(c.date).getTime() <= cursor);
+    }
+    const hasMore = comments.length > params.limit;
+    const ordered = comments.slice(0, params.limit).reverse().map(serializeInboxComment);
+    return { comments: ordered, hasMore };
+  } catch (e) {
+    throw new Error('Failed to fetch comments batch');
+  }
+}
+
+export function serializeInboxComment(c: any, inboxId?: string): InboxComment {
+  return {
+    _id: c._id.toString(),
+    inbox_id: (c.inbox_id ?? inboxId)?.toString(),
+    sender: c.sender,
+    message: c.message,
+    date: (c.date instanceof Date ? c.date : new Date(c.date)).toISOString(),
+    status: c.status === 'removed' ? 'removed' : 'active',
+    reports_count: c.reports_count ?? 0
+  };
+}
+
+export async function createInboxComment(params: CommentParams): Promise<InboxComment> {
+  const inboxObjectId = new Types.ObjectId(params.inbox_id);
+
+  const doc = await inbox_model
+    .findById(inboxObjectId).select('comments comments_migrated').lean() as any;
+  if (!doc) throw new Error('Inbox item not found');
+
+  if (!doc.comments_migrated) {
+    const legacy = (Array.isArray(doc.comments) ? doc.comments : []).map((c: any) => ({
+      _id: c._id ?? new Types.ObjectId(),
+      inbox_id: inboxObjectId,
+      sender: c.sender,
+      message: c.message,
+      date: c.date ?? new Date(),
+      status: c.status === 'removed' ? 'removed' : 'active',
+      reports_count: c.reports_count ?? 0
+    }));
+    if (legacy.length) {
+      await inbox_comment_model.insertMany(legacy, { ordered: false });
+    }
+    await inbox_model.updateOne(
+      { _id: inboxObjectId },
+      { $set: { comments_migrated: true, comments: [] } }
+    );
+  }
+
+  const created = await inbox_comment_model.create({
+    inbox_id: inboxObjectId,
+    sender: params.sender,
+    message: params.message,
+    date: new Date(),
+    status: 'active',
+    reports_count: 0
+  });
+
+  return serializeInboxComment(created.toObject());
 }

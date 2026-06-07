@@ -19,6 +19,9 @@ import cron from 'node-cron';
 import { pairBalloons, removeExpiredBalloons, unPairBalloons } from './api/balloon';
 import * as admin from 'firebase-admin';
 import serviceAccount from '../fcm.json';
+import { inbox_model } from './models/inbox.model';
+import { Types } from 'mongoose';
+import { inbox_comment_model } from './models/inbox-comment.model';
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount as any)
@@ -106,3 +109,61 @@ cron.schedule('0 */1 * * *', async () => {
   await unPairBalloons();
   await removeExpiredBalloons();
 });
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export async function drainInboxComments(opts: { batchSize?: number; pauseMs?: number } = {}) {
+  const batchSize = opts.batchSize ?? 100;
+  const pauseMs = opts.pauseMs ?? 2000;
+  let lastId: any | undefined;
+  let migrated = 0, failed = 0;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const q: any = { comments_migrated: { $ne: true } };
+    if (lastId) q._id = { $gt: lastId };
+
+    const docs = await inbox_model
+      .find(q).sort({ _id: 1 })
+      .select('_id comments comments_migrated')
+      .limit(batchSize).lean();
+
+    if (!docs.length) break;
+
+    for (const doc of docs) {
+      try {
+        await migrateEmbeddedComments(doc);
+        migrated++;
+      } catch (e) {
+        failed++;
+        console.error(`migrate failed ${doc._id}`, e);
+      }
+    }
+
+    lastId = docs[docs.length - 1]._id;
+    await sleep(pauseMs);   // keep it off the prod load curve
+  }
+  console.log(`drain done — migrated ${migrated}, failed ${failed}`);
+}
+
+export async function migrateEmbeddedComments(doc: any): Promise<void> {
+  if (doc.comments_migrated) return;
+
+  const legacy = (Array.isArray(doc.comments) ? doc.comments : []).map((c: any) => ({
+    _id: c._id ?? new Types.ObjectId(),
+    inbox_id: doc._id,
+    sender: c.sender,
+    message: c.message,
+    date: c.date ?? new Date(),
+    status: c.status === 'removed' ? 'removed' : 'active',
+    reports_count: c.reports_count ?? 0
+  }));
+
+  if (legacy.length) {
+    await inbox_comment_model.insertMany(legacy, { ordered: false })
+  }
+  await inbox_model.updateOne(
+    { _id: doc._id },
+    { $set: { comments_migrated: true, comments: [] } }
+  );
+}
