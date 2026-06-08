@@ -3,7 +3,13 @@ import { requireAuth } from '../../middleware/auth';
 import { removeFromInbox, seeInbox, s3Creator } from '../../mongodb';
 import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
-import { commentOnInbox, createInboxItem, getInboxCommentsV2, getInboxItemsV2 } from '../services/inbox.service';
+import {
+  commentOnInbox,
+  createInboxItem,
+  deleteInboxComment,
+  getInboxCommentsV2,
+  getInboxItemsV2
+} from '../services/inbox.service';
 import { inbox_model } from '../../models/inbox.model';
 import { user_model } from '../../models/user.model';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
@@ -251,6 +257,23 @@ inboxRouter.get('/sync', requireAuth, async (ctx) => {
     inboxItems: newItems,
     userInfo: userInfo
   };
+});
+
+inboxRouter.delete('/:inboxId/comment/:commentId', requireAuth, async (ctx) => {
+  const { inboxId, commentId } = ctx.params;
+  try {
+    await deleteInboxComment({
+      inbox_id: inboxId,
+      comment_id: commentId,
+      requester_id: ctx.state.user._id.toString()
+    });
+    ctx.body = { success: true };
+  } catch (e: any) {
+    if (e.message === 'FORBIDDEN') return ctx.throw(403, 'Not your comment');
+    if (e.message === 'NOT_FOUND') return ctx.throw(404, 'Comment not found');
+    console.error('Delete inbox comment error:', e);
+    ctx.throw(500, 'Failed to delete comment');
+  }
 });
 
 export default inboxRouter;

@@ -232,7 +232,9 @@ export async function removeFromInbox(params: RemoveFromInboxParams) {
         s3Creator.deleteBlob(inboxItem.thumbnail, CONTAINER.drawings),
         s3Creator.deleteBlob(inboxItem.image, CONTAINER.drawings),
         s3Creator.deleteBlob(inboxItem.drawing, CONTAINER.drawings),
-        inbox_model.deleteOne({ _id: params.inbox_id })
+        inbox_model.deleteOne({ _id: params.inbox_id }),
+        // migrated items keep their comments here — clean them up too
+        inbox_comment_model.deleteMany({ inbox_id: new Types.ObjectId(params.inbox_id) })
       ]);
     }
   } catch (e) {

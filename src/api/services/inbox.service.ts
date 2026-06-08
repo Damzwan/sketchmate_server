@@ -261,7 +261,7 @@ export async function getInboxItemsV2(params: {
         }
 
         // Reverse to oldest->newest for the drawer
-        comments = newestComments.reverse().map(serializeInboxComment);
+        comments = newestComments.map(serializeInboxComment);
       } else {
         const active = (Array.isArray(doc.comments) ? doc.comments : [])
           .filter((c: any) => c.status !== 'under_review' && c.status !== 'removed');
@@ -410,4 +410,58 @@ export async function createInboxComment(params: CommentParams): Promise<InboxCo
   );
 
   return serializeInboxComment(created.toObject());
+}
+
+// Reads: find a reported inbox comment in whichever store holds it.
+export async function findInboxComment(
+  oid: Types.ObjectId
+): Promise<{ sender: Types.ObjectId; message: string } | null> {
+  const fromCollection = await inbox_comment_model
+    .findById(oid).select('sender message').lean() as any;
+  return { sender: fromCollection.sender, message: fromCollection.message };
+}
+
+export async function setInboxCommentStatus(
+  oid: Types.ObjectId,
+  from: 'active' | 'removed' | null,
+  to: 'active' | 'removed'
+) {
+  // collection store (migrated)
+  const collMatch: any = { _id: oid };
+  if (from) collMatch.status = from;
+
+  const prev = await inbox_comment_model
+    .findOneAndUpdate(collMatch, { $set: { status: to } }, { new: false })
+    .select('inbox_id status').lean() as any;
+
+  if (prev) {
+    if (prev.status !== to) {
+      await adjustInboxCommentCount(prev.inbox_id, to === 'active' ? 1 : -1);
+    }
+    return;
+  }
+}
+
+async function adjustInboxCommentCount(inboxId: Types.ObjectId | string, delta: number) {
+  const filter: any = { _id: inboxId, comment_count: { $exists: true } };
+  if (delta < 0) filter.comment_count.$gt = 0;
+  await inbox_model.updateOne(filter, { $inc: { comment_count: delta } });
+}
+
+export async function deleteInboxComment(params: {
+  inbox_id: string;
+  comment_id: string;
+  requester_id: string;
+}): Promise<void> {
+  const cid = new Types.ObjectId(params.comment_id);
+
+  const collComment = await inbox_comment_model
+    .findById(cid).select('sender inbox_id status').lean() as any;
+
+  if (collComment) {
+    if (collComment.sender.toString() !== params.requester_id) throw new Error('FORBIDDEN');
+    await inbox_comment_model.deleteOne({ _id: cid });
+    if (collComment.status === 'active') await adjustInboxCommentCount(collComment.inbox_id, -1);
+    return;
+  }
 }

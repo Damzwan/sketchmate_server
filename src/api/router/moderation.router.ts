@@ -21,6 +21,7 @@ import {
 } from '../../types/moderation.policy';
 import { report_model } from '../../models/moderation.model';
 import { s3Creator } from '../../mongodb';
+import { findInboxComment, setInboxCommentStatus } from '../services/inbox.service';
 
 export const moderationRouter = new Router();
 moderationRouter.use(requireAuth);
@@ -185,16 +186,8 @@ async function resolveTargetAuthor(
     case 'inbox_drawing':
       return (await inbox_model.findById(oid).select('sender').lean() as any)?.sender ?? null;
     case 'inbox_comment': {
-      // Inbox comments are nested. The :id passed in is the comment _id;
-      // we need to find the parent inbox doc and pull out the right comment.
-      const inboxDoc = await inbox_model
-        .findOne({ 'comments._id': oid })
-        .select('comments')
-        .lean() as any;
-      if (!inboxDoc) return null;
-      const comment = inboxDoc.comments?.find((c: any) => c._id.toString() === id);
-      // Inbox comments store sender as a String (not ObjectId) per the schema.
-      return comment?.sender ? new Types.ObjectId(comment.sender) : null;
+      const c = await findInboxComment(oid);
+      return c?.sender ?? null;
     }
     case 'user':
       return oid;
@@ -281,19 +274,10 @@ async function snapshotContent(type: string, id: string): Promise<any> {
         snapshot_url
       };
     }
-
     case 'inbox_comment': {
-      // Inbox comments are nested in the inbox document. Find the parent
-      // and extract just the reported comment text.
-      const inboxDoc = await inbox_model
-        .findOne({ 'comments._id': oid })
-        .select('comments')
-        .lean() as any;
-      if (!inboxDoc) return null;
-      const comment = inboxDoc.comments?.find((c: any) => c._id.toString() === id);
-      return comment ? { message: comment.message } : null;
+      const c = await findInboxComment(oid);
+      return c ? { message: c.message } : null;
     }
-
     case 'dm_message': {
       const msg = await message_model.findById(oid).lean() as any;
       if (!msg) return null;
@@ -468,10 +452,7 @@ async function quarantineContent(type: string, id: string) {
       );
       break;
     case 'inbox_comment':
-      await inbox_model.updateOne(
-        { 'comments._id': oid, 'comments.status': 'active' },
-        { $set: { 'comments.$.status': 'removed' } }
-      );
+      await setInboxCommentStatus(oid, 'active', 'removed');
       break;
     case 'dm_message':
       await message_model.updateOne(
@@ -515,10 +496,7 @@ async function restoreContent(type: string, id: string) {
       );
       break;
     case 'inbox_comment':
-      await inbox_model.updateOne(
-        { 'comments._id': oid, 'comments.status': 'removed' },
-        { $set: { 'comments.$.status': 'active' } }
-      );
+      await setInboxCommentStatus(oid, 'removed', 'active');
       break;
     case 'dm_message':
       await message_model.updateOne(
@@ -559,10 +537,7 @@ async function removeContent(type: string, id: string) {
       );
       break;
     case 'inbox_comment':
-      await inbox_model.updateOne(
-        { 'comments._id': oid },
-        { $set: { 'comments.$.status': 'removed' } }
-      );
+      await setInboxCommentStatus(oid, null, 'removed');
       break;
     case 'dm_message':
       await message_model.updateOne(
