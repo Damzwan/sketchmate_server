@@ -6,7 +6,7 @@ import {
   BasePost,
   BasePostComment,
   BasePostReaction,
-  BaseRelationship, Comment, InboxComment, InboxItem,
+  BaseRelationship, BaseSavedDrawing, Comment, InboxComment, InboxItem,
   User
 } from './types';
 import { Document } from 'mongodb';
