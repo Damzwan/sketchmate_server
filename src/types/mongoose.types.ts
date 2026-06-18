@@ -171,3 +171,10 @@ export interface InboxCommentDocumentV2 extends Omit<InboxComment, '_id' | 'send
   sender: Types.ObjectId;
   date: Date;
 }
+
+export interface SavedDrawingDocument extends Document, Omit<BaseSavedDrawing, 'user_id'> {
+  _id: Types.ObjectId;
+  user_id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+}
