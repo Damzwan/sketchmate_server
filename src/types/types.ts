@@ -259,6 +259,7 @@ export interface UserCustomization {
   themeId: string;
   fontId: string;
   fontEffectId: string;
+  atmosphereId: string;
   decorationId: string;
   effectId: string;
   titleId: string;

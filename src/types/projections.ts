@@ -26,6 +26,7 @@ export const COMPLETE_PUBLIC_USER_FIELDS = [
   'customization.fontId',
   'customization.fontEffectId',
   'customization.effectId',
+  'customization.atmosphereId',
   'customization.decorationId',
   'customization.titleId',
   'customization.signaturePath',

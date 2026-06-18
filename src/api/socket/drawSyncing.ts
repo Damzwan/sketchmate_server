@@ -32,7 +32,7 @@ const PUBLIC_LOBBY_ROOMS = new Map<string, PublicLobby>([
 ]);
 
 const ROOM_STATES = new Map();
-const MAX_BUFFER_SIZE = 100;
+const MAX_BUFFER_SIZE = 5;
 const DISCONNECT_GRACE_PERIOD_MS = 15000;
 const MAX_MESSAGE_BUFFER = 50;
 const ROOM_CLEANUP_TIMEOUT_MS = 30000;
@@ -41,13 +41,106 @@ const THUMBNAIL_UPDATE_INTERVAL_MS = 15000;
 const LEGACY_MODE = process.env.LEGACY_MODE === 'true';
 
 
+// ---------------------------------------------------------------------------
+// SNAPSHOT TRANSPORT HELPERS (v3 migration)
+//
+// The snapshot cache can now hold EITHER an inline gzip buffer (produced by a
+// v1/v2 host) OR a CDN url (produced by a v3 host that uploaded straight to S3).
+// `cachedSnapshotFormat` records which one we're holding. Delivery picks the
+// right wire shape per recipient: a v3 client gets the url as-is; everyone else
+// gets a buffer (fetched down from the CDN if we only have a url — the "bridge").
+// ---------------------------------------------------------------------------
+
+function hasCachedSnapshot(roomState: any): boolean {
+  return roomState.cachedSnapshotFormat === 'url'
+    ? !!roomState.cachedSnapshotUrl
+    : !!roomState.cachedSnapshot;
+}
+
+// Bridge helper: pull a gzipped snapshot down from the CDN as a Buffer so we can
+// hand it to a legacy (v1/v2) client that still expects inline bytes. Requires a
+// global fetch (Node 18+). As old clients disappear this path stops being hit.
+async function fetchUrlAsBuffer(url: string): Promise<Buffer | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error(`[Bridge] Snapshot fetch ${url} -> ${res.status}`);
+      return null;
+    }
+    const ab = await res.arrayBuffer();
+    return Buffer.from(ab);
+  } catch (e) {
+    console.error('[Bridge] Failed to fetch snapshot url -> buffer:', e);
+    return null;
+  }
+}
+
+// Cluster-safe lookup of a socket's client version by id.
+async function resolveSocketVersion(io: Server, socketId: string): Promise<string> {
+  try {
+    const sockets = await io.in(socketId).fetchSockets();
+    return (sockets[0]?.data?.version as string) || '1';
+  } catch {
+    return '1';
+  }
+}
+
+// Single delivery path for `initial-canvas-state`. `target` may be a socket
+// object (we read .data.version directly) or a socket id string (we resolve it).
+async function deliverSnapshot(
+  io: Server,
+  target: any,
+  roomState: any,
+  missedActions: any[],
+  isInitialSync?: boolean,
+  extra: Record<string, any> = {}
+): Promise<void> {
+  const targetId = typeof target === 'string' ? target : target.id;
+  const version =
+    typeof target !== 'string' && target.data
+      ? (target.data.version || '1')
+      : await resolveSocketVersion(io, targetId);
+
+  const payload: Record<string, any> = {
+    sequenceId: roomState.cachedSnapshotSequenceId,
+    missedActions: missedActions || [],
+    isInitialSync,
+    ...extra
+  };
+
+  if (roomState.cachedSnapshotFormat === 'url') {
+    if (version === '3') {
+      // Modern client fetches the CDN url itself.
+      payload.canvasStateUrl = roomState.cachedSnapshotUrl;
+    } else {
+      // BRIDGE: legacy client needs raw bytes, we only have a url.
+      const buf = await fetchUrlAsBuffer(roomState.cachedSnapshotUrl);
+      if (!buf) {
+        io.to(targetId).emit('join-error', { reason: 'SNAPSHOT_UNAVAILABLE' });
+        return;
+      }
+      payload.canvasState = buf;
+    }
+  } else {
+    // Cache is a buffer; every client version can consume a buffer directly.
+    payload.canvasState = roomState.cachedSnapshot;
+  }
+
+  io.to(targetId).emit('initial-canvas-state', payload);
+}
+
+
 function getOrCreateRoomState(roomId: any) {
   if (!ROOM_STATES.has(roomId)) {
     ROOM_STATES.set(roomId, {
       sessionId: uuidv4(),
       currentSequenceId: 0,
       actionBuffer: [],
+
+      // Snapshot cache: buffer (v1/v2) OR url (v3). See helpers above.
       cachedSnapshot: null,
+      cachedSnapshotUrl: null,
+      cachedSnapshotFormat: null, // 'buffer' | 'url' | null
       cachedSnapshotSequenceId: 0,
       isRequestingSnapshot: false,
       cleanupTimeout: null,
@@ -144,7 +237,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
           return;
         }
       } else {
-        const v1Hosts = potentialHosts.filter(s => s.data.version !== '2');
+        const v1Hosts = potentialHosts.filter(s => s.data.version === '1');
         if (v1Hosts.length > 0) {
           setTimeout(() => {
             socket.emit('join-error', {
@@ -183,7 +276,13 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       if (LEGACY_MODE) {
         if (potentialHosts.length > 0) {
           const host = potentialHosts[0];
-          io.to(host.id).emit('request-canvas-state', { targetSocketId: socket.id });
+          // The host may be v3 and will upload to S3; the resulting url is
+          // bridged back to a buffer for this v1 joiner in `send-canvas-state`.
+          const uploadTarget = await s3Creator.getLobbySnapshotUploadTarget(roomId);
+          io.to(host.id).emit('request-canvas-state', {
+            targetSocketId: socket.id,
+            ...uploadTarget
+          });
         }
       } else {
         setTimeout(() => {
@@ -194,9 +293,11 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
         }, 5000);
       }
     } else {
-      // V2 MODERN USER
-      const v2Hosts = potentialHosts.filter(s => s.data.version === '2');
-      const v1Hosts = potentialHosts.filter(s => s.data.version !== '2');
+      // V2 / V3 MODERN USER
+      // "modern" = anything that speaks the current sync protocol (v2 buffer or
+      // v3 url). v1 hosts are handled via the legacy bridge path below.
+      const modernHosts = potentialHosts.filter(s => s.data.version !== '1');
+      const v1Hosts = potentialHosts.filter(s => s.data.version === '1');
 
 
       const effectiveLastSeq = lastSequenceId !== undefined ? lastSequenceId : 0;
@@ -204,19 +305,23 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
       // 1. BRAND NEW JOIN (Cold Start)
       if (lastSequenceId === undefined) {
-        if (roomState.cachedSnapshot) {
-          // If we have a snapshot (from a V1 creator or previous V2 sync), use it!
-          sendFullSnapshot(socket, roomId, roomState, v2Hosts, true);
+        if (hasCachedSnapshot(roomState)) {
+          // We have a snapshot (buffer or url) — deliver it in the joiner's format.
+          await sendFullSnapshot(socket, roomId, roomState, modernHosts, true);
         } else if (intent === 'create' && !isPublic) {
+          // Seed the cache by asking the creator for a background snapshot.
+          const uploadTarget = await s3Creator.getLobbySnapshotUploadTarget(roomId);
           io.to(socket.id).emit('request-canvas-state', {
             snapshotSequenceId: roomState.currentSequenceId,
-            isBackgroundUpdate: true
+            isBackgroundUpdate: true,
+            ...uploadTarget
           });
         } else if (v1Hosts.length > 0) {
-          // BRIDGE: V1 user is here, but hasn't finished 'Genius Idea' upload yet
+          // BRIDGE: only a V1 host is here. It will reply with a buffer.
           const legacyHost = v1Hosts[0];
-          console.log(`[Bridge] Asking V1 Host ${legacyHost.id} for state for V2 Joiner`);
-          requestSnapshotWithTimeout(socket, roomId, roomState, [legacyHost], 0);
+          console.log(`[Bridge] Asking V1 Host ${legacyHost.id} for state for modern joiner`);
+          const uploadTarget = await s3Creator.getLobbySnapshotUploadTarget(roomId);
+          requestSnapshotWithTimeout(socket, roomId, roomState, [legacyHost], 0, uploadTarget);
         } else if (effectiveLastSeq >= oldestAvailableSeq - 1) {
           const missedActions = roomState.actionBuffer.filter((a: any) => a.sequenceId > effectiveLastSeq);
           socket.emit('missed-actions', {
@@ -238,7 +343,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
           });
         } else {
           // Too far behind, give them the full snapshot
-          sendFullSnapshot(socket, roomId, roomState, v2Hosts, false);
+          await sendFullSnapshot(socket, roomId, roomState, modernHosts, false);
         }
       }
     }
@@ -292,27 +397,25 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
   });
 
 // Helper function to handle sending the snapshot
-  function sendFullSnapshot(socket: any, roomId: any, roomState: any, potentialHosts: any, isInitialSync: boolean) {
+  async function sendFullSnapshot(socket: any, roomId: any, roomState: any, modernHosts: any, isInitialSync: boolean) {
     const oldestAvailableSeq = roomState.actionBuffer.length > 0
       ? roomState.actionBuffer[0].sequenceId
       : roomState.currentSequenceId;
 
     const hasUnbridgeableGap = roomState.cachedSnapshotSequenceId < (oldestAvailableSeq - 1);
-    const isCacheValid = roomState.cachedSnapshot && !hasUnbridgeableGap;
+    const isCacheValid = hasCachedSnapshot(roomState) && !hasUnbridgeableGap;
 
     if (isCacheValid) {
       const missedActions = roomState.actionBuffer.filter(
         (a: any) => a.sequenceId > roomState.cachedSnapshotSequenceId
       );
-      socket.emit('initial-canvas-state', {
-        canvasState: roomState.cachedSnapshot,
-        sequenceId: roomState.cachedSnapshotSequenceId,
-        missedActions: missedActions,
-        isInitialSync
-      });
-    } else if (potentialHosts.length > 0) {
-      // START THE TIMEOUT LOOP
-      requestSnapshotWithTimeout(socket, roomId, roomState, potentialHosts, 0);
+      // deliverSnapshot picks buffer vs url based on the joiner's version.
+      await deliverSnapshot(io, socket, roomState, missedActions, isInitialSync);
+    } else if (modernHosts.length > 0) {
+      // START THE TIMEOUT LOOP — generate one presigned upload target and reuse
+      // it across host attempts (only the host that actually answers uses it).
+      const uploadTarget = await s3Creator.getLobbySnapshotUploadTarget(roomId);
+      requestSnapshotWithTimeout(socket, roomId, roomState, modernHosts, 0, uploadTarget);
     }
   }
 
@@ -374,7 +477,9 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     }
   });
 
-  socket.on('send-canvas-state', ({ targetSocketId, canvasState, snapshotSequenceId, isBackgroundUpdate }) => {
+  // A host answers a snapshot request with EITHER `url` (v3, already uploaded to
+  // S3) or `canvasState` (v1/v2 buffer). We cache whichever we got and forward.
+  socket.on('send-canvas-state', async ({ targetSocketId, canvasState, url, snapshotSequenceId, isBackgroundUpdate }) => {
     const roomId = socket.data.currentLobbyId;
 
     if (!roomId) return;
@@ -387,8 +492,23 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       ? snapshotSequenceId
       : roomState.currentSequenceId;
 
-    roomState.cachedSnapshot = canvasState;
-    roomState.cachedSnapshotSequenceId = effectiveSequenceId;
+    // Only accept into cache if newer than what we hold. Stops a slow/out-of-order
+    // upload from clobbering a fresher snapshot.
+    const isStale = effectiveSequenceId < roomState.cachedSnapshotSequenceId;
+
+    if (!isStale) {
+      if (url) {
+        roomState.cachedSnapshotFormat = 'url';
+        roomState.cachedSnapshotUrl = url;
+        roomState.cachedSnapshot = null;
+      } else {
+        roomState.cachedSnapshotFormat = 'buffer';
+        roomState.cachedSnapshot = canvasState;
+        roomState.cachedSnapshotUrl = null;
+      }
+      roomState.cachedSnapshotSequenceId = effectiveSequenceId;
+    }
+
     roomState.isRequestingSnapshot = false;
 
 
@@ -400,36 +520,42 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     // Guard: targetSocketId !== socket.id prevents an infinite loop for the V1 creator
     if (targetSocketId && targetSocketId !== socket.id && !isBackgroundUpdate) {
       const missedActions = roomState.actionBuffer.filter(
-        (a: any) => a.sequenceId > effectiveSequenceId
+        (a: any) => a.sequenceId > roomState.cachedSnapshotSequenceId
       );
 
-      io.to(targetSocketId).emit('initial-canvas-state', {
-        canvasState,
-        sequenceId: effectiveSequenceId,
-        missedActions
-      });
+      // Deliver the freshest cached snapshot in the target's expected format.
+      await deliverSnapshot(io, targetSocketId, roomState, missedActions, undefined);
     }
   });
 
-  socket.on('send-lobby-thumbnail', async ({ thumbnailBuffer, roomId }) => {
+  socket.on('send-lobby-thumbnail', async ({ thumbnailBuffer, url, roomId }) => {
     if (!roomId) return;
 
     const roomState = getOrCreateRoomState(roomId);
 
     try {
-      const cdnUrl = await s3Creator.uploadLobbyThumbnail(thumbnailBuffer, roomId);
+      let cdnUrl: string;
+
+      if (url) {
+        // v3: client already uploaded straight to S3 with a unique key.
+        cdnUrl = url;
+      } else if (thumbnailBuffer) {
+        // Legacy: client relayed the buffer; we upload it (old fixed-key path).
+        const uploaded = await s3Creator.uploadLobbyThumbnail(thumbnailBuffer, roomId);
+        cdnUrl = `${uploaded}?t=${Date.now()}`;
+      } else {
+        return;
+      }
 
       roomState.lastThumbnailTime = Date.now();
       roomState.lastThumbnailSequenceId = roomState.currentSequenceId;
 
-      const cacheBustedUrl = `${cdnUrl}?t=${Date.now()}`;
-
       const room = PUBLIC_LOBBY_ROOMS.get(roomId);
       if (room) {
-        room.thumbnailUrl = cacheBustedUrl;
+        room.thumbnailUrl = cdnUrl;
         io.to('public-lobby-watchers').emit('lobby-thumbnail-pulsed', {
           roomId: roomId,
-          thumbnailUrl: cacheBustedUrl
+          thumbnailUrl: cdnUrl
         });
       }
 
@@ -456,7 +582,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       creator: socket.data.user._id
     });
 
-    // --- NEW: The Background Trigger ---
+    // --- The Background Snapshot Trigger ---
     const actionsSinceLastSnapshot = roomState.currentSequenceId - roomState.cachedSnapshotSequenceId;
 
     // Ask for an update when we reach 75% of our buffer capacity
@@ -465,16 +591,20 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       const clients = await io.in(roomId).fetchSockets();
 
       if (clients.length > 0) {
-        io.to(clients[0].id).emit('request-canvas-state', {
+        // Prefer a modern host so the cache becomes a lightweight url when possible.
+        const host = clients.find(c => c.data.version !== '1') || clients[0];
+        const uploadTarget = await s3Creator.getLobbySnapshotUploadTarget(roomId);
+        io.to(host.id).emit('request-canvas-state', {
           snapshotSequenceId: roomState.currentSequenceId,
-          isBackgroundUpdate: true
+          isBackgroundUpdate: true,
+          ...uploadTarget
         });
       } else {
         roomState.isRequestingSnapshot = false;
       }
     }
 
-    // --- 2. THE THUMBNAIL TRIGGER (Time & Public-lobby based) ---
+    // --- The Thumbnail Trigger (Time & Public-lobby based) ---
     const isPublic = PUBLIC_LOBBY_ROOMS.has(roomId);
 
     if (isPublic && !roomState.isRequestingThumbnail) {
@@ -493,7 +623,8 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
         if (clients.length > 0) {
           // Load balance: pick the second client if available
           const thumbnailClient = clients.length > 1 ? clients[1] : clients[0];
-          io.to(thumbnailClient.id).emit('request-lobby-thumbnail');
+          const thumbTarget = await s3Creator.getLobbyThumbnailUploadTarget(roomId);
+          io.to(thumbnailClient.id).emit('request-lobby-thumbnail', thumbTarget);
         } else {
           roomState.isRequestingThumbnail = false;
         }
@@ -569,40 +700,44 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
       ROOM_STATES.delete(roomId);
 
-      console.log(`Lobby ${roomId} cleared from memory. S3 file left for overwrite.`);
+      // Snapshot/thumbnail objects in S3 are left for the lifecycle rule to
+      // expire (they use unique keys). See the S3 lifecycle note.
+      console.log(`Lobby ${roomId} cleared from memory.`);
     }, ROOM_CLEANUP_TIMEOUT_MS);
   }
 
-  function requestSnapshotWithTimeout(targetSocket: any, roomId: any, roomState: any, potentialHosts: any, attemptIndex: any) {
+  function requestSnapshotWithTimeout(targetSocket: any, roomId: any, roomState: any, potentialHosts: any, attemptIndex: any, uploadTarget: any) {
     // 1. Check if we've run out of hosts to ask
     if (attemptIndex >= potentialHosts.length) {
       console.warn(`[Room ${roomId}] All hosts timed out. Using Fallback.`);
 
-      if (roomState.cachedSnapshot) {
-        targetSocket.emit('initial-canvas-state', {
-          canvasState: roomState.cachedSnapshot,
-          sequenceId: roomState.cachedSnapshotSequenceId,
-          missedActions: [], // We accept the gap. Better than a dead UI.
+      if (hasCachedSnapshot(roomState)) {
+        // Deliver whatever we have cached, translated to the joiner's format.
+        deliverSnapshot(io, targetSocket, roomState, [], undefined, {
           warning: 'Network unstable: Some recent drawings may be missing.'
-        });
+        }).catch(e => console.error('Fallback snapshot delivery failed:', e));
       } else {
         targetSocket.emit('join-error', { reason: 'ROOM_UNRESPONSIVE' });
       }
       return;
     }
 
-    // 2. Ask the current host in the list
+    // 2. Ask the current host in the list. v3 hosts use uploadUrl to PUT to S3;
+    //    v1/v2 hosts ignore it and relay a buffer.
     const host = potentialHosts[attemptIndex];
     io.to(host.id).emit('request-canvas-state', {
       targetSocketId: targetSocket.id,
       snapshotSequenceId: roomState.currentSequenceId,
-      isBackgroundUpdate: false
+      isBackgroundUpdate: false,
+      uploadUrl: uploadTarget?.uploadUrl,
+      key: uploadTarget?.key,
+      fetchUrl: uploadTarget?.fetchUrl
     });
 
     // 3. Set a strict 4-second timeout
     const timeoutId = setTimeout(() => {
       // If this triggers, the host failed us. Try the next one!
-      requestSnapshotWithTimeout(targetSocket, roomId, roomState, potentialHosts, attemptIndex + 1);
+      requestSnapshotWithTimeout(targetSocket, roomId, roomState, potentialHosts, attemptIndex + 1, uploadTarget);
     }, 4000);
 
     // 4. Save the timeout ID so we can cancel it if the host DOES reply
@@ -696,4 +831,3 @@ export function getPublicLobbiesSnapshot(io: Server) {
     };
   });
 }
-

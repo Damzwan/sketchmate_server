@@ -414,7 +414,7 @@ relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capa
     { new: true }
   );
 
-  console.log(rel)
+  console.log(rel);
   if (!rel) return ctx.throw(404, 'Relationship not found');
 
   const partnerId = rel.users.find(u => u.toString() !== user_id.toString());
@@ -455,8 +455,9 @@ relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capa
 
 relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
   const { user_id, type } = ctx.params;
-  const { page = 1, limit = 20 } = ctx.query;
+  const { page = 1, limit = 20, search = '' } = ctx.query;
   const skip = (Number(page) - 1) * Number(limit);
+
   const oid = new Types.ObjectId(user_id);
   const query: any = { users: oid };
 
@@ -471,14 +472,65 @@ relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
     query.follows = { $elemMatch: { follower: oid } };
   }
 
-  const rels = await relationship_model.find(query).sort({ updatedAt: -1 }).skip(skip).limit(Number(limit)).lean();
-  const targetIds = rels.map(r => r.users.find(id => id.toString() !== user_id));
-  const users = await user_model.find({ _id: { $in: targetIds } }).select(PUBLIC_USER_FIELDS).lean();
+  const searchTerm = String(search).trim();
+  if (searchTerm.length >= 3) {
+    const safeSearchTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  ctx.body = users.map(u => {
+    const matchingUsers = await user_model
+      .find({
+        _id: { $ne: oid },
+        name: { $regex: safeSearchTerm, $options: 'i' }
+      })
+      .select('_id')
+      .lean();
+
+    const matchingUserIds = matchingUsers.map(u => u._id);
+
+    if (matchingUserIds.length === 0) {
+      ctx.body = { total: 0, data: [] };
+      return;
+    }
+
+    query.users = { $in: matchingUserIds };
+  }
+
+  // 1. Get the real total matches count immediately
+  const totalMatches = await relationship_model.countDocuments(query);
+
+  if (totalMatches === 0) {
+    ctx.body = { total: 0, data: [] };
+    return;
+  }
+
+  // 2. Fetch the paginated subset
+  const rels = await relationship_model
+    .find(query)
+    .sort({ updatedAt: -1 })
+    .skip(skip)
+    .limit(Number(limit))
+    .lean();
+
+  const targetIds = rels.map(r => r.users.find(id => id.toString() !== user_id));
+  const users = await user_model
+    .find({ _id: { $in: targetIds } })
+    .select(PUBLIC_USER_FIELDS)
+    .lean();
+
+  const transformedData = users.map(u => {
     const rel = rels.find(r => r.users.some(id => id.toString() === u._id.toString()));
-    return { ...u, chat_status: rel?.chat_status, expires_at: rel?.expires_at, relationship_id: rel?._id };
+    return {
+      ...u,
+      chat_status: rel?.chat_status,
+      expires_at: rel?.expires_at,
+      relationship_id: rel?._id
+    };
   });
+
+  // 3. Return payload mapping containing global totals
+  ctx.body = {
+    total: totalMatches,
+    data: transformedData
+  };
 });
 
 relationshipRouter.get('/blocked-ids', async (ctx) => {
