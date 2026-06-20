@@ -394,13 +394,20 @@ userRouter.put('/update', requireAuth, requireCapability(Capability.CHANGE_NAME)
 });
 
 userRouter.put('/img', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
-  if (!ctx.request.files) throw new Error('No files');
+  if (!ctx.request.files || !ctx.request.files.file) {
+    ctx.status = 400;
+    ctx.body = { error: 'No file uploaded' };
+    return;
+  }
+
   const params: UploadProfileImgParams = {
     _id: ctx.state.user._id.toString(),
-    img: ctx.request.files.file,
-    previousImage: ctx.request.query.previousImage as string
+    img: ctx.request.files.file, // matches frontend file key
+    previousImage: ctx.request.body.previousImage as string // reads from FormData payload cleanly
   };
-  ctx.body = await uploadProfileImg(params);
+
+  const url = await uploadProfileImg(params);
+  ctx.body = { url };
 });
 
 userRouter.delete('/img', requireAuth, async (ctx) => {

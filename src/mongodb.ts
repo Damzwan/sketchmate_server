@@ -461,21 +461,24 @@ export async function updateUser(params: UpdateUserParams): Promise<Res<void>> {
   }
 }
 
-export async function uploadProfileImg(params: UploadProfileImgParams): Promise<Res<string>> {
+export async function uploadProfileImg(params: UploadProfileImgParams): Promise<string> {
   try {
-    const url = await s3Creator.uploadFile(params.img.filepath, params.img.mimetype, CONTAINER.account);
+    const url = await s3Creator.uploadFile(
+      params.img.filepath,
+      params.img.mimetype,
+      CONTAINER.account
+    );
 
     const user = await user_model.findById(params._id).lean() as UserDocument | null;
     if (!user) {
       fs.promises.unlink(params.img.filepath).catch(console.error);
-      return;
+      throw new Error('User not found');
     }
 
     await user_model.updateOne({ _id: params._id }, { $set: { img: url } });
 
     if (user.mates && user.mates.length > 0) {
       const mateIds = user.mates.map(m => m._id);
-
       await user_model.updateMany(
         { _id: { $in: mateIds }, 'mates._id': params._id },
         { $set: { 'mates.$.img': url } }
@@ -485,11 +488,14 @@ export async function uploadProfileImg(params: UploadProfileImgParams): Promise<
     if (params.previousImage && !params.previousImage.includes('stock')) {
       s3Creator.deleteBlob(params.previousImage, CONTAINER.account).catch(console.error);
     }
+
     fs.promises.unlink(params.img.filepath).catch(console.error);
 
     return url;
   } catch (e) {
-    if (params.img?.filepath) fs.promises.unlink(params.img.filepath).catch(console.error);
+    if (params.img?.filepath) {
+      fs.promises.unlink(params.img.filepath).catch(console.error);
+    }
     throw new Error('Failed to change profile image');
   }
 }
