@@ -223,11 +223,12 @@ export class S3Creator {
 
   async getPresignedUploadUrl(
     contentType: string,
-    bucketName = CONTAINER.drawings
+    bucketName = CONTAINER.drawings,
+    customKey?: string // Added optional custom key parameter
   ): Promise<{ signedUrl: string; key: string; publicUrl: string }> {
     try {
       const extension = contentType.split('/')[1] || 'bin';
-      const key = `public-posts/${uuidv4()}.${extension}`;
+      const key = customKey || `uploads/${uuidv4()}.${extension}`;
 
       const command = new PutObjectCommand({
         Bucket: bucketName,

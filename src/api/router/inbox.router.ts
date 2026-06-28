@@ -13,6 +13,8 @@ import {
 import { inbox_model } from '../../models/inbox.model';
 import { user_model } from '../../models/user.model';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
+import { CONTAINER } from '../../s3';
+import { v4 as uuidv4 } from 'uuid';
 
 export const inboxRouter = new Router();
 
@@ -99,10 +101,13 @@ inboxRouter.post(
   requireCapability(Capability.SEND_INBOX_DRAWING),
   async (ctx) => {
     try {
+      const userId = ctx.state.user._id.toString();
+      const uniqueId = uuidv4();
+
       const [drawingUrls, imageUrls, thumbnailUrls] = await Promise.all([
-        s3Creator.getPresignedUploadUrl('application/gzip'),
-        s3Creator.getPresignedUploadUrl('image/webp'),
-        s3Creator.getPresignedUploadUrl('image/webp')
+        s3Creator.getPresignedUploadUrl('application/gzip', CONTAINER.drawings, `inbox/${userId}/${uniqueId}.gz`),
+        s3Creator.getPresignedUploadUrl('image/webp', CONTAINER.drawings, `inbox/${userId}/${uniqueId}.webp`),
+        s3Creator.getPresignedUploadUrl('image/webp', CONTAINER.drawings, `inbox/${userId}/${uniqueId}-thumb.webp`)
       ]);
 
       ctx.body = {

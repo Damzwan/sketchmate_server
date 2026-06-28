@@ -4,18 +4,17 @@ import { createSaved, deleteSaved, getSavedDrawings } from '../services/saved-dr
 import { requireAuth } from '../../middleware/auth';
 import { s3Creator } from '../../mongodb';
 import { CONTAINER } from '../../s3';
+import { v4 as uuidv4 } from 'uuid';
 
 export const savedRouter = new Router();
 savedRouter.use(requireAuth);
 
-// GET /v2/saved/presigned
-// Frontend calls this first to get the S3 upload URLs
 savedRouter.get('/presigned/urls', async (ctx) => {
+  const userId = ctx.state.user._id.toString();
+  const uniqueId = uuidv4();
 
-  // Get a ticket for the WebP Thumbnail
-  const imgData = await s3Creator.getPresignedUploadUrl('image/webp', CONTAINER.drawings);
-  // Get a ticket for the JSON File
-  const jsonData = await s3Creator.getPresignedUploadUrl('application/json', CONTAINER.drawings);
+  const imgData = await s3Creator.getPresignedUploadUrl('image/webp', CONTAINER.drawings, `saved/${userId}/${uniqueId}.webp`);
+  const jsonData = await s3Creator.getPresignedUploadUrl('application/json', CONTAINER.drawings, `saved/${userId}/${uniqueId}.json`);
 
   ctx.body = {
     imgUploadUrl: imgData.signedUrl,
@@ -25,14 +24,11 @@ savedRouter.get('/presigned/urls', async (ctx) => {
   };
 });
 
-// GET /v2/saved/:userId
 savedRouter.get('/:userId', async (ctx) => {
   const user_id = ctx.params.userId;
   ctx.body = await getSavedDrawings(user_id);
 });
 
-// POST /v2/saved/:userId
-// Called AFTER the frontend successfully pushes files to S3
 savedRouter.post('/:userId', async (ctx) => {
   const { img, drawing } = ctx.request.body as any;
 
@@ -47,7 +43,6 @@ savedRouter.post('/:userId', async (ctx) => {
   });
 });
 
-// DELETE /v2/saved/:id
 savedRouter.delete('/:id', async (ctx) => {
   const saved_id = ctx.params.id;
   const user_id = ctx.query.user_id as string;

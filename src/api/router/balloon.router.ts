@@ -15,6 +15,10 @@ import {
   createBalloonV3,
   triageWaitingRoomV3
 } from '../services/balloon.service.v3';
+import { v4 as uuidv4 } from 'uuid';
+import { CONTAINER } from '../../s3';
+
+
 
 export const balloonRouter = new Router();
 
@@ -24,10 +28,13 @@ balloonRouter.post(
   requireCapability(Capability.SEND_BALLOON),
   async (ctx) => {
     try {
+      const userId = ctx.state.user._id.toString();
+      const uniqueId = uuidv4();
+
       const [drawingUrls, imageUrls, thumbnailUrls] = await Promise.all([
-        s3Creator.getPresignedUploadUrl('application/gzip'),
-        s3Creator.getPresignedUploadUrl('image/webp'),
-        s3Creator.getPresignedUploadUrl('image/webp')
+        s3Creator.getPresignedUploadUrl('application/gzip', CONTAINER.drawings, `balloons/${userId}/${uniqueId}.gz`),
+        s3Creator.getPresignedUploadUrl('image/webp', CONTAINER.drawings, `balloons/${userId}/${uniqueId}.webp`),
+        s3Creator.getPresignedUploadUrl('image/webp', CONTAINER.drawings, `balloons/${userId}/${uniqueId}-thumb.webp`)
       ]);
       ctx.body = { drawing: drawingUrls, image: imageUrls, thumbnail: thumbnailUrls };
     } catch (error) {

@@ -21,15 +21,19 @@ import { shapeFeedPost } from '../services/post.service';
 import { quota_usage_model } from '../../models/quota_usage.model';
 import { startOfUtcDay } from '../../config/quota.config';
 import { dispatchNotification } from '../services/notification.service';
+import { v4 as uuidv4 } from 'uuid';
 
 const postRouter = new Router();
 
 postRouter.post('/upload-urls', requireAuth, requireCapability(Capability.CREATE_POST), async (ctx) => {
   try {
+    const userId = ctx.state.user._id.toString();
+    const uniqueId = uuidv4();
+
     const [drawingUrls, imageUrls, thumbnailUrls] = await Promise.all([
-      s3Creator.getPresignedUploadUrl('application/gzip'),
-      s3Creator.getPresignedUploadUrl('image/webp'),
-      s3Creator.getPresignedUploadUrl('image/webp')
+      s3Creator.getPresignedUploadUrl('application/gzip', CONTAINER.drawings, `public-posts/${userId}/${uniqueId}.gz`),
+      s3Creator.getPresignedUploadUrl('image/webp', CONTAINER.drawings, `public-posts/${userId}/${uniqueId}.webp`),
+      s3Creator.getPresignedUploadUrl('image/webp', CONTAINER.drawings, `public-posts/${userId}/${uniqueId}-thumb.webp`)
     ]);
 
     ctx.body = {
