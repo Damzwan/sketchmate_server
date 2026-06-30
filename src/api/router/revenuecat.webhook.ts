@@ -1,6 +1,6 @@
 import Router from 'koa-router';
 import { user_model } from '../../models/user.model';
-import { grantsForRcProduct } from '../../config/catalog.config';
+import { grantsForRcProduct, CATALOG_BY_ID } from '../../config/catalog.config';
 
 /**
  * RevenueCat webhook.
@@ -13,6 +13,11 @@ import { grantsForRcProduct } from '../../config/catalog.config';
  * brushes, packs):
  *   - INITIAL_PURCHASE       → grant items
  *   - NON_RENEWING_PURCHASE  → grant items (one-time consumable/non-consumable)
+ *   - CANCELLATION           → store refund of a one-time purchase → revoke
+ *
+ * We only ever touch inventory for products that map to catalog grants. A plain
+ * subscription cancellation maps to nothing, so cosmetics are never stripped on
+ * a lapsed Pro — only a real refund of a cosmetic revokes it.
  *
  * Subscription state (Pro / Lifetime entitlement) is read on the client via
  * `Purchases.getCustomerInfo()` and synced through `subscription_tier` on
@@ -33,6 +38,9 @@ interface RcWebhookBody {
 }
 
 const GRANT_EVENTS = new Set(['INITIAL_PURCHASE', 'NON_RENEWING_PURCHASE']);
+const REVOKE_EVENTS = new Set(['CANCELLATION', 'REFUND']);
+
+const SUPPORTER_TITLE = 'title.supporter';
 
 export const revenuecatWebhookRouter = new Router();
 
@@ -56,8 +64,11 @@ revenuecatWebhookRouter.post('/revenuecat', async (ctx) => {
     return;
   }
 
+  const isGrant = GRANT_EVENTS.has(event.type);
+  const isRevoke = REVOKE_EVENTS.has(event.type);
+
   // Always respond 200 quickly so RC doesn't retry on unknown event types.
-  if (!GRANT_EVENTS.has(event.type)) {
+  if (!isGrant && !isRevoke) {
     console.log(`[RC webhook] ignoring event: ${event.type}`);
     ctx.status = 200;
     ctx.body = { ok: true, ignored: true };
@@ -72,6 +83,9 @@ revenuecatWebhookRouter.post('/revenuecat', async (ctx) => {
     return;
   }
 
+  // Only products that map to catalog grants touch inventory. This is also what
+  // keeps a subscription CANCELLATION from stripping cosmetics — Pro maps to no
+  // grants, so it falls through here.
   const grants = grantsForRcProduct(product_id);
   if (grants.length === 0) {
     console.warn(`[RC webhook] no grants mapped for product: ${product_id}`);
@@ -81,23 +95,69 @@ revenuecatWebhookRouter.post('/revenuecat', async (ctx) => {
   }
 
   try {
-    const result = await user_model.updateOne(
-      { auth_id: app_user_id },
-      { $addToSet: { inventory: { $each: grants } } }
-    );
-
-    if (result.matchedCount === 0) {
-      console.warn(`[RC webhook] no user matched auth_id: ${app_user_id}`);
-      // Still 200 — don't make RC retry forever for a missing user.
-    } else {
-      console.log(
-        `[RC webhook] granted [${grants.join(', ')}] to ${app_user_id} ` +
-        `(product: ${product_id}, event: ${event.type})`
+    if (isGrant) {
+      // Any purchase also earns the Supporter title.
+      const grantsWithTitle = [...grants, SUPPORTER_TITLE];
+      const result = await user_model.updateOne(
+        { auth_id: app_user_id },
+        { $addToSet: { inventory: { $each: grantsWithTitle } } }
       );
+
+      if (result.matchedCount === 0) {
+        console.warn(`[RC webhook] no user matched auth_id: ${app_user_id}`);
+      } else {
+        console.log(
+          `[RC webhook] granted [${grantsWithTitle.join(', ')}] to ${app_user_id} ` +
+          `(product: ${product_id}, event: ${event.type})`
+        );
+      }
+
+      ctx.status = 200;
+      ctx.body = { ok: true, granted: grantsWithTitle };
+      return;
     }
 
+    // ─── Revoke (refund) ──────────────────────────────────────────────────────
+    // Pull the refunded product's items, then drop the Supporter title if the
+    // user no longer owns ANY purchasable item and isn't Pro.
+    await user_model.updateOne(
+      { auth_id: app_user_id },
+      { $pull: { inventory: { $in: grants } } }
+    );
+
+    const user = await user_model
+      .findOne({ auth_id: app_user_id })
+      .select('inventory subscription_tier')
+      .lean();
+
+    if (!user) {
+      console.warn(`[RC webhook] no user matched auth_id: ${app_user_id}`);
+      ctx.status = 200;
+      ctx.body = { ok: true, revoked: grants };
+      return;
+    }
+
+    const inventory = user.inventory ?? [];
+    const stillSupporter =
+      user.subscription_tier === 'pro' ||
+      inventory.some((id) => Boolean(CATALOG_BY_ID[id]));
+
+    const revoked = [...grants];
+    if (!stillSupporter && inventory.includes(SUPPORTER_TITLE)) {
+      await user_model.updateOne(
+        { auth_id: app_user_id },
+        { $pull: { inventory: SUPPORTER_TITLE } }
+      );
+      revoked.push(SUPPORTER_TITLE);
+    }
+
+    console.log(
+      `[RC webhook] revoked [${revoked.join(', ')}] from ${app_user_id} ` +
+      `(product: ${product_id}, event: ${event.type})`
+    );
+
     ctx.status = 200;
-    ctx.body = { ok: true, granted: grants };
+    ctx.body = { ok: true, revoked };
   } catch (err) {
     console.error('[RC webhook] DB error', err);
     ctx.status = 500;

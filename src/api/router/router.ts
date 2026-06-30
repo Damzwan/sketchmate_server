@@ -63,12 +63,14 @@ import { quotaRouter } from './quota.router';
 import { notificationRouter } from './notification.router';
 import { revenuecatWebhookRouter } from './revenuecat.webhook';
 import adminInventoryRouter from './admin.inventory.router';
+import { titlesRouter } from './titles.router';
 import { savedRouter } from './saved-drawing.router';
 
 export const router = new Router();
 
 router.use('/v2/post', postRouter.routes(), postRouter.allowedMethods());
 router.use('/v2/user', userRouter.routes(), userRouter.allowedMethods());
+router.use('/v2/user/titles', titlesRouter.routes(), titlesRouter.allowedMethods());
 router.use('/v2/moderation', moderationRouter.routes(), moderationRouter.allowedMethods());
 router.use('/v2/chats', chatRouter.routes(), chatRouter.allowedMethods());
 router.use('/v2/relationship', relationshipRouter.routes(), relationshipRouter.allowedMethods());
