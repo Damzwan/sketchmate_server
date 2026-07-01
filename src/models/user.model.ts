@@ -7,7 +7,7 @@ const customizationSchema = new Schema({
   themeId: { type: String, default: 'classic' },
   fontId: { type: String, default: 'sketch' },
   fontEffectId: { type: String, default: '' },
-  atmosphereId: { type: String, default: '' },
+  worldId: { type: String, default: '' },
   decorationId: { type: String, default: 'none' },
   effectId: { type: String, default: 'none' },
   titleId: { type: String, default: '' },
