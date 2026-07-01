@@ -400,7 +400,7 @@ const BUNDLE_SKUS: ShopSku[] = [
 		],
 		category: 'pack',
 		name: 'Neon Nights',
-		desc: 'A full neon makeover — glow head to toe.',
+		desc: 'A full neon makeover, glow head to toe.',
 		emoji: '🌃',
 		featured: true
 	},
