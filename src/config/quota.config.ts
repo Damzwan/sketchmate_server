@@ -10,6 +10,12 @@ export const QUOTAS: Record<SubscriptionTier, DailyQuota> = {
     balloons_per_day: 5,
     posts_per_day: 6,
     max_mates: 50
+  },
+  // Lifetime = all access; at least Pro limits.
+  lifetime: {
+    balloons_per_day: 5,
+    posts_per_day: 6,
+    max_mates: 50
   }
 };
 

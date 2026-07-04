@@ -1,6 +1,11 @@
 import Router from 'koa-router';
 import { user_model } from '../../models/user.model';
-import { grantsForRcProduct, CATALOG_BY_ID } from '../../config/catalog.config';
+import {
+  grantsForRcProduct,
+  CATALOG_BY_ID,
+  LIFETIME_RC_PRODUCT,
+  isPaidTier
+} from '../../config/catalog.config';
 
 /**
  * RevenueCat webhook.
@@ -83,6 +88,44 @@ revenuecatWebhookRouter.post('/revenuecat', async (ctx) => {
     return;
   }
 
+  // ─── Lifetime ─────────────────────────────────────────────────────────────
+  // Lifetime is a one-time product with no catalog grants (it unlocks
+  // everything via tier, not inventory). Handle it here so the webhook — not
+  // just the client — persists it under the account. Grant → tier 'lifetime' +
+  // Supporter title; refund → back to 'free'.
+  if (product_id === LIFETIME_RC_PRODUCT) {
+    try {
+      if (isGrant) {
+        const result = await user_model.updateOne(
+          { auth_id: app_user_id },
+          {
+            $set: { subscription_tier: 'lifetime' },
+            $addToSet: { inventory: SUPPORTER_TITLE }
+          }
+        );
+        if (result.matchedCount === 0) {
+          console.warn(`[RC webhook] no user matched auth_id: ${app_user_id}`);
+        } else {
+          console.log(`[RC webhook] LIFETIME granted to ${app_user_id}`);
+        }
+      } else {
+        // Refund of lifetime → drop to free. Client re-reads customerInfo too.
+        await user_model.updateOne(
+          { auth_id: app_user_id },
+          { $set: { subscription_tier: 'free' } }
+        );
+        console.log(`[RC webhook] LIFETIME revoked from ${app_user_id}`);
+      }
+      ctx.status = 200;
+      ctx.body = { ok: true, lifetime: isGrant };
+    } catch (err) {
+      console.error('[RC webhook] DB error (lifetime)', err);
+      ctx.status = 500;
+      ctx.body = { error: 'Internal error' };
+    }
+    return;
+  }
+
   // Only products that map to catalog grants touch inventory. This is also what
   // keeps a subscription CANCELLATION from stripping cosmetics — Pro maps to no
   // grants, so it falls through here.
@@ -139,7 +182,7 @@ revenuecatWebhookRouter.post('/revenuecat', async (ctx) => {
 
     const inventory = user.inventory ?? [];
     const stillSupporter =
-      user.subscription_tier === 'pro' ||
+      isPaidTier(user.subscription_tier) ||
       inventory.some((id) => Boolean(CATALOG_BY_ID[id]));
 
     const revoked = [...grants];

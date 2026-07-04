@@ -816,7 +816,7 @@ export interface SubmitReportRes {
   message?: string;
 }
 
-export type SubscriptionTier = "free" | "pro";
+export type SubscriptionTier = "free" | "pro" | "lifetime";
 
 // todo rename
 export interface DailyQuota {

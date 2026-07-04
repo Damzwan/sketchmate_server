@@ -1,7 +1,7 @@
 import Router from 'koa-router';
 import { requireAuth } from '../../middleware/auth';
 import { user_model } from '../../models/user.model';
-import { CATALOG_BY_ID } from '../../config/catalog.config';
+import { CATALOG_BY_ID, isPaidTier } from '../../config/catalog.config';
 
 /**
  * Engagement titles.
@@ -44,7 +44,7 @@ function eligibleTitles(user: {
   if (!user.createdAt || new Date(user.createdAt) <= EARLY_TESTER_CUTOFF) {
     out.push(TITLE_ITEM.earlyTester);
   }
-  if (user.subscription_tier === 'pro' || ownsAnyPurchasable(inventory)) {
+  if (isPaidTier(user.subscription_tier) || ownsAnyPurchasable(inventory)) {
     out.push(TITLE_ITEM.supporter);
   }
   return out;

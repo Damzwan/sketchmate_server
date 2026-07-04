@@ -44,6 +44,7 @@ import {
 import { subscribeV2, unsubscribeV2 } from '../services/user.service';
 import { getPublicLobbiesSnapshot } from '../socket/drawSyncing';
 import { router } from './router';
+import { isPaidTier } from '../../config/catalog.config';
 
 export const userRouter = new Router();
 
@@ -135,8 +136,13 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
 
   const updateData: any = {};
 
-  if (subscription_tier && ['free', 'pro'].includes(subscription_tier)) {
-    updateData.subscription_tier = subscription_tier;
+  // Accept client tier sync. Never let a 'pro'/'free' sync clobber a lifetime
+  // account (lifetime is a one-time purchase — RC entitlement can momentarily
+  // read as plain Pro on some paths). Webhook remains authoritative for grants.
+  if (subscription_tier && ['free', 'pro', 'lifetime'].includes(subscription_tier)) {
+    if (!(user.subscription_tier === 'lifetime' && subscription_tier !== 'lifetime')) {
+      updateData.subscription_tier = subscription_tier;
+    }
   }
 
   if (name && name !== user.name) {
@@ -158,7 +164,7 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
       return;
     }
 
-    const isPro = user.subscription_tier === 'pro';
+    const isPro = isPaidTier(user.subscription_tier);
     const daysSinceChange = user.last_name_change
       ? dayjs().diff(dayjs(user.last_name_change), 'day')
       : 999;

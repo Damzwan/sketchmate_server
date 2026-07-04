@@ -9,6 +9,7 @@ import { s3Creator } from '../../mongodb';
 import { checkSocketCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
 import { dispatchNotification } from '../services/notification.service';
+import { isPaidTier } from '../../config/catalog.config';
 
 interface PublicLobby {
   id: string;
@@ -178,7 +179,7 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       }
       if (clients.length >= publicRoom.maxUsers) {
         const tier = socket.data.user?.subscription_tier || 'free';
-        if (tier !== 'pro') {
+        if (!isPaidTier(tier)) {
           socket.emit('join-error', { reason: 'ROOM_FULL' });
           return;
         }
