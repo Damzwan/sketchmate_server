@@ -31,6 +31,23 @@ export enum mixpanelEvents {
   balloon_v2_stop = 'balloon_v2_stop',         // User clicked "Stop receiving balloons"
   balloon_v2_create = 'balloon_v2_create',
   balloon_v2_cancel = 'balloon_v2_cancel',
+
+  // --- v2 Social: Posts ---
+  post_v2_publish = 'post_v2_publish',
+  post_v2_react = 'post_v2_react',
+  post_v2_react_removed = 'post_v2_react_removed',
+  post_v2_comment = 'post_v2_comment',
+  post_v2_comment_deleted = 'post_v2_comment_deleted',
+  post_v2_delete = 'post_v2_delete',
+
+  // --- v2 Social: Relationships ---
+  follow_v2 = 'follow_v2',
+  unfollow_v2 = 'unfollow_v2',
+  mate_request_v2 = 'mate_request_v2',          // sent an upgrade-to-mate request
+  mate_request_cancel_v2 = 'mate_request_cancel_v2',
+  mate_respond_v2 = 'mate_respond_v2',          // accepted / declined a mate request
+  unfriend_v2 = 'unfriend_v2',
+  block_v2 = 'block_v2',
 }
 
 const mp = Mixpanel.init(process.env.mixpanel_token!, {

@@ -22,6 +22,7 @@ import { quota_usage_model } from '../../models/quota_usage.model';
 import { startOfUtcDay } from '../../config/quota.config';
 import { dispatchNotification } from '../services/notification.service';
 import { v4 as uuidv4 } from 'uuid';
+import { mixpanelEvents, trackEvent } from '../../mixpanel';
 
 const postRouter = new Router();
 
@@ -98,6 +99,14 @@ postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POS
       : { _id: ctx.state.user._id.toString(), name: 'Unknown', img: '' };
 
     const hydrated = shapeFeedPost(leanPost, author, null, []);
+
+    trackEvent(author._id, mixpanelEvents.post_v2_publish, {
+      post_id: leanPost._id.toString(),
+      has_description: !!description,
+      enable_comments: !!enable_comments,
+      enable_remix: !!enable_remix,
+      aspect_ratio
+    });
 
     ctx.status = 201;
     ctx.body = { post: hydrated };
@@ -406,6 +415,12 @@ postRouter.post('/:post_id/comment', requireAuth, requireCapability(Capability.C
       }).catch(err => console.error('Notification dispatch failed:', err));
     }
 
+    trackEvent(author_id.toString(), mixpanelEvents.post_v2_comment, {
+      post_id,
+      post_author_id: post.author_id.toString(),
+      is_own_post: post.author_id.toString() === author_id.toString()
+    });
+
     ctx.status = 201;
     ctx.body = { comment: newComment.toObject() };
   } catch (error) {
@@ -446,6 +461,12 @@ postRouter.delete('/:post_id/comment/:comment_id', requireAuth, async (ctx) => {
 
     await post_comment_model.deleteOne({ _id: comment._id });
     await post_model.updateOne({ _id: post._id }, { $inc: { comment_count: -1 } });
+
+    trackEvent(user_id, mixpanelEvents.post_v2_comment_deleted, {
+      post_id,
+      comment_id,
+      by_post_owner: post.author_id.toString() === user_id
+    });
 
     ctx.status = 200;
     ctx.body = { message: 'Comment deleted successfully' };
@@ -491,6 +512,10 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
           )
         ]);
       }
+      trackEvent(user_id, mixpanelEvents.post_v2_react_removed, {
+        post_id,
+        reaction_type: existing?.reaction_type ?? null
+      });
       ctx.body = { current_reaction: null };
       return;
     }
@@ -546,6 +571,14 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
       }).catch(err => console.error('Notification dispatch failed:', err));
     }
 
+    trackEvent(user_id, mixpanelEvents.post_v2_react, {
+      post_id,
+      reaction_type,
+      post_author_id: post.author_id.toString(),
+      is_own_post: post.author_id.toString() === user_id,
+      changed_reaction: !isNewReaction
+    });
+
     ctx.body = { current_reaction: reaction_type };
   } catch (error) {
     console.error('Reaction Error:', error);
@@ -596,6 +629,8 @@ postRouter.delete('/:post_id', requireAuth, async (ctx) => {
         console.error('S3 Batch Deletion Error:', err)
       );
     }
+
+    trackEvent(user_id, mixpanelEvents.post_v2_delete, { post_id });
 
     ctx.status = 200;
     ctx.body = { message: 'Post and associated data deleted successfully' };

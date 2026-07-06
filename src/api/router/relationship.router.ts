@@ -17,6 +17,7 @@ import {
   mateRequestPushNotification,
   requestAcceptedPushNotification
 } from '../../config/notification.config';
+import { mixpanelEvents, trackEvent } from '../../mixpanel';
 
 export const relationshipRouter = new Router();
 relationshipRouter.use(requireAuth);
@@ -193,6 +194,12 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
     }
   }
 
+  trackEvent(user_id, mixpanelEvents.mate_respond_v2, {
+    action,
+    resulting_status: rel.chat_status,
+    partner_id: partnerId?.toString()
+  });
+
   const partnerIsOnline = partnerId ? await isUserOnline(ctx.app.context.io, partnerId.toString()) : false;
   const iAmOnline = await isUserOnline(ctx.app.context.io, user_id);
 
@@ -229,6 +236,7 @@ relationshipRouter.put('/follow/:target_id', async (ctx) => {
       user_model.updateOne({ _id: followedOID }, { $inc: { 'stats.followers': -1 } }),
       user_model.updateOne({ _id: followerOID }, { $inc: { 'stats.following': -1 } })
     ]);
+    trackEvent(followerId, mixpanelEvents.unfollow_v2, { target_id: targetId });
     ctx.body = { isFollowing: false };
     return;
   }
@@ -277,6 +285,7 @@ relationshipRouter.put('/follow/:target_id', async (ctx) => {
     channels: { in_app: true }
   }).catch(err => console.error('Follow dispatch failed:', err));
 
+  trackEvent(followerId, mixpanelEvents.follow_v2, { target_id: targetId });
   ctx.body = { isFollowing: true };
 });
 
@@ -339,6 +348,10 @@ relationshipRouter.post('/block', async (ctx) => {
       ])
     ]);
   }
+  trackEvent(current_user_id, mixpanelEvents.block_v2, {
+    target_id,
+    previous_status: oldRel?.chat_status ?? 'none'
+  });
   ctx.body = { success: true, message: 'User blocked' };
 });
 
@@ -397,6 +410,10 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
   if (ctx.app.context.io) {
     ctx.app.context.io.to(targetId).emit('chat:mate_unfriended', { relationship_id: rel._id, unfriended_by: myId });
   }
+  trackEvent(myId, mixpanelEvents.unfriend_v2, {
+    target_id: targetId,
+    previous_status: oldRel.chat_status
+  });
   ctx.body = { success: true };
 });
 
@@ -449,6 +466,11 @@ relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capa
       }
     }).catch(err => console.error('Mate request dispatch failed:', err));
   }
+
+  trackEvent(user_id.toString(), mixpanelEvents.mate_request_v2, {
+    conversation_id,
+    partner_id: partnerId?.toString()
+  });
 
   ctx.body = { success: true };
 });
@@ -588,6 +610,11 @@ relationshipRouter.post('/:conversation_id/mate-request/cancel', async (ctx) => 
       status: rel.chat_status
     });
   }
+
+  trackEvent(user_id.toString(), mixpanelEvents.mate_request_cancel_v2, {
+    conversation_id,
+    resulting_status: rel.chat_status
+  });
 
   ctx.body = { success: true, status: rel.chat_status };
 });
