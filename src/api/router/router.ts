@@ -65,6 +65,7 @@ import { revenuecatWebhookRouter } from './revenuecat.webhook';
 import adminInventoryRouter from './admin.inventory.router';
 import { titlesRouter } from './titles.router';
 import { savedRouter } from './saved-drawing.router';
+import { devPurchasesRouter } from './dev.purchases.router';
 
 export const router = new Router();
 
@@ -80,6 +81,7 @@ router.use('/v2/quota', quotaRouter.routes(), quotaRouter.allowedMethods());
 router.use('/v2/notification', notificationRouter.routes(), notificationRouter.allowedMethods());
 router.use('/v2/saved', savedRouter.routes(), savedRouter.allowedMethods());
 
+router.use('/v2/dev/purchases', devPurchasesRouter.routes(), devPurchasesRouter.allowedMethods());
 router.use('/dev/moderation', devModerationRouter.routes(), devModerationRouter.allowedMethods());
 router.use('/webhooks', revenuecatWebhookRouter.routes());
 router.use('/admin/inventory', adminInventoryRouter.routes());
