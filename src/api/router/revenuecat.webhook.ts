@@ -50,9 +50,11 @@ const SUPPORTER_TITLE = 'title.supporter';
 export const revenuecatWebhookRouter = new Router();
 
 revenuecatWebhookRouter.post('/revenuecat', async (ctx) => {
+  console.log('si')
   // ─── Auth ─────────────────────────────────────────────────────────────────
   const authHeader = ctx.request.headers.authorization;
   const expected = `Bearer ${process.env.REVENUECAT_WEBHOOK_SECRET}`;
+
 
   if (!authHeader || authHeader !== expected) {
     ctx.status = 401;// src/stores/auth.store.ts
