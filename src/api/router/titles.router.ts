@@ -1,7 +1,7 @@
 import Router from 'koa-router';
 import { requireAuth } from '../../middleware/auth';
 import { user_model } from '../../models/user.model';
-import { CATALOG_BY_ID, isPaidTier } from '../../config/catalog.config';
+import { CATALOG_BY_ID } from '../../config/catalog.config';
 
 /**
  * Engagement titles.
@@ -12,7 +12,12 @@ import { CATALOG_BY_ID, isPaidTier } from '../../config/catalog.config';
  * triggers a re-check; it can't grant itself a title.
  *
  *   early-tester → account created before the launch cutoff
- *   supporter    → Pro, or owns any purchasable catalog item
+ *   supporter    → owns a purchased catalog item (a real IAP). NOT derived from
+ *                  `subscription_tier`: that flag is client-synced from a
+ *                  restored/sandbox RC entitlement and can read 'pro' without a
+ *                  purchase on this account, which would mis-grant Supporter to
+ *                  brand-new users. Lifetime/one-off purchases earn Supporter via
+ *                  the RC webhook, which only fires on genuine purchase events.
  *   contributor  → granted on feedback submit (POST /feedback below); there's
  *                  no eligibility to re-check, so /sync doesn't handle it
  *
@@ -26,7 +31,7 @@ const TITLE_ITEM = {
   supporter: 'title.supporter'
 } as const;
 
-const EARLY_TESTER_CUTOFF = new Date('2026-07-30T23:59:59Z');
+const EARLY_TESTER_CUTOFF = new Date('2026-07-05T23:59:59Z');
 
 function ownsAnyPurchasable(inventory: string[]): boolean {
   return inventory.some((id) => Boolean(CATALOG_BY_ID[id]));
@@ -35,7 +40,6 @@ function ownsAnyPurchasable(inventory: string[]): boolean {
 /** Server-verifiable titles the user currently qualifies for. */
 function eligibleTitles(user: {
   createdAt?: Date;
-  subscription_tier?: string;
   inventory?: string[];
 }): string[] {
   const out: string[] = [];
@@ -44,7 +48,9 @@ function eligibleTitles(user: {
   if (!user.createdAt || new Date(user.createdAt) <= EARLY_TESTER_CUTOFF) {
     out.push(TITLE_ITEM.earlyTester);
   }
-  if (isPaidTier(user.subscription_tier) || ownsAnyPurchasable(inventory)) {
+  // Purchase-only: a purchased catalog item is written to inventory solely by
+  // the RC webhook, so this can't fire without a real IAP.
+  if (ownsAnyPurchasable(inventory)) {
     out.push(TITLE_ITEM.supporter);
   }
   return out;
@@ -55,7 +61,7 @@ export const titlesRouter = new Router();
 titlesRouter.post('/sync', requireAuth, async (ctx) => {
   const user = await user_model
     .findById(ctx.state.user._id)
-    .select('createdAt subscription_tier inventory')
+    .select('createdAt inventory')
     .lean();
 
   if (!user) return ctx.throw(404, 'User not found');
