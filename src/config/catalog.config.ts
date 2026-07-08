@@ -381,10 +381,21 @@ const WORLD_SKUS: ShopSku[] = [
     rcProductId: 'sm_world_dragon',
     grants: ['world.dragon'],
     category: 'world',
-    name: 'Dragon\'s Lair',
+    name: "Dragon's Lair",
     desc: 'Fiery peaks & a roaming dragon',
     refId: 'dragon',
     emoji: '🐉'
+  },
+  {
+    id: 'world.space',
+    kind: 'single',
+    rcProductId: 'sm_world_space',
+    grants: ['world.space'],
+    category: 'world',
+    name: 'Cosmic Drift',
+    desc: 'Meteor showers, a drifting astronaut & launching rockets',
+    refId: 'space',
+    emoji: '🚀'
   }
 ];
 
@@ -458,7 +469,7 @@ const BUNDLE_SKUS: ShopSku[] = [
       'font_effect.lava'
     ],
     category: 'pack',
-    name: 'Dragon\'s Hoard',
+    name: "Dragon's Hoard",
     desc: 'Dark, cracked glass & a roaming dragon.',
     emoji: '🐉',
     featured: true
@@ -509,7 +520,7 @@ export const buildItemId = (category: ItemCategory, refId: string): string =>
   `${category}.${refId}`;
 
 /** Expand a SKU's grants. Bundles already have multi-item grants; singles
- *  return their lone item. */
+ * return their lone item. */
 export const grantsForSku = (skuId: string): string[] => {
   const sku = CATALOG_BY_ID[skuId];
   return sku ? sku.grants : [];
@@ -535,7 +546,7 @@ export const CATEGORY_EMOJI: Record<ItemCategory, string> = {
 };
 
 /** Human-friendly label + icon for an item ID, for showing exactly what a
- *  bundle contains. Falls back to a title-cased refId when no SKU defines it. */
+ * bundle contains. Falls back to a title-cased refId when no SKU defines it. */
 export const describeGrant = (
   itemId: string
 ): { label: string; category: ItemCategory; emoji: string } => {
@@ -551,27 +562,27 @@ export const describeGrant = (
 
 /** Hero items showcased at the top of the shop. Order = display order. */
 export const HIGHLIGHT_IDS: string[] = [
+  'world.space',
   'effect.shattered-glass',
-  'world.dragon',
-  'world.ocean'
+  'world.dragon'
 ];
 
 /** Pro entitlement identifier in RevenueCat. Pro unlocks app features (quota,
- *  etc.) plus the item categories in PRO_UNLOCKED_CATEGORIES. */
+ * etc.) plus the item categories in PRO_UNLOCKED_CATEGORIES. */
 export const PRO_ENTITLEMENT = 'SketchMate Pro';
 
 /** Lifetime entitlement — grants access to literally everything (every
- *  category, present & future). Backed by the `sm_pro_lifetime` product. */
+ * category, present & future). Backed by the `sm_pro_lifetime` product. */
 export const LIFETIME_ENTITLEMENT = 'Lifetime';
 export const LIFETIME_RC_PRODUCT = 'sm_pro_lifetime';
 
 /** Item categories a normal Pro subscription unlocks. Everything NOT listed
- *  stays purchase-gated (buy the single/bundle, or go Lifetime for all).
- *  Pro currently unlocks brushes only. Titles are never sub-unlocked — they're
- *  earned, handled separately. */
+ * stays purchase-gated (buy the single/bundle, or go Lifetime for all).
+ * Pro currently unlocks brushes only. Titles are never sub-unlocked — they're
+ * earned, handled separately. */
 export const PRO_UNLOCKED_CATEGORIES: ItemCategory[] = ['brush'];
 
 /** Tiers that grant Pro-level access. Lifetime is a superset of Pro, so every
- *  "is this user Pro?" gate must also pass for lifetime. */
+ * "is this user Pro?" gate must also pass for lifetime. */
 export const isPaidTier = (tier?: string): boolean =>
   tier === 'pro' || tier === 'lifetime';
