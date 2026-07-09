@@ -541,7 +541,9 @@ relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
   // 2. Fetch the paginated subset
   const rels = await relationship_model
     .find(query)
-    .sort({ updatedAt: -1 })
+    // _id tiebreaker keeps pagination stable when many rels share updatedAt —
+    // without it, skip/limit returns overlapping rows across pages.
+    .sort({ updatedAt: -1, _id: -1 })
     .skip(skip)
     .limit(Number(limit))
     .lean();
