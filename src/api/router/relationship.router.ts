@@ -407,14 +407,28 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
     await user_model.updateMany({ _id: { $in: sortedUsers } }, { $inc: { 'stats.mates': -1 } });
   }
 
-  if (ctx.app.context.io) {
-    ctx.app.context.io.to(targetId).emit('chat:mate_unfriended', { relationship_id: rel._id, unfriended_by: myId });
+  const populatedConvo = rel.conversation_id
+    ? await conversation_model
+      .findById(rel.conversation_id)
+      .populate('participants', PUBLIC_USER_FIELDS)
+      .lean() as any
+    : null;
+
+  if (populatedConvo) {
+    populatedConvo.status = 'expired';
+    populatedConvo.cooldown_until = rel.cooldown_until;
+    populatedConvo.relationship_id = rel._id.toString();
   }
+
+  sendSocketNotificationToUser(targetId, 'chat:mate_unfriended', {
+    conversation_id: rel.conversation_id?.toString(),
+    conversation: populatedConvo
+  });
   trackEvent(myId, mixpanelEvents.unfriend_v2, {
     target_id: targetId,
     previous_status: oldRel.chat_status
   });
-  ctx.body = { success: true };
+  ctx.body = { success: true, cooldown_until: rel.cooldown_until };
 });
 
 relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capability.SEND_MATE_REQUEST), async (ctx) => {
