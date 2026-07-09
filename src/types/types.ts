@@ -332,7 +332,7 @@ export interface BasePost {
 }
 
 export type FeedPost = Omit<BasePost, "createdAt" | "updatedAt"> & {
-  author: { _id: string; name: string; img: string };
+  author: { _id: string; name: string; img: string; customization?: any };
   user_reaction: string | null;
   comments: any[];
   createdAt: string;

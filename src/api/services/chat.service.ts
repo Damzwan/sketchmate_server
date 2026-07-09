@@ -3,6 +3,7 @@ import { message_model } from '../../models/message.model';
 import { relationship_model } from '../../models/relationship.model';
 import { conversation_model } from '../../models/conversation.model';
 import { RelationshipDocument } from '../../types/mongoose.types';
+import { PUBLIC_USER_FIELDS } from '../../types/projections';
 
 export interface SaveMessageOptions {
   /**
@@ -120,7 +121,7 @@ export const saveMessageLogic = async (
 
   const finalConvo = await conversation_model
     .findById(conversation._id)
-    .populate('participants', 'name img _id last_seen_version')
+    .populate('participants', PUBLIC_USER_FIELDS + ' last_seen_version')
     .populate('last_message')
     .lean() as any;
 

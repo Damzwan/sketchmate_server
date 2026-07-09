@@ -3,10 +3,11 @@ import { LeanPost, UserDocument } from '../../types/mongoose.types';
 import { user_model } from '../../models/user.model';
 import { post_reaction_model } from '../../models/post.model';
 import { Types } from 'mongoose';
+import { PUBLIC_USER_FIELDS } from '../../types/projections';
 
 export interface HydrationOverrides {
   /** Skip the author lookup — caller already has it (e.g. publish route, profile route). */
-  author?: { _id: string; name: string; img: string };
+  author?: { _id: string; name: string; img: string; customization?: any };
   /** Skip the reaction lookup — useful for freshly-created posts. */
   user_reaction?: string | null;
   /** Comments already fetched by caller (feed includes latest 2, publish has none). */
@@ -74,11 +75,16 @@ export async function hydratePost(
   if (!author) {
     const authorDoc = (await user_model
       .findById(authorIdStr)
-      .select('_id name img')
+      .select(PUBLIC_USER_FIELDS)
       .lean()) as unknown as UserDocument | null;
 
     author = authorDoc
-      ? { _id: authorDoc._id.toString(), name: authorDoc.name, img: authorDoc.img }
+      ? {
+          _id: authorDoc._id.toString(),
+          name: authorDoc.name,
+          img: authorDoc.img,
+          customization: authorDoc.customization
+        }
       : { _id: authorIdStr, name: 'Unknown', img: '' };
   }
 

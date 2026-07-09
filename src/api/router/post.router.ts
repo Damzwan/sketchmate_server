@@ -75,7 +75,7 @@ postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POS
       }) as Promise<PostDocument>,
       user_model
         .findById(authorObjectId)
-        .select('_id name img')
+        .select(PUBLIC_USER_FIELDS)
         .lean() as Promise<UserDocument | null>,
       user_model.updateOne(
         { _id: authorObjectId },
@@ -94,7 +94,8 @@ postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POS
       ? {
         _id: authorDoc._id.toString(),
         name: authorDoc.name,
-        img: authorDoc.img
+        img: authorDoc.img,
+        customization: authorDoc.customization
       }
       : { _id: ctx.state.user._id.toString(), name: 'Unknown', img: '' };
 

@@ -75,7 +75,7 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
         user_id: viewer_id,
         post_id: { $in: postIds }
       }).lean(),
-      user_model.findById(targetUserId).select('_id name img').lean() as Promise<UserDocument | null>
+      user_model.findById(targetUserId).select(PUBLIC_USER_FIELDS).lean() as Promise<UserDocument | null>
     ]);
 
     const userReactionMap = userReactions.reduce((acc, rx) => {
@@ -86,7 +86,8 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
     const author = authorInfo ? {
       _id: authorInfo._id.toString(),
       name: authorInfo.name,
-      img: authorInfo.img
+      img: authorInfo.img,
+      customization: authorInfo.customization
     } : { _id: targetUserId, name: 'Unknown', img: '' };
 
     const hydratedPosts: FeedPost[] = posts.map((post) => {
