@@ -149,6 +149,10 @@ function getOrCreateRoomState(roomId: any) {
       messageBuffer: [],
       ghostUsers: new Map(),
 
+      // Claimed areas: lobby-scoped read-only regions, max 2 per user. Cleared
+      // when the owner leaves. See claim-area / release-area handlers.
+      claimedAreas: [],
+
       lastThumbnailTime: 0,
       lastThumbnailSequenceId: 0,
       isRequestingThumbnail: false
@@ -381,7 +385,8 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       users: updatedSockets.map(s => s.data.user),
       isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0),
       sessionId: roomState.sessionId,
-      isPublic
+      isPublic,
+      claimedAreas: roomState.claimedAreas || []
     });
 
     // Only announce "user-joined" if they weren't a ghost.
@@ -433,6 +438,9 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     const timeoutId = setTimeout(() => {
       roomState.ghostUsers.delete(userId);
 
+      // Owner is really gone now — free their claimed areas for everyone.
+      releaseUserAreas(roomId, userId);
+
       io.to(roomId).emit('user-left', {
         user: socket.data.user,
         timestamp: new Date().toISOString(),
@@ -457,7 +465,60 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     }
   });
 
+  // ── Claimed areas ─────────────────────────────────────────────────────────
+  const MAX_AREAS_PER_USER = 2;
+
+  function releaseUserAreas(roomId: string, userId?: string) {
+    if (!userId) return;
+    const rs = ROOM_STATES.get(roomId);
+    if (!rs || !rs.claimedAreas?.length) return;
+    const uid = userId.toString();
+    const removed = rs.claimedAreas.filter((a: any) => a.userId.toString() === uid);
+    if (!removed.length) return;
+    rs.claimedAreas = rs.claimedAreas.filter((a: any) => a.userId.toString() !== uid);
+    for (const a of removed) io.to(roomId).emit('area-released', { areaId: a.id });
+  }
+
+  socket.on('claim-area', ({ roomId, area }) => {
+    const userId = socket.data.user?._id?.toString();
+    if (!userId || !roomId || !area) return;
+    if (area.userId?.toString() !== userId) return;
+
+    const rs = getOrCreateRoomState(roomId);
+    if (!rs) return;
+
+    const mine = rs.claimedAreas.filter((a: any) => a.userId.toString() === userId);
+    if (mine.length >= MAX_AREAS_PER_USER) return;
+
+    const x = Number(area.x), y = Number(area.y), w = Number(area.w), h = Number(area.h);
+    if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return;
+
+    const clean = {
+      id: String(area.id),
+      userId,
+      userName: socket.data.user?.name,
+      x, y, w, h
+    };
+    // Idempotent: ignore a duplicate id (client already rendered it optimistically).
+    if (rs.claimedAreas.some((a: any) => a.id === clean.id)) return;
+
+    rs.claimedAreas.push(clean);
+    io.to(roomId).emit('area-claimed', { area: clean });
+  });
+
+  socket.on('release-area', ({ roomId, areaId }) => {
+    const userId = socket.data.user?._id?.toString();
+    const rs = ROOM_STATES.get(roomId);
+    if (!rs || !userId) return;
+    const before = rs.claimedAreas.length;
+    rs.claimedAreas = rs.claimedAreas.filter(
+      (a: any) => !(a.id === areaId && a.userId.toString() === userId)
+    );
+    if (rs.claimedAreas.length !== before) io.to(roomId).emit('area-released', { areaId });
+  });
+
   socket.on('leave-room', async ({ roomId }) => {
+    releaseUserAreas(roomId, socket.data.user?._id?.toString());
     socket.leave(roomId);
     socket.data.currentLobbyId = null;
 
