@@ -281,6 +281,16 @@ const FONT_SKUS: ShopSku[] = [
     name: 'Puddles',
     desc: 'Bubbly fun',
     refId: 'puddles'
+  },
+  {
+    id: 'font.medieval',
+    kind: 'single',
+    rcProductId: 'sm_font_medieval',
+    grants: ['font.medieval'],
+    category: 'font',
+    name: 'Medieval',
+    desc: 'Go back in time',
+    refId: 'medieval'
   }
 ];
 
@@ -381,7 +391,7 @@ const WORLD_SKUS: ShopSku[] = [
     rcProductId: 'sm_world_dragon',
     grants: ['world.dragon'],
     category: 'world',
-    name: "Dragon's Lair",
+    name: 'Dragon\'s Lair',
     desc: 'Fiery peaks & a roaming dragon',
     refId: 'dragon',
     emoji: '🐉'
@@ -409,68 +419,64 @@ const WORLD_SKUS: ShopSku[] = [
 // rather than a pile of near-duplicates. Cheaper than buying the pieces.
 const BUNDLE_SKUS: ShopSku[] = [
   {
-    id: 'pack.cyber',
+    id: 'pack.lost_in_space',
     kind: 'bundle',
-    rcProductId: 'sm_pack_cyber',
+    rcProductId: 'sm_pack_lost_in_space',
     grants: [
       'theme.midnight',
-      'decoration.neon-halo',
-      'effect.shimmer-rainbow',
-      'font_effect.supernova',
-      'brush.neon'
-    ],
-    category: 'pack',
-    name: 'Neon Nights',
-    desc: 'A full neon makeover, glow head to toe.',
-    emoji: '🌃',
-    featured: true
-  },
-  {
-    id: 'pack.gold',
-    kind: 'bundle',
-    rcProductId: 'sm_pack_gold',
-    grants: [
-      'theme.gold',
-      'effect.shimmer-gold',
+      'font.amatic',
       'font_effect.velvet',
-      'world.autumn',
-      'brush.calligraphy'
+      'decoration.wave',
+      'world.space'
     ],
     category: 'pack',
-    name: 'Golden Hour',
-    desc: 'Warm, gilded & quietly luxurious.',
-    emoji: '✨',
+    name: 'Lost in Space',
+    desc: 'Drift away into the cosmos with a touch of velvet.',
+    emoji: '🚀',
     featured: true
   },
   {
-    id: 'pack.wild',
+    id: 'pack.sketchy_aquarium',
     kind: 'bundle',
-    rcProductId: 'sm_pack_wild',
+    rcProductId: 'sm_pack_sketchy_aquarium',
+    grants: ['theme.ocean', 'font.indie', 'effect.grain', 'world.ocean'],
+    category: 'pack',
+    name: 'Sketchy Aquarium',
+    desc: 'Hand-drawn vibes under the sea.',
+    emoji: '🐠',
+    featured: true
+  },
+  {
+    id: 'pack.starter',
+    kind: 'bundle',
+    rcProductId: 'sm_pack_starter',
+    grants: [
+      'theme.sunset',
+      'font.anton',
+      'font_effect.lava',
+      'decoration.neon-halo',
+      'effect.shimmer-rainbow'
+    ],
+    category: 'pack',
+    name: 'Starter Pack',
+    desc: 'Kickstart your style.',
+    emoji: '🌅',
+    featured: true
+  },
+  {
+    id: 'pack.dragon_sky',
+    kind: 'bundle',
+    rcProductId: 'sm_pack_dragon_sky',
     grants: [
       'theme.ocean',
-      'decoration.wave',
-      'world.ocean',
-      'font.indie'
+      'font.medieval',
+      'font_effect.puffy',
+      'effect.shimmer-gold',
+      'world.dragon'
     ],
     category: 'pack',
-    name: 'Into the Wild',
-    desc: 'Ocean blues with a living aquarium.',
-    emoji: '🌊',
-    featured: true
-  },
-  {
-    id: 'pack.dragon',
-    kind: 'bundle',
-    rcProductId: 'sm_pack_dragon',
-    grants: [
-      'theme.noir',
-      'effect.shattered-glass',
-      'world.dragon',
-      'font_effect.lava'
-    ],
-    category: 'pack',
-    name: "Dragon's Hoard",
-    desc: 'Dark, cracked glass & a roaming dragon.',
+    name: 'Dragon in the Sky',
+    desc: 'Go back to medieval times.',
     emoji: '🐉',
     featured: true
   }
