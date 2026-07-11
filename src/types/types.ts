@@ -213,6 +213,7 @@ export interface User {
   description?: string;
   img: string;
   subscription_tier?: string;
+  feed_level?: 'off' | 'mates' | 'open';
   stats: UserStats;
 
   // Moderation — both optional so legacy clients don't crash if absent.

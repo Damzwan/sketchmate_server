@@ -501,7 +501,12 @@ relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
     query.chat_status = 'blocked';
     query.blocked_by = oid;
   } else if (type === 'mates') {
-    query.chat_status = { $in: ['mate', 'temporary', 'pending_mate'] };
+    // Permanent mates + pending requests always count. A 'temporary' (24h trial)
+    // only counts while it hasn't expired — an expired trial is not a mate.
+    query.$or = [
+      { chat_status: { $in: ['mate', 'pending_mate'] } },
+      { chat_status: 'temporary', expires_at: { $gt: new Date() } }
+    ];
   } else if (type === 'followers') {
     query.follows = { $elemMatch: { followed: oid } };
   } else if (type === 'following') {

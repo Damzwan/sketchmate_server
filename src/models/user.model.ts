@@ -104,6 +104,7 @@ const user_schema = new Schema<UserDocument>({
   saved: { type: [savedSchema], default: [] },
   last_name_change: { type: Date, default: null },
   subscription_tier: { type: String, default: 'free' },
+  feed_level: { type: String, enum: ['off', 'mates', 'open'], default: 'open' },
   migration_version: { type: Number, default: 0 },
   is_admin: { type: Boolean, required: false },
   inventory: { type: [String], default: [] }

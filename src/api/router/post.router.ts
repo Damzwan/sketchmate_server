@@ -154,12 +154,23 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
   const userIdObj = new Types.ObjectId(user_id);
 
   try {
+    const feedLevel: 'off' | 'mates' | 'open' = ctx.state.user.feed_level || 'open';
+    if (feedLevel === 'off') {
+      ctx.body = { feed: [] };
+      return;
+    }
+
     const relationships = await relationship_model.find({
       users: userIdObj
     }).lean();
 
-    const followingIds: Types.ObjectId[] = [];
+    // Split connections into tiers so MATES always rank above mere follows,
+    // which in turn rank above global discovery. Mates are the reciprocal,
+    // high-signal bond; follows are one-way interest.
+    const mateIds: Types.ObjectId[] = [];
+    const followIds: Types.ObjectId[] = [];
     const blockedIds: Types.ObjectId[] = [];
+    const now = new Date();
 
     for (const rel of relationships) {
       const otherUser = rel.users.find(id => id.toString() !== user_id);
@@ -172,32 +183,53 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
         continue;
       }
 
-      const isMate = rel.chat_status === 'mate';
+      const isActiveTemporary =
+        rel.chat_status === 'temporary' && !!rel.expires_at && new Date(rel.expires_at) > now;
+      if (rel.chat_status === 'mate' || isActiveTemporary) {
+        mateIds.push(otherUser as Types.ObjectId);
+        continue;
+      }
+
       const userFollowsOther = rel.follows?.some(f =>
         f.follower.toString() === user_id &&
         f.followed.toString() === otherUserIdStr
       );
-
-      if (isMate || userFollowsOther) {
-        followingIds.push(otherUser as Types.ObjectId);
+      if (userFollowsOther) {
+        followIds.push(otherUser as Types.ObjectId);
       }
     }
 
     let feedPosts: LeanPost[] = [];
 
-    if (followingIds.length > 0) {
-      feedPosts = await post_model.find({
-        author_id: { $in: followingIds },
+    // Tier 1 — mates, newest first.
+    if (mateIds.length > 0) {
+      const matePosts = await post_model.find({
+        author_id: { $in: mateIds },
         status: 'active'
       })
         .sort({ createdAt: -1 })
         .limit(limit)
         .lean() as unknown as LeanPost[];
+      feedPosts.push(...matePosts);
     }
 
-    if (feedPosts.length < limit) {
+    // Tier 2 — people you follow (one-way), newest first, after all mate posts.
+    if (feedPosts.length < limit && followIds.length > 0) {
+      const followPosts = await post_model.find({
+        author_id: { $in: followIds },
+        status: 'active'
+      })
+        .sort({ createdAt: -1 })
+        .limit(limit - feedPosts.length)
+        .lean() as unknown as LeanPost[];
+      feedPosts.push(...followPosts);
+    }
+
+    // Tier 3 — global discovery, only in 'open'. 'mates' stops at connections.
+    console.log(feedLevel)
+    if (feedLevel === 'open' && feedPosts.length < limit) {
       const remainingSlots = limit - feedPosts.length;
-      const excludedAuthorIds = [userIdObj, ...followingIds, ...blockedIds];
+      const excludedAuthorIds = [userIdObj, ...mateIds, ...followIds, ...blockedIds];
 
       const popLimit = Math.ceil(remainingSlots / 2);
       const newLimit = remainingSlots - popLimit;
@@ -228,7 +260,7 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
         if (newPosts[i]) interleavedGlobal.push(newPosts[i]);
       }
 
-      feedPosts = [...feedPosts, ...interleavedGlobal];
+      feedPosts.push(...interleavedGlobal);
     }
 
     if (feedPosts.length === 0) {
