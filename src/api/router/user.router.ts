@@ -1,6 +1,5 @@
 import fs from 'fs';
 import Router from 'koa-router';
-import dayjs from 'dayjs';
 import { Types } from 'mongoose';
 import { requireAuth } from '../../middleware/auth';
 import { requireCapability } from '../../middleware/moderation.middleware';
@@ -127,7 +126,6 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
   }
 });
 
-const NAME_CHANGE_COOLDOWN_DAYS = 31;
 userRouter.put('/profile', requireAuth, async (ctx) => {
   const { name, description, customization, subscription_tier } = ctx.request.body;
   const user_id = ctx.state.user._id;
@@ -165,21 +163,23 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
       return;
     }
 
+    // One-time rename: the name picked at signup (from the default 'Anonymous')
+    // is free and doesn't count; after that a free user gets exactly ONE more
+    // change, then the name locks. `last_name_change` is the "used my one edit"
+    // marker. Pro/Lifetime are exempt and never stamp it.
     const isPro = isPaidTier(user.subscription_tier);
-    const daysSinceChange = user.last_name_change
-      ? dayjs().diff(dayjs(user.last_name_change), 'day')
-      : 999;
+    const isOnboardingName = user.name === 'Anonymous';
+    const hasUsedRename = Boolean(user.last_name_change);
 
-    if (!isPro && daysSinceChange < NAME_CHANGE_COOLDOWN_DAYS) {
+    if (!isPro && !isOnboardingName && hasUsedRename) {
       ctx.status = 403;
-      ctx.body = {
-        error: 'Name change locked',
-        daysLeft: NAME_CHANGE_COOLDOWN_DAYS - daysSinceChange
-      };
+      ctx.body = { error: 'Name locked', locked: true };
       return;
     }
+
     updateData.name = name;
-    updateData.last_name_change = new Date();
+    // Consume the one allowed edit — but not for the onboarding name choice.
+    if (!isPro && !isOnboardingName) updateData.last_name_change = new Date();
   }
 
   if (description !== undefined) updateData.description = description;

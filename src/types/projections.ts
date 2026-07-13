@@ -9,6 +9,7 @@ export const PUBLIC_USER_FIELDS = [
   'customization.fontId',
   'customization.fontEffectId',
   'customization.effectId',
+  'customization.worldId',
   'customization.decorationId',
   'customization.titleId',
   'customization.signaturePath',
