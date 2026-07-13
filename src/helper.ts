@@ -15,6 +15,7 @@ import { Types } from 'mongoose';
 import { UserDocument } from './types/mongoose.types';
 import { post_model } from './models/post.model';
 import { User } from './types/types';
+import { CATALOG_BY_ID } from './config/catalog.config';
 
 export function parseParams<T>(params: ParsedUrlQuery | string): T {
   const newParams = typeof params === 'string' ? JSON.parse(params) : params;
@@ -184,6 +185,45 @@ export async function migrateMatesToRelationships(userId: string, legacyMates: a
   }
 }
 
+// Accounts created on or before launch earn the OG founder reward.
+export const EARLY_TESTER_CUTOFF = new Date('2026-07-05T23:59:59Z');
+
+// OG founder gift — the exclusive Gratitude world + Crumpled Paper effect +
+// Early Tester title. Never sold (these ids aren't in the shop catalog), granted
+// once during the v1 migration.
+const EARLY_TESTER_GRANTS = [
+  'title.early-tester',
+  'world.gratitude',
+  'effect.crumpled-paper'
+];
+const SUPPORTER_TITLE = 'title.supporter';
+
+/**
+ * Inventory items a user qualifies for, evaluated once during the v1 migration.
+ * Replaces the old live POST /user/titles/sync endpoint — future stat-gated
+ * grants get bumped to a new migration_version instead of a runtime re-check.
+ *
+ *   early-tester (+ gift) → account created on/before EARLY_TESTER_CUTOFF
+ *   supporter             → owns a purchased catalog item (webhook-written only),
+ *                           kept here so existing purchasers are backfilled
+ */
+export function migrationGrants(user: {
+  createdAt?: Date;
+  inventory?: string[];
+}): string[] {
+  const inventory = user.inventory ?? [];
+  const grants: string[] = [];
+
+  if (!user.createdAt || new Date(user.createdAt) <= EARLY_TESTER_CUTOFF) {
+    grants.push(...EARLY_TESTER_GRANTS);
+  }
+  if (inventory.some((id) => Boolean(CATALOG_BY_ID[id]))) {
+    grants.push(SUPPORTER_TITLE);
+  }
+
+  return grants.filter((id) => !inventory.includes(id));
+}
+
 export async function syncAndFinalizeMigrationStats(user: UserDocument) {
   const legacyMatesCount = user.mates?.length || 0;
 
@@ -200,17 +240,21 @@ export async function syncAndFinalizeMigrationStats(user: UserDocument) {
     posts: postsCount
   };
 
-  await user_model.updateOne(
-    { _id: user._id },
-    {
-      $set: {
-        migration_version: 1,
-        stats: initialStats
-      },
-    }
-  );
+  const grantedItems = migrationGrants(user);
 
-  return initialStats;
+  const update: any = {
+    $set: {
+      migration_version: 1,
+      stats: initialStats
+    }
+  };
+  if (grantedItems.length) {
+    update.$addToSet = { inventory: { $each: grantedItems } };
+  }
+
+  await user_model.updateOne({ _id: user._id }, update);
+
+  return { stats: initialStats, grantedItems };
 }
 
 const MAX_LIFETIME_PROMPTS = 5;

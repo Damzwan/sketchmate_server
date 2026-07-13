@@ -374,14 +374,19 @@ userRouter.get('/', requireAuth, async (ctx) => {
   const user = res.user as any;
 
   if ((user.migration_version || 0) < 1) {
-    const newStats = await syncAndFinalizeMigrationStats(user);
+    const { stats, grantedItems } = await syncAndFinalizeMigrationStats(user);
 
     migrateMatesToRelationships(user._id, user.mates)
       .catch(err => console.error('Mates migration failed:', err));
 
-    user.stats = newStats;
+    user.stats = stats;
     user.mates = [];
     user.migration_version = 1;
+    // Reflect the just-granted OG gift / titles so the client hydrates them
+    // immediately, without a second round-trip.
+    if (grantedItems.length) {
+      user.inventory = [...(user.inventory ?? []), ...grantedItems];
+    }
   }
 
   if (!user.customization) user.customization = {};
