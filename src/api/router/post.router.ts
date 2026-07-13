@@ -745,6 +745,48 @@ postRouter.get('/:id', async (ctx) => {
     return;
   }
 
+  // Hydrate the latest 2 comments (same shape as the feed) so a post opened
+  // straight from a comment notification shows the new comment immediately —
+  // this used to return `comments: []`, so the just-posted comment appeared
+  // missing until the user manually opened the comment drawer.
+  const latest = await post_comment_model.find({
+    post_id: post._id,
+    status: { $nin: ['under_review', 'removed'] }
+  })
+    .sort({ createdAt: -1 })
+    .limit(2)
+    .lean();
+
+  const commentAuthorIds = latest.map((c: any) => c.author_id.toString());
+  const authors = commentAuthorIds.length
+    ? await user_model.find({
+        _id: { $in: commentAuthorIds.map(id => new Types.ObjectId(id)) }
+      }).select('_id name img').lean() as unknown as UserDocument[]
+    : [];
+  const authorMap = authors.reduce((acc, u) => {
+    acc[u._id.toString()] = u;
+    return acc;
+  }, {} as Record<string, UserDocument>);
+
+  // Reverse to chronological so the preview reads naturally.
+  const comments = latest.reverse().map((comment: any) => {
+    const author = authorMap[comment.author_id.toString()];
+    return {
+      _id: comment._id.toString(),
+      post_id: comment.post_id.toString(),
+      message: comment.message,
+      createdAt: comment.createdAt instanceof Date
+        ? comment.createdAt.toISOString()
+        : new Date(comment.createdAt).toISOString(),
+      updatedAt: comment.updatedAt instanceof Date
+        ? comment.updatedAt.toISOString()
+        : new Date(comment.updatedAt).toISOString(),
+      author: author
+        ? { _id: author._id.toString(), name: author.name, img: author.img }
+        : { _id: comment.author_id.toString(), name: 'Unknown', img: '' }
+    };
+  });
+
   // Match the FeedPost shape your frontend expects
   const { author_id, ...rest } = post as any;
   ctx.body = {
@@ -752,7 +794,7 @@ postRouter.get('/:id', async (ctx) => {
       ...rest,
       author: author_id,
       user_reaction: null, // or compute from a reactions lookup if you have one
-      comments: []
+      comments
     }
   };
 });

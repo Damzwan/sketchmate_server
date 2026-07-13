@@ -16,7 +16,7 @@ export class QuotaExceededError extends Error {
   }
 }
 
-async function getTier(userId: string): Promise<string> {
+export async function getTier(userId: string): Promise<string> {
   const user = await user_model
     .findById(userId)
     .select('subscription_tier')

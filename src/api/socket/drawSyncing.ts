@@ -10,6 +10,7 @@ import { checkSocketCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
 import { dispatchNotification } from '../services/notification.service';
 import { isPaidTier } from '../../config/catalog.config';
+import { getTier } from '../services/quota.service';
 
 interface PublicLobby {
   id: string;
@@ -182,8 +183,17 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
         return;
       }
       if (clients.length >= publicRoom.maxUsers) {
-        const tier = socket.data.user?.subscription_tier || 'free';
-        if (!isPaidTier(tier)) {
+        // Premium slots: read the tier FRESH from the DB. socket.data.user is a
+        // snapshot from connect time, so a user who just unlocked Pro mid-session
+        // would still look 'free' here and be denied their VIP slot.
+        const freshUserId = socket.data.user?._id?.toString();
+        const tier = freshUserId
+          ? await getTier(freshUserId)
+          : (socket.data.user?.subscription_tier || 'free');
+        if (isPaidTier(tier)) {
+          // Keep the cached snapshot in sync for the rest of this session.
+          if (socket.data.user) socket.data.user.subscription_tier = tier;
+        } else {
           socket.emit('join-error', { reason: 'ROOM_FULL' });
           return;
         }
