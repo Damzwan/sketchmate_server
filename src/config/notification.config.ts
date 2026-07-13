@@ -34,20 +34,7 @@ export const drawingReceivedNotification = (
   inbox_id: string,
   img?: string,
 ) => ({
-  // A `notification` block is REQUIRED for the OS to display this while the app
-  // is backgrounded/killed. Data-only messages are silently dropped by the
-  // Capacitor push plugin when the app isn't running, which is why these
-  // "sometimes don't trigger" after closing the app. The `data` payload is kept
-  // so tap-routing (pushNotificationActionPerformed → data.type) still works.
-  notification: {
-    title: `${mateName} sent you a drawing`,
-    body: 'Tap to view',
-    imageUrl: drawingImg
-  },
-  android: {
-    priority: 'high',
-    notification: { priority: 'max', channelId: '1' }
-  },
+  android: { priority: 'high' },
   data: {
     type: NotificationType.drawing_received,
     conversation_id: inbox_id,
@@ -64,14 +51,7 @@ export const lobbyInvitationNotification = (
   mateImg: string,
   lobby_id: string
 ): FBNotification => ({
-  notification: {
-    title: `${mateName} invited you to draw`,
-    body: 'Tap to join the lobby'
-  },
-  android: {
-    priority: 'high',
-    notification: { priority: 'max', channelId: '1' }
-  },
+  android: { priority: 'high' },
   data: {
     type: NotificationType.lobby_invitation,
     lobby_id,
@@ -87,14 +67,7 @@ export const dmPushNotification = (
   senderImg: string,
   conversationId: string
 ) => ({
-  notification: {
-    title: senderName,
-    body: content
-  },
-  android: {
-    priority: 'high',
-    notification: { priority: 'max', channelId: '1' }
-  },
+  android: { priority: 'high' },
   data: {
     type: NotificationType.dm_message,
     sender_id: senderId,
@@ -145,14 +118,7 @@ export const mateRequestPushNotification = (
   senderImg: string,
   conversation_id: string
 ) => ({
-  notification: {
-    title: `${senderName} wants to be your mate`,
-    body: 'Tap to view'
-  },
-  android: {
-    priority: 'high',
-    notification: { priority: 'max', channelId: '1' }
-  },
+  android: { priority: 'high' },
   data: {
     type: NotificationType.mate_request,
     sender_id: senderId,
@@ -168,14 +134,7 @@ export const requestAcceptedPushNotification = (
   mateImg: string,
   conversation_id: string
 ) => ({
-  notification: {
-    title: `${mateName} accepted your request`,
-    body: 'You have 24 hours to see if you vibe.'
-  },
-  android: {
-    priority: 'high',
-    notification: { priority: 'max', channelId: '1' }
-  },
+  android: { priority: 'high' },
   data: {
     type: NotificationType.request_accepted,
     conversation_id,
