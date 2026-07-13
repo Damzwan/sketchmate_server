@@ -226,7 +226,6 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
     }
 
     // Tier 3 — global discovery, only in 'open'. 'mates' stops at connections.
-    console.log(feedLevel)
     if (feedLevel === 'open' && feedPosts.length < limit) {
       const remainingSlots = limit - feedPosts.length;
       const excludedAuthorIds = [userIdObj, ...mateIds, ...followIds, ...blockedIds];

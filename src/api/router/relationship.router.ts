@@ -438,7 +438,6 @@ relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capa
 
   await assertMateQuota(user_id.toString());
 
-  console.log(conversation_id);
   const rel = await relationship_model.findOneAndUpdate(
     { conversation_id: new Types.ObjectId(conversation_id) },
     { $set: { chat_status: 'pending_mate', action_user_id: user_id } },
