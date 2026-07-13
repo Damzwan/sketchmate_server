@@ -186,7 +186,7 @@ export async function migrateMatesToRelationships(userId: string, legacyMates: a
 }
 
 // Accounts created on or before launch earn the OG founder reward.
-export const EARLY_TESTER_CUTOFF = new Date('2026-07-05T23:59:59Z');
+export const EARLY_TESTER_CUTOFF = new Date('2026-07-14T23:59:59Z');
 
 // OG founder gift — the exclusive Gratitude world + Crumpled Paper effect +
 // Early Tester title. Never sold (these ids aren't in the shop catalog), granted
