@@ -77,8 +77,8 @@ export async function dispatchNotification(params: DispatchParams) {
     }
   }
 
-  // 3. Push — only if offline and not actively viewing
-  if (channels.push && !isOnline && !isViewing) {
+  // 3. Push — send if they aren't actively viewing the specific content, regardless of online status
+  if (channels.push && !isViewing) {
     await sendNotificationUser(recipient_id, channels.push);
   }
 
