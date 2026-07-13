@@ -214,7 +214,6 @@ export function migrationGrants(user: {
   const inventory = user.inventory ?? [];
   const grants: string[] = [];
 
-  console.log(user)
   if (!user.createdAt || new Date(user.createdAt) <= EARLY_TESTER_CUTOFF) {
     grants.push(...EARLY_TESTER_GRANTS);
   }
