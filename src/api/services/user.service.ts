@@ -6,26 +6,22 @@ export async function subscribeV2(params: RegisterNotificationParams): Promise<R
   const sub = { ...subscription, updated_at: new Date() };
 
   try {
-    // Atomic upsert-into-array: try to update existing subscription by fingerprint.
-    const updated = await user_model.findOneAndUpdate(
-      { _id: user_id, 'subscriptions.fingerprint': sub.fingerprint },
+    // Enforce exactly one entry per device. Remove any prior entry that shares
+    // this device fingerprint OR this FCM token, then insert the fresh one.
+    // Matching on both keys makes re-subscribe fully idempotent and survives a
+    // token migrating between fingerprints (or a fingerprint rotating its token),
+    // so duplicate/stale subscriptions can never accumulate.
+    await user_model.updateOne(
+      { _id: user_id },
       {
-        $set: {
-          'subscriptions.$.token': sub.token,
-          'subscriptions.$.logged_in': sub.logged_in,
-          'subscriptions.$.platform': sub.platform,
-          'subscriptions.$.model': sub.model,
-          'subscriptions.$.os': sub.os,
-          'subscriptions.$.updated_at': sub.updated_at
+        $pull: {
+          subscriptions: { $or: [{ fingerprint: sub.fingerprint }, { token: sub.token }] }
         }
-      },
-      { new: true }
+      }
     );
 
-    if (updated) return;
-
     await user_model.updateOne(
-      { _id: user_id, 'subscriptions.fingerprint': { $ne: sub.fingerprint } },
+      { _id: user_id },
       { $push: { subscriptions: sub } }
     );
   } catch (e) {

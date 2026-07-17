@@ -257,6 +257,23 @@ export async function getUserSubscription(params: { _id: string }): Promise<Res<
   }
 }
 
+/**
+ * Removes subscription entries whose FCM token is dead (reported by FCM as
+ * unregistered/invalid). Keeps the subscriptions array free of stale tokens
+ * so future sends don't silently target a device that will never receive them.
+ */
+export async function pruneSubscriptionTokens(user_id: string, tokens: string[]): Promise<void> {
+  if (!tokens.length) return;
+  try {
+    await user_model.updateOne(
+      { _id: user_id },
+      { $pull: { subscriptions: { token: { $in: tokens } } } }
+    );
+  } catch (e) {
+    console.error('Failed to prune dead subscription tokens', e);
+  }
+}
+
 export async function match(params: MatchParams) {
   try {
     if (params._id === params.mate_id) throw new Error('Cannot match to oneself');
@@ -782,6 +799,9 @@ export async function getPartialUser(user_id: string): Promise<Mate | null> {
   }
 }
 
+// Must match the client's `minimum_age_social_features` (general.config.ts).
+const MINIMUM_SOCIAL_AGE = 13;
+
 export async function searchMate(
   mateName: string,
   userId: string,
@@ -790,10 +810,21 @@ export async function searchMate(
   try {
     const safeSearchTerm = escapeRegExp(mateName);
 
+    // Families policy: under-age accounts are NOT discoverable by name search
+    // (they still connect via QR / share link, i.e. people they know in
+    // person). Anyone born after the cutoff is a minor; docs without a
+    // date_of_birth (legacy) stay searchable.
+    const dobCutoff = new Date();
+    dobCutoff.setFullYear(dobCutoff.getFullYear() - MINIMUM_SOCIAL_AGE);
+
     const docs = await user_model
       .find({
         _id: { $ne: userId },
-        name: { $regex: safeSearchTerm, $options: 'i' }
+        name: { $regex: safeSearchTerm, $options: 'i' },
+        $or: [
+          { date_of_birth: { $lte: dobCutoff } },
+          { date_of_birth: null }
+        ]
       })
       .select(PUBLIC_USER_FIELDS)
       .limit(limit)
