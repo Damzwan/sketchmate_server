@@ -434,8 +434,6 @@ export async function unsubscribe(params: UnRegisterNotificationParams): Promise
 
 export async function onLoginEvent(params: OnLoginEventParams): Promise<any> {
   try {
-    trackEvent(params.user_id, mixpanelEvents.login);
-
     const user = await user_model.findOneAndUpdate(
       { _id: params.user_id, 'subscriptions.fingerprint': params.fingerprint },
       { $set: { 'subscriptions.$.logged_in': params.loggedIn } },

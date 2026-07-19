@@ -4,6 +4,7 @@ import {
   grantsForRcProduct,
   CATALOG_BY_ID,
   LIFETIME_RC_PRODUCT,
+  PRO_ENTITLEMENT,
   isPaidTier
 } from '../../config/catalog.config';
 
@@ -24,9 +25,10 @@ import {
  * subscription cancellation maps to nothing, so cosmetics are never stripped on
  * a lapsed Pro — only a real refund of a cosmetic revokes it.
  *
- * Subscription state (Pro / Lifetime entitlement) is read on the client via
- * `Purchases.getCustomerInfo()` and synced through `subscription_tier` on
- * the user — NOT through inventory.
+ * Subscription state is ALSO settled here — the webhook is the only actor that
+ * sees a refund or a lapse when the app isn't open. The client mirrors
+ * `getCustomerInfo()` into `subscription_tier` on launch, but it can only do
+ * that while it's running, so tier transitions must survive without it.
  *
  * Docs: https://www.revenuecat.com/docs/integrations/webhooks/event-types
  */
@@ -36,6 +38,11 @@ interface RcWebhookEvent {
   app_user_id: string;
   product_id: string;
   original_app_user_id?: string;
+  entitlement_ids?: string[] | null;
+  /** CANCELLATION only. UNSUBSCRIBE / BILLING_ERROR keep access until the period
+   *  ends; CUSTOMER_SUPPORT / DEVELOPER_INITIATED are refunds — access is gone. */
+  cancel_reason?: string;
+  expiration_reason?: string;
 }
 
 interface RcWebhookBody {
@@ -43,7 +50,26 @@ interface RcWebhookBody {
 }
 
 const GRANT_EVENTS = new Set(['INITIAL_PURCHASE', 'NON_RENEWING_PURCHASE']);
-const REVOKE_EVENTS = new Set(['CANCELLATION', 'REFUND']);
+// RC has no 'REFUND' event type — a refund arrives as CANCELLATION with a
+// cancel_reason of CUSTOMER_SUPPORT / DEVELOPER_INITIATED, followed by an
+// EXPIRATION. CANCELLATION is kept here for one-time cosmetic refunds.
+const REVOKE_EVENTS = new Set(['CANCELLATION']);
+
+// ─── Pro subscription lifecycle ───────────────────────────────────────────────
+// Events that mean "this account currently has Pro access".
+const PRO_ACTIVE_EVENTS = new Set([
+  'INITIAL_PURCHASE',
+  'RENEWAL',
+  'UNCANCELLATION',
+  'PRODUCT_CHANGE',
+  'SUBSCRIPTION_EXTENDED'
+]);
+// Events that mean "access ended now". EXPIRATION covers both a natural lapse
+// and the tail of a refund; a CANCELLATION only lands here when it's a refund
+// (see `isRefundCancellation`) — a plain UNSUBSCRIBE keeps access until the
+// paid period actually expires.
+const PRO_ENDED_EVENTS = new Set(['EXPIRATION']);
+const REFUND_CANCEL_REASONS = new Set(['CUSTOMER_SUPPORT', 'DEVELOPER_INITIATED']);
 
 const SUPPORTER_TITLE = 'title.supporter';
 
@@ -71,10 +97,22 @@ revenuecatWebhookRouter.post('/revenuecat', async (ctx) => {
   }
 
   const isGrant = GRANT_EVENTS.has(event.type);
+  const isRefundCancellation =
+    event.type === 'CANCELLATION' &&
+    REFUND_CANCEL_REASONS.has(event.cancel_reason ?? '');
   const isRevoke = REVOKE_EVENTS.has(event.type);
 
+  // Does this event carry the Pro entitlement? Lifetime is handled by product_id
+  // below, so this only ever matches a real subscription.
+  const touchesPro = (event.entitlement_ids ?? []).includes(PRO_ENTITLEMENT);
+  const isProEvent =
+    touchesPro &&
+    (PRO_ACTIVE_EVENTS.has(event.type) ||
+      PRO_ENDED_EVENTS.has(event.type) ||
+      event.type === 'CANCELLATION');
+
   // Always respond 200 quickly so RC doesn't retry on unknown event types.
-  if (!isGrant && !isRevoke) {
+  if (!isGrant && !isRevoke && !isProEvent) {
     console.log(`[RC webhook] ignoring event: ${event.type}`);
     ctx.status = 200;
     ctx.body = { ok: true, ignored: true };
@@ -86,6 +124,66 @@ revenuecatWebhookRouter.post('/revenuecat', async (ctx) => {
     console.warn('[RC webhook] missing app_user_id or product_id', event);
     ctx.status = 200;
     ctx.body = { ok: true, skipped: true };
+    return;
+  }
+
+  // ─── Pro subscription tier ────────────────────────────────────────────────
+  // Runs BEFORE the catalog-grant path: a Pro subscription maps to no catalog
+  // grants, so without this it fell through as "unmapped" and the tier was
+  // never written — a refunded subscriber kept `pro` (and Pro quotas) forever.
+  if (isProEvent) {
+    const active = PRO_ACTIVE_EVENTS.has(event.type);
+    const ended = PRO_ENDED_EVENTS.has(event.type) || isRefundCancellation;
+
+    // A plain UNSUBSCRIBE / BILLING_ERROR cancellation is not a loss of access —
+    // the user keeps Pro until EXPIRATION fires. Acknowledge and do nothing.
+    if (!active && !ended) {
+      console.log(
+        `[RC webhook] PRO cancellation (${event.cancel_reason}) for ${app_user_id} — ` +
+        `access retained until expiration`
+      );
+      ctx.status = 200;
+      ctx.body = { ok: true, noop: true };
+      return;
+    }
+
+    try {
+      if (active) {
+        const result = await user_model.updateOne(
+          // Never demote a lifetime owner to plain `pro`.
+          { auth_id: app_user_id, subscription_tier: { $ne: 'lifetime' } },
+          {
+            $set: { subscription_tier: 'pro' },
+            $addToSet: { inventory: SUPPORTER_TITLE }
+          }
+        );
+        if (result.matchedCount === 0) {
+          console.warn(
+            `[RC webhook] PRO grant matched no non-lifetime user: ${app_user_id}`
+          );
+        } else {
+          console.log(`[RC webhook] PRO granted to ${app_user_id} (${event.type})`);
+        }
+      } else {
+        // Lapsed or refunded → free. Lifetime is a separate one-time purchase
+        // and must survive a subscription ending.
+        await user_model.updateOne(
+          { auth_id: app_user_id, subscription_tier: { $ne: 'lifetime' } },
+          { $set: { subscription_tier: 'free' } }
+        );
+        console.log(
+          `[RC webhook] PRO revoked from ${app_user_id} ` +
+          `(${event.type}${event.cancel_reason ? `/${event.cancel_reason}` : ''}` +
+          `${event.expiration_reason ? `/${event.expiration_reason}` : ''})`
+        );
+      }
+      ctx.status = 200;
+      ctx.body = { ok: true, pro: active };
+    } catch (err) {
+      console.error('[RC webhook] DB error (pro)', err);
+      ctx.status = 500;
+      ctx.body = { error: 'Internal error' };
+    }
     return;
   }
 

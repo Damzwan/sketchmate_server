@@ -2,7 +2,6 @@ import Mixpanel from 'mixpanel';
 import { isDev } from './config/app.config';
 
 export enum mixpanelEvents {
-  login = 'login',
   create_account = 'login',
   balloon_create = 'balloon_match',
   balloon_pair = 'balloon_pair',
