@@ -91,16 +91,30 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
         await assertMateQuota(partnerId.toString());
       }
 
+      // Same compare-and-set shape as /unfriend, for the same reason: a
+      // doc.save() after an in-memory status check lets two overlapping accepts
+      // both pass and both credit +1, permanently inflating the counter. The
+      // `chat_status: 'pending_mate'` filter makes the transition itself the
+      // lock, so exactly one request can award the mate.
+      const transitioned = await relationship_model.updateOne(
+        { _id: rel._id, chat_status: 'pending_mate' },
+        {
+          $set: { chat_status: 'mate' },
+          $unset: { expires_at: '', cooldown_until: '', deleted_at: '' }
+        }
+      );
+
       rel.chat_status = 'mate';
       rel.expires_at = undefined;
       rel.cooldown_until = undefined;
       rel.deleted_at = undefined;
-      await rel.save();
 
-      await user_model.updateMany(
-        { _id: { $in: rel.users } },
-        { $inc: { 'stats.mates': 1 } }
-      );
+      if (transitioned.modifiedCount > 0) {
+        await user_model.updateMany(
+          { _id: { $in: rel.users } },
+          { $inc: { 'stats.mates': 1 } }
+        );
+      }
 
       const populatedConvo = rel.conversation_id
         ? await conversation_model
@@ -380,14 +394,24 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
   const myId = ctx.state.user._id.toString();
   const targetId = ctx.params.target_id;
   const sortedUsers = [myId, targetId].sort();
-  const oldRel = await relationship_model.findOne({ users: sortedUsers });
 
-  if (!oldRel || ['expired', 'none', 'blocked'].includes(oldRel.chat_status)) {
-    return ctx.throw(400, 'Invalid relationship state');
-  }
-
-  const rel = await relationship_model.findOneAndUpdate(
-    { users: sortedUsers },
+  // Compare-and-set, in ONE atomic operation, with `new: false` so the return
+  // value is the pre-image.
+  //
+  // This used to be a read, then a guard on that read, then an unconditional
+  // update, then `if (oldRel.chat_status === 'mate') $inc -1`. Nothing
+  // serialised those steps, so two overlapping unfriends — a double tap, a
+  // retry, or both partners unfriending at the same moment — each read
+  // 'mate' and each ran the decrement. One +1 was cancelled by two -1s and the
+  // counter went to -1. That is the negative `stats.mates`.
+  //
+  // Now the status filter is part of the write: whoever loses the race matches
+  // nothing, gets null back, and never reaches the decrement.
+  const oldRel = await relationship_model.findOneAndUpdate(
+    {
+      users: sortedUsers,
+      chat_status: { $nin: ['expired', 'none', 'blocked'] }
+    },
     {
       $set: {
         chat_status: 'expired',
@@ -396,15 +420,36 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
         action_user_id: new Types.ObjectId(myId)
       }
     },
-    { new: true }
-  ) as RelationshipDocument;
+    { new: false }
+  ) as RelationshipDocument | null;
+
+  if (!oldRel) {
+    return ctx.throw(400, 'Invalid relationship state');
+  }
+
+  const rel = await relationship_model.findById(oldRel._id) as RelationshipDocument;
 
   if (rel?.conversation_id) {
     await conversation_model.findByIdAndUpdate(rel.conversation_id, { $set: { deleted_at: dayjs().add(30, 'days').toDate() } });
   }
 
   if (oldRel.chat_status === 'mate') {
-    await user_model.updateMany({ _id: { $in: sortedUsers } }, { $inc: { 'stats.mates': -1 } });
+    // Floored at 0, the same way /block already does it. The atomic guard above
+    // should make an underflow impossible, but this is the only decrement in
+    // the file that lacked the clamp — and a counter that can go negative is a
+    // counter that eventually does.
+    await user_model.updateMany(
+      { _id: { $in: sortedUsers } },
+      [
+        {
+          $set: {
+            'stats.mates': {
+              $max: [0, { $add: [{ $ifNull: ['$stats.mates', 0] }, -1] }]
+            }
+          }
+        }
+      ]
+    );
   }
 
   const populatedConvo = rel.conversation_id

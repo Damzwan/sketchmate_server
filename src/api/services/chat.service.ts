@@ -109,14 +109,27 @@ export const saveMessageLogic = async (
         conversation_id: conversation._id
       };
 
-    updatedRel = await relationship_model.findOneAndUpdate(
-      { users: sortedUsers },
-      {
-        $setOnInsert: { users: sortedUsers },
-        $set: setBlock
-      },
-      { upsert: true, new: true }
-    ).lean();
+    // Target the relationship we already resolved by _id. The caller finds it
+    // with an order-insensitive `users: { $all: [...] }` query, but this write
+    // used to upsert on `{ users: sortedUsers }` — an EXACT, order-sensitive
+    // array match. Any pair document whose `users` array isn't in sorted order
+    // was therefore found by the read and missed by the write, so the upsert
+    // inserted a SECOND relationship for the same two people. Two relationships
+    // for one pair means two 'pending_invite' rows, i.e. duplicate invitations.
+    updatedRel = rel?._id
+      ? await relationship_model.findByIdAndUpdate(
+        rel._id,
+        { $set: setBlock },
+        { new: true }
+      ).lean()
+      : await relationship_model.findOneAndUpdate(
+        { users: sortedUsers },
+        {
+          $setOnInsert: { users: sortedUsers },
+          $set: setBlock
+        },
+        { upsert: true, new: true }
+      ).lean();
   }
 
   const finalConvo = await conversation_model

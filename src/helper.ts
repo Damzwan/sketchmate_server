@@ -224,28 +224,54 @@ export function migrationGrants(user: {
   return grants.filter((id) => !inventory.includes(id));
 }
 
-export async function syncAndFinalizeMigrationStats(user: UserDocument) {
-  const legacyMatesCount = user.mates?.length || 0;
+/**
+ * The single source of truth for a user's social counters: derived, never
+ * accumulated. Every number here is a straight count over the relationship
+ * collection, using the same predicates /network/:type queries with, so the
+ * counter and the list it describes can never disagree.
+ */
+export async function computeSocialStats(userId: Types.ObjectId | string) {
+  const oid = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
 
-  // Get post count synchronously for the response
+  const [mates, followers, following] = await Promise.all([
+    relationship_model.countDocuments({ users: oid, chat_status: 'mate' }),
+    relationship_model.countDocuments({ follows: { $elemMatch: { followed: oid } } }),
+    relationship_model.countDocuments({ follows: { $elemMatch: { follower: oid } } })
+  ]);
+
+  return { mates, followers, following };
+}
+
+export async function syncAndFinalizeMigrationStats(user: UserDocument) {
+  // Migrate the legacy mates array FIRST, and await it.
+  //
+  // It used to be fired off in parallel by the caller while this function
+  // counted `user.mates.length`. That produced the drift the audit found:
+  // migration is per-user, so when A migrated it created A↔B relationships in
+  // 'mate' but credited only A. B's counter stayed untouched until B migrated
+  // from B's OWN legacy array — and for accounts that only ever existed under
+  // v2 that array is empty, so B ended on 0 while genuinely having N mates. A
+  // single unfriend on a 0 counter then took it negative.
+  await migrateMatesToRelationships(user._id.toString(), user.mates as any[]);
+
   const postsCount = await post_model.countDocuments({
     author_id: user._id,
     status: 'active'
   });
 
-  const initialStats = {
-    mates: legacyMatesCount,
-    followers: 0,
-    following: 0,
-    posts: postsCount
-  };
+  const social = await computeSocialStats(user._id);
+
+  const initialStats = { ...social, posts: postsCount };
 
   const grantedItems = migrationGrants(user);
 
   const update: any = {
     $set: {
       migration_version: 1,
-      stats: initialStats
+      'stats.mates': initialStats.mates,
+      'stats.followers': initialStats.followers,
+      'stats.following': initialStats.following,
+      'stats.posts': initialStats.posts
     }
   };
   if (grantedItems.length) {

@@ -85,8 +85,12 @@ export async function createInboxItem(params: CreateInboxItemParams): Promise<In
   for (const follower of params.followers) {
     if (follower === params.sender_id) continue;
 
-    const sortedUsers = [params.sender_id, follower].sort();
-    const rel = await relationship_model.findOne({ users: sortedUsers }).lean();
+    // $all, not an exact array match: the pair is stored sorted, but an
+    // order-sensitive lookup silently misses any legacy unsorted document and
+    // the caller then creates a second relationship for the same two people.
+    const rel = await relationship_model.findOne({
+      users: { $all: [new Types.ObjectId(params.sender_id), new Types.ObjectId(follower)] }
+    }).lean();
 
     const { message, conversation } = await saveMessageLogic(
       params.sender_id,

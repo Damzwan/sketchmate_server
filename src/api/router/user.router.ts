@@ -35,7 +35,6 @@ import { LeanPost, RelationshipDocument, UserDocument } from '../../types/mongoo
 import { isUserOnline } from '../socket/socket';
 import { COMPLETE_PUBLIC_USER_FIELDS, PUBLIC_USER_FIELDS } from '../../types/projections';
 import {
-  migrateMatesToRelationships,
   parseParams,
   shouldShowThoughtPrompt,
   syncAndFinalizeMigrationStats
@@ -374,10 +373,11 @@ userRouter.get('/', requireAuth, async (ctx) => {
   const user = res.user as any;
 
   if ((user.migration_version || 0) < 1) {
+    // migrateMatesToRelationships is now awaited INSIDE
+    // syncAndFinalizeMigrationStats — the counters are derived from the
+    // relationships it creates, so running the two in parallel raced the
+    // counting against the writing it was supposed to count.
     const { stats, grantedItems } = await syncAndFinalizeMigrationStats(user);
-
-    migrateMatesToRelationships(user._id, user.mates)
-      .catch(err => console.error('Mates migration failed:', err));
 
     user.stats = stats;
     user.mates = [];

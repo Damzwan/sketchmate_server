@@ -35,9 +35,12 @@ chatRouter.get('/active', async (ctx) => {
   const activeConvos = conversations.map(c => {
     const partnerId = c.participants.find((p: any) => p._id.toString() !== user_id)?._id.toString();
 
-    const rel = relationships.find(r =>
-      r.users.some(u => u.toString() === partnerId)
-    );
+    // Prefer the relationship that actually owns THIS conversation. Matching on
+    // the partner alone picks an arbitrary row if a duplicate relationship pair
+    // ever exists, which shows the conversation under the wrong status.
+    const rel =
+      relationships.find(r => r.conversation_id?.toString() === c._id.toString()) ??
+      relationships.find(r => r.users.some(u => u.toString() === partnerId));
 
     return {
       ...c,
@@ -55,10 +58,12 @@ chatRouter.get('/active', async (ctx) => {
 chatRouter.get('/requests', async (ctx) => {
   const user_id = ctx.state.user._id.toString();
 
+  const meOID = new Types.ObjectId(user_id);
+
   const relationships = await relationship_model.find({
-    users: new Types.ObjectId(user_id),
+    users: meOID,
     chat_status: 'pending_invite',
-    action_user_id: { $ne: new Types.ObjectId(user_id) }
+    action_user_id: { $ne: meOID }
   }).lean();
 
   if (!relationships.length) {
@@ -66,29 +71,39 @@ chatRouter.get('/requests', async (ctx) => {
     return;
   }
 
-  const partnerIds = relationships.map(r =>
-    r.users.find(u => u.toString() !== user_id)
-  ).filter(Boolean) as Types.ObjectId[];
+  // Resolve each invite through the relationship's OWN conversation_id.
+  //
+  // This used to be `{ participants: { $in: partnerIds } }`, which matched every
+  // conversation the partner had with ANYONE — not just with us. A single
+  // pending invite from P therefore surfaced as one row per conversation P is
+  // in: several of them attributed to P (duplicate invitations from the same
+  // person) and the rest to strangers, because the partner lookup below falls
+  // back to participants[0] when neither participant is us and the status
+  // defaults to 'pending_invite'.
+  const relByConversationId = new Map(
+    relationships
+      .filter(r => r.conversation_id)
+      .map(r => [r.conversation_id!.toString(), r])
+  );
+
+  if (!relByConversationId.size) {
+    ctx.body = [];
+    return;
+  }
 
   const conversations = await conversation_model.find({
-    participants: { $in: partnerIds }
+    _id: { $in: [...relByConversationId.keys()].map(id => new Types.ObjectId(id)) },
+    // Belt and braces: never return a conversation we aren't part of, even if a
+    // relationship somehow points at a foreign one.
+    participants: meOID
   })
     .populate('last_message')
     .populate('participants', PUBLIC_USER_FIELDS)
     .sort({ updatedAt: -1 })
     .lean();
 
-  const relByPartnerId = new Map(
-    relationships.map(r => {
-      const partnerId = r.users.find(u => u.toString() !== user_id)?.toString();
-      return [partnerId, r];
-    })
-  );
-
   ctx.body = conversations.map(c => {
-    const partnerId = (c.participants as any[])
-      .find(p => p._id.toString() !== user_id)?._id.toString();
-    const r = partnerId ? relByPartnerId.get(partnerId) : undefined;
+    const r = relByConversationId.get(c._id.toString());
 
     return {
       ...c,
