@@ -1,7 +1,7 @@
 import Router from 'koa-router';
 import { Types } from 'mongoose';
 import { s3Creator } from '../../mongodb';
-import { post_comment_model, post_model, post_reaction_model } from '../../models/post.model';
+import { post_comment_model, post_model, post_reaction_model, post_view_model } from '../../models/post.model';
 import { requireAuth } from '../../middleware/auth';
 import { user_model } from '../../models/user.model';
 import { BasePostComment, FeedPost, HydratedPostComment } from '../../types/types';
@@ -17,7 +17,7 @@ import { relationship_model } from '../../models/relationship.model';
 import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
-import { shapeFeedPost } from '../services/post.service';
+import { hydrateFeedPosts, shapeFeedPost } from '../services/post.service';
 import { quota_usage_model } from '../../models/quota_usage.model';
 import { startOfUtcDay } from '../../config/quota.config';
 import { dispatchNotification } from '../services/notification.service';
@@ -133,11 +133,29 @@ postRouter.post('/views', requireAuth, async (ctx) => {
 
   try {
     const oids = post_ids.slice(0, 50).map(id => new Types.ObjectId(id));
+    const viewerId = new Types.ObjectId(ctx.state.user._id);
 
-    await post_model.updateMany(
-      { _id: { $in: oids }, status: 'active' },
-      { $inc: { views: 1 } }
-    );
+    await Promise.all([
+      post_model.updateMany(
+        { _id: { $in: oids }, status: 'active' },
+        { $inc: { views: 1 } }
+      ),
+      // Per-viewer ledger, so the feed can stop re-serving what this user has
+      // already been shown. Upsert bumps the count and refreshes the TTL clock.
+      post_view_model.bulkWrite(
+        oids.map(post_id => ({
+          updateOne: {
+            filter: { user_id: viewerId, post_id },
+            update: {
+              $inc: { seen_count: 1 },
+              $set: { last_seen_at: new Date() }
+            },
+            upsert: true
+          }
+        })),
+        { ordered: false }
+      )
+    ]);
 
     ctx.status = 200;
     ctx.body = { success: true };
@@ -148,252 +166,339 @@ postRouter.post('/views', requireAuth, async (ctx) => {
   }
 });
 
+// ============================================================================
+// FEED
+// ============================================================================
+
+type FeedTab = 'for_you' | 'mates' | 'latest';
+
+const FEED_TABS: FeedTab[] = ['for_you', 'mates', 'latest'];
+
+/**
+ * How many impressions a post gets with one viewer before it drops out of
+ * rotation. Two, not one — seeing something twice is normal and forgivable;
+ * seeing it on every single app open is the complaint we're fixing.
+ */
+const SEEN_SUPPRESS_AT = 2;
+
+/** A post seen once stays eligible, but ranks far below anything fresh. */
+const SEEN_DEMOTE_FACTOR = 0.25;
+
+/** Cap on how much of the view ledger a single request consults. */
+const SEEN_LOOKBACK = 400;
+
+/**
+ * Scored discovery only considers posts from this window. Without it, an old
+ * post with a big view count outranks everything new forever — which is half
+ * of why the feed felt frozen.
+ */
+const DISCOVERY_WINDOW_DAYS = 30;
+
+/**
+ * Ceiling on the share of For You slots that mates + follows may take. They
+ * have their own tab now, and without a cap a handful of chatty mates fill the
+ * whole page and global discovery never runs at all.
+ */
+const CONNECTION_SHARE = 0.6;
+
+/** Over-fetch multiplier for the scored pool, so jitter has room to shuffle. */
+const DISCOVERY_OVERFETCH = 4;
+
+interface Audience {
+  mateIds: Types.ObjectId[];
+  followIds: Types.ObjectId[];
+  blockedIds: Types.ObjectId[];
+}
+
+/**
+ * Split the viewer's relationships into tiers. Mates are the reciprocal,
+ * high-signal bond; follows are one-way interest; blocked are excluded outright.
+ */
+async function loadAudience(user_id: string): Promise<Audience> {
+  const relationships = await relationship_model
+    .find({ users: new Types.ObjectId(user_id) })
+    .lean();
+
+  const mateIds: Types.ObjectId[] = [];
+  const followIds: Types.ObjectId[] = [];
+  const blockedIds: Types.ObjectId[] = [];
+  const now = new Date();
+
+  for (const rel of relationships) {
+    const otherUser = rel.users.find(id => id.toString() !== user_id);
+    if (!otherUser) continue;
+
+    const otherUserIdStr = otherUser.toString();
+
+    if (rel.chat_status === 'blocked') {
+      blockedIds.push(otherUser as Types.ObjectId);
+      continue;
+    }
+
+    const isActiveTemporary =
+      rel.chat_status === 'temporary' && !!rel.expires_at && new Date(rel.expires_at) > now;
+    if (rel.chat_status === 'mate' || isActiveTemporary) {
+      mateIds.push(otherUser as Types.ObjectId);
+      continue;
+    }
+
+    const userFollowsOther = rel.follows?.some(f =>
+      f.follower.toString() === user_id &&
+      f.followed.toString() === otherUserIdStr
+    );
+    if (userFollowsOther) {
+      followIds.push(otherUser as Types.ObjectId);
+    }
+  }
+
+  return { mateIds, followIds, blockedIds };
+}
+
+interface SeenState {
+  /** Hit the impression ceiling — excluded from discovery. */
+  suppressed: Types.ObjectId[];
+  /** Seen once — still eligible, but demoted. Keyed by post id string. */
+  demoted: Set<string>;
+}
+
+async function loadSeenState(user_id: string): Promise<SeenState> {
+  const rows = (await post_view_model
+    .find({ user_id: new Types.ObjectId(user_id) })
+    .sort({ last_seen_at: -1 })
+    .limit(SEEN_LOOKBACK)
+    .select('post_id seen_count')
+    .lean()) as any[];
+
+  const suppressed: Types.ObjectId[] = [];
+  const demoted = new Set<string>();
+
+  for (const row of rows) {
+    if ((row.seen_count || 0) >= SEEN_SUPPRESS_AT) suppressed.push(row.post_id);
+    else demoted.add(row.post_id.toString());
+  }
+
+  return { suppressed, demoted };
+}
+
+/**
+ * Time-decayed popularity, Hacker-News style. Replaces the old `views: -1`
+ * sort, which was both static AND self-reinforcing: /views incremented the
+ * counter on exactly the posts it had just shown, so being shown made a post
+ * rank higher, which got it shown more. Nothing ever displaced the top.
+ *
+ * Dividing by age means a post has to keep earning its slot, and the +1 in the
+ * numerator lets a brand-new post with zero engagement still enter the pool —
+ * so "popular" and "new" blend on one axis instead of being interleaved by hand.
+ */
+function decayScoreStage(now: Date) {
+  return [
+    {
+      $addFields: {
+        _ageHours: { $divide: [{ $subtract: [now, '$createdAt'] }, 3600000] }
+      }
+    },
+    {
+      $addFields: {
+        _score: {
+          $divide: [
+            {
+              $add: [
+                1,
+                { $multiply: [{ $ifNull: ['$total_reactions', 0] }, 3] },
+                { $multiply: [{ $ifNull: ['$comment_count', 0] }, 5] },
+                { $multiply: [{ $ifNull: ['$views', 0] }, 0.2] }
+              ]
+            },
+            { $pow: [{ $add: ['$_ageHours', 2] }, 1.5] }
+          ]
+        }
+      }
+    }
+  ];
+}
+
+/**
+ * Global discovery for the For You tab: score by decayed popularity, drop what
+ * the viewer has already exhausted, demote what they've seen once, then jitter
+ * the order so two visits in a row don't produce an identical page even when
+ * the underlying data hasn't moved.
+ */
+async function selectDiscoveryPosts(
+  excludedAuthorIds: Types.ObjectId[],
+  seen: SeenState,
+  slots: number
+): Promise<LeanPost[]> {
+  if (slots <= 0) return [];
+
+  const now = new Date();
+  const since = new Date(now.getTime() - DISCOVERY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+
+  const candidates = (await post_model.aggregate([
+    {
+      $match: {
+        author_id: { $nin: excludedAuthorIds },
+        status: 'active',
+        createdAt: { $gte: since },
+        _id: { $nin: seen.suppressed }
+      }
+    },
+    ...decayScoreStage(now),
+    { $sort: { _score: -1 } },
+    { $limit: slots * DISCOVERY_OVERFETCH }
+  ])) as (LeanPost & { _score: number })[];
+
+  const ranked = candidates
+    .map(post => {
+      const seenOnce = seen.demoted.has(post._id.toString());
+      // Jitter is what actually breaks the "identical every open" feeling. The
+      // band is wide enough to reshuffle near-equal posts, narrow enough that a
+      // genuinely strong post doesn't get buried.
+      const jitter = 0.75 + Math.random() * 0.5;
+      return { post, weight: post._score * jitter * (seenOnce ? SEEN_DEMOTE_FACTOR : 1) };
+    })
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, slots)
+    .map(entry => entry.post);
+
+  if (ranked.length >= slots) return ranked;
+
+  // Pool ran dry — a young app, an aggressive suppression list, or both. Top up
+  // with anything else recent rather than serving a half-empty feed. Suppressed
+  // posts are eligible here: showing a repeat beats showing nothing.
+  const haveIds = ranked.map(p => new Types.ObjectId(p._id));
+  const filler = (await post_model
+    .find({
+      author_id: { $nin: excludedAuthorIds },
+      status: 'active',
+      _id: { $nin: haveIds }
+    })
+    .sort({ createdAt: -1 })
+    .limit(slots - ranked.length)
+    .lean()) as unknown as LeanPost[];
+
+  return [...ranked, ...filler];
+}
+
+/** Newest-first posts from the viewer's mates and follows. */
+async function selectConnectionPosts(
+  audience: Audience,
+  slots: number,
+  excludeIds: Types.ObjectId[] = []
+): Promise<LeanPost[]> {
+  const authorIds = [...audience.mateIds, ...audience.followIds];
+  if (slots <= 0 || authorIds.length === 0) return [];
+
+  // Mates outrank follows, so query the tiers separately rather than sorting a
+  // combined result purely by date.
+  const matePosts = (await post_model
+    .find({
+      author_id: { $in: audience.mateIds },
+      status: 'active',
+      _id: { $nin: excludeIds }
+    })
+    .sort({ createdAt: -1 })
+    .limit(slots)
+    .lean()) as unknown as LeanPost[];
+
+  if (matePosts.length >= slots || audience.followIds.length === 0) {
+    return matePosts.slice(0, slots);
+  }
+
+  const followPosts = (await post_model
+    .find({
+      author_id: { $in: audience.followIds },
+      status: 'active',
+      _id: { $nin: [...excludeIds, ...matePosts.map(p => new Types.ObjectId(p._id))] }
+    })
+    .sort({ createdAt: -1 })
+    .limit(slots - matePosts.length)
+    .lean()) as unknown as LeanPost[];
+
+  return [...matePosts, ...followPosts];
+}
+
+/** Strict reverse-chronological. No ranking, no suppression — Latest is meant
+ *  to be the honest, predictable surface, and it refreshes on its own as people
+ *  post. */
+async function selectLatestPosts(
+  audience: Audience,
+  viewerId: Types.ObjectId,
+  feedLevel: 'mates' | 'open',
+  slots: number
+): Promise<LeanPost[]> {
+  // 'mates' means the viewer asked not to see strangers — Latest honours that
+  // rather than quietly widening their feed.
+  if (feedLevel === 'mates') {
+    return selectConnectionPosts(audience, slots);
+  }
+
+  return (await post_model
+    .find({
+      author_id: { $nin: [viewerId, ...audience.blockedIds] },
+      status: 'active'
+    })
+    .sort({ createdAt: -1 })
+    .limit(slots)
+    .lean()) as unknown as LeanPost[];
+}
+
 postRouter.get('/feed', requireAuth, async (ctx) => {
   const limit = parseInt(ctx.query.limit as string) || 20;
+  const requestedTab = ctx.query.tab as FeedTab;
+  const tab: FeedTab = FEED_TABS.includes(requestedTab) ? requestedTab : 'for_you';
+
   const user_id = ctx.state.user._id.toString();
   const userIdObj = new Types.ObjectId(user_id);
 
   try {
     const feedLevel: 'off' | 'mates' | 'open' = ctx.state.user.feed_level || 'open';
     if (feedLevel === 'off') {
-      ctx.body = { feed: [] };
+      ctx.body = { feed: [], tab };
       return;
     }
 
-    const relationships = await relationship_model.find({
-      users: userIdObj
-    }).lean();
-
-    // Split connections into tiers so MATES always rank above mere follows,
-    // which in turn rank above global discovery. Mates are the reciprocal,
-    // high-signal bond; follows are one-way interest.
-    const mateIds: Types.ObjectId[] = [];
-    const followIds: Types.ObjectId[] = [];
-    const blockedIds: Types.ObjectId[] = [];
-    const now = new Date();
-
-    for (const rel of relationships) {
-      const otherUser = rel.users.find(id => id.toString() !== user_id);
-      if (!otherUser) continue;
-
-      const otherUserIdStr = otherUser.toString();
-
-      if (rel.chat_status === 'blocked') {
-        blockedIds.push(otherUser as Types.ObjectId);
-        continue;
-      }
-
-      const isActiveTemporary =
-        rel.chat_status === 'temporary' && !!rel.expires_at && new Date(rel.expires_at) > now;
-      if (rel.chat_status === 'mate' || isActiveTemporary) {
-        mateIds.push(otherUser as Types.ObjectId);
-        continue;
-      }
-
-      const userFollowsOther = rel.follows?.some(f =>
-        f.follower.toString() === user_id &&
-        f.followed.toString() === otherUserIdStr
-      );
-      if (userFollowsOther) {
-        followIds.push(otherUser as Types.ObjectId);
-      }
-    }
-
+    const audience = await loadAudience(user_id);
     let feedPosts: LeanPost[] = [];
 
-    // Tier 1 — mates, newest first.
-    if (mateIds.length > 0) {
-      const matePosts = await post_model.find({
-        author_id: { $in: mateIds },
-        status: 'active'
-      })
-        .sort({ createdAt: -1 })
-        .limit(limit)
-        .lean() as unknown as LeanPost[];
-      feedPosts.push(...matePosts);
-    }
+    if (tab === 'mates') {
+      feedPosts = await selectConnectionPosts(audience, limit);
+    } else if (tab === 'latest') {
+      feedPosts = await selectLatestPosts(audience, userIdObj, feedLevel, limit);
+    } else {
+      // For You — connections first, capped so discovery always gets a share.
+      const seen = await loadSeenState(user_id);
+      const connectionCap =
+        feedLevel === 'open' ? Math.max(1, Math.round(limit * CONNECTION_SHARE)) : limit;
 
-    // Tier 2 — people you follow (one-way), newest first, after all mate posts.
-    if (feedPosts.length < limit && followIds.length > 0) {
-      const followPosts = await post_model.find({
-        author_id: { $in: followIds },
-        status: 'active'
-      })
-        .sort({ createdAt: -1 })
-        .limit(limit - feedPosts.length)
-        .lean() as unknown as LeanPost[];
-      feedPosts.push(...followPosts);
-    }
+      feedPosts = await selectConnectionPosts(audience, connectionCap);
 
-    // Tier 3 — global discovery, only in 'open'. 'mates' stops at connections.
-    if (feedLevel === 'open' && feedPosts.length < limit) {
-      const remainingSlots = limit - feedPosts.length;
-      const excludedAuthorIds = [userIdObj, ...mateIds, ...followIds, ...blockedIds];
-
-      const popLimit = Math.ceil(remainingSlots / 2);
-      const newLimit = remainingSlots - popLimit;
-
-      const popularPosts = await post_model.find({
-        author_id: { $nin: excludedAuthorIds },
-        status: 'active'
-      })
-        .sort({ views: -1, total_reactions: -1, createdAt: -1 })
-        .limit(popLimit)
-        .lean() as unknown as LeanPost[];
-
-      const popularPostIds = popularPosts.map(p => p._id);
-
-      const newPosts = await post_model.find({
-        author_id: { $nin: excludedAuthorIds },
-        _id: { $nin: popularPostIds },
-        status: 'active'
-      })
-        .sort({ createdAt: -1 })
-        .limit(newLimit)
-        .lean() as unknown as LeanPost[];
-
-      const interleavedGlobal = [];
-      const maxLen = Math.max(popularPosts.length, newPosts.length);
-      for (let i = 0; i < maxLen; i++) {
-        if (popularPosts[i]) interleavedGlobal.push(popularPosts[i]);
-        if (newPosts[i]) interleavedGlobal.push(newPosts[i]);
+      if (feedLevel === 'open' && feedPosts.length < limit) {
+        const discovery = await selectDiscoveryPosts(
+          [userIdObj, ...audience.mateIds, ...audience.followIds, ...audience.blockedIds],
+          seen,
+          limit - feedPosts.length
+        );
+        feedPosts.push(...discovery);
       }
-
-      feedPosts.push(...interleavedGlobal);
     }
 
     if (feedPosts.length === 0) {
-      ctx.body = { feed: [] };
+      ctx.body = { feed: [], tab };
       return;
     }
 
     const uniquePostsMap = new Map<string, LeanPost>();
     for (const post of feedPosts) {
-      if (!uniquePostsMap.has(post._id.toString())) {
-        uniquePostsMap.set(post._id.toString(), post);
-      }
+      const key = post._id.toString();
+      if (!uniquePostsMap.has(key)) uniquePostsMap.set(key, post);
     }
-    feedPosts = Array.from(uniquePostsMap.values());
 
-    const postIds = feedPosts.map(p => new Types.ObjectId(p._id));
+    const hydratedFeed = await hydrateFeedPosts(
+      Array.from(uniquePostsMap.values()),
+      user_id
+    );
 
-    // Fetch the 2 latest comments per post and user reactions
-    const [latestCommentsNested, userReactions] = await Promise.all([
-      Promise.all(
-        postIds.map(id =>
-          post_comment_model.find({
-            post_id: id,
-            status: { $nin: ['under_review', 'removed'] }
-          })
-            .sort({ createdAt: -1 }) // get newest first
-            .limit(2)
-            .lean()
-        )
-      ),
-      post_reaction_model.find({
-        user_id: userIdObj,
-        post_id: { $in: postIds }
-      }).lean()
-    ]);
-
-    // Flatten array of arrays
-    const validComments = latestCommentsNested.flat().filter(c => c !== null);
-
-    const postAuthorIds = feedPosts.map(post => post.author_id.toString());
-    const commentAuthorIds = validComments.map((c: any) => c.author_id.toString());
-    const allUserIdsToFetch = [...new Set([...postAuthorIds, ...commentAuthorIds])].map(id => new Types.ObjectId(id));
-
-    const users = await user_model.find({
-      _id: { $in: allUserIdsToFetch }
-    }).select('_id name img customization').lean() as unknown as UserDocument[];
-
-    const userMap = users.reduce((acc, user) => {
-      acc[user._id.toString()] = user;
-      return acc;
-    }, {} as Record<string, UserDocument>);
-
-    const userReactionMap = userReactions.reduce((acc, rx: any) => {
-      acc[rx.post_id.toString()] = rx.reaction_type;
-      return acc;
-    }, {} as Record<string, string>);
-
-    // Group hydrated comments by Post ID
-    const commentsByPostId = validComments.reduce((acc, comment: any) => {
-      const author = userMap[comment.author_id.toString()];
-      const pid = comment.post_id.toString();
-
-      if (!acc[pid]) acc[pid] = [];
-
-      acc[pid].push({
-        _id: comment._id.toString(),
-        post_id: pid,
-        message: comment.message,
-        createdAt: comment.createdAt instanceof Date
-          ? comment.createdAt.toISOString()
-          : new Date(comment.createdAt).toISOString(),
-        updatedAt: comment.updatedAt instanceof Date
-          ? comment.updatedAt.toISOString()
-          : new Date(comment.updatedAt).toISOString(),
-        author: author ? {
-          _id: author._id.toString(),
-          name: author.name,
-          img: author.img
-        } : { _id: comment.author_id.toString(), name: 'Unknown', img: '' }
-      });
-      return acc;
-    }, {} as Record<string, HydratedPostComment[]>);
-
-    const hydratedFeed: FeedPost[] = feedPosts.map(post => {
-      const postIdStr = post._id.toString();
-      const authorIdStr = post.author_id.toString();
-      const authorDoc = userMap[authorIdStr];
-
-      const postComments = commentsByPostId[postIdStr] || [];
-      // Sort the 2 comments chronologically so the preview looks natural
-      postComments.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-
-      return {
-        _id: postIdStr,
-        author_id: authorIdStr,
-        drawing_url: post.drawing_url,
-        image_url: post.image_url,
-        thumbnail_url: post.thumbnail_url,
-        aspect_ratio: post.aspect_ratio,
-        description: post.description || '',
-        status: post.status || 'active',
-        comment_count: post.comment_count || 0,
-        reports_count: post.reports_count || 0,
-        views: post.views || 0,
-        total_reactions: post.total_reactions || 0,
-        enable_remix: post.enable_remix ?? true,
-        enable_comments: post.enable_comments ?? true,
-
-        author: authorDoc
-          ? {
-            _id: authorDoc._id.toString(),
-            name: authorDoc.name,
-            img: authorDoc.img,
-            customization: authorDoc.customization
-          }
-          : { _id: authorIdStr, name: 'Unknown', img: '' },
-
-        reaction_counts: post.reaction_counts instanceof Map
-          ? Object.fromEntries(post.reaction_counts)
-          : (post.reaction_counts || {}),
-        user_reaction: userReactionMap[postIdStr] || null,
-
-        comments: postComments,
-
-        createdAt: post.createdAt instanceof Date
-          ? post.createdAt.toISOString()
-          : new Date(post.createdAt).toISOString(),
-        updatedAt: post.updatedAt instanceof Date
-          ? post.updatedAt.toISOString()
-          : new Date(post.updatedAt).toISOString()
-      };
-    });
-
-    ctx.body = { feed: hydratedFeed };
+    ctx.body = { feed: hydratedFeed, tab };
   } catch (error) {
     console.error('Feed Error:', error);
     ctx.throw(500, 'Failed to fetch feed');

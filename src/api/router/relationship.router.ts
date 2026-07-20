@@ -18,6 +18,14 @@ import {
   requestAcceptedPushNotification
 } from '../../config/notification.config';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
+import {
+  canSendMateRequest,
+  isRepeatMateRequest,
+  mateRequestStateFor,
+  recordMateRequestCancelled,
+  recordMateRequestDeclined,
+  recordMateRequestSent
+} from '../services/mate-request.policy';
 
 export const relationshipRouter = new Router();
 relationshipRouter.use(requireAuth);
@@ -178,8 +186,15 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       ctx.body = { success: true };
     } else if (rel.chat_status === 'pending_mate') {
       const isTrialValid = rel.expires_at && dayjs().isBefore(dayjs(rel.expires_at));
+      // Capture the requester before action_user_id is cleared — that field is
+      // the only record of who asked.
+      const requesterId = rel.action_user_id?.toString();
+
       rel.chat_status = isTrialValid ? 'temporary' : 'expired';
       rel.action_user_id = undefined;
+      // A "no" now costs the asker something. Without this the status returned
+      // to 'temporary' and they could re-send instantly, forever.
+      if (requesterId) recordMateRequestDeclined(rel, requesterId);
       await rel.save();
 
       const populatedConvo = rel.conversation_id
@@ -192,6 +207,11 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       if (populatedConvo) {
         populatedConvo.status = rel.chat_status;
         populatedConvo.relationship_id = rel._id.toString();
+        // The socket payload below goes to the REQUESTER, so it carries their
+        // freshly-escalated cooldown. Without it their client would re-render a
+        // live "Become Mates" button the instant they were declined, and only
+        // discover the cooldown by having the next request rejected.
+        Object.assign(populatedConvo, mateRequestStateFor(rel, partnerId?.toString() ?? ''));
       }
 
       if (partnerId) {
@@ -483,14 +503,43 @@ relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capa
 
   await assertMateQuota(user_id.toString());
 
-  const rel = await relationship_model.findOneAndUpdate(
-    { conversation_id: new Types.ObjectId(conversation_id) },
-    { $set: { chat_status: 'pending_mate', action_user_id: user_id } },
-    { new: true }
-  );
+  // Read BEFORE writing so the anti-pestering ledger can veto the request.
+  // The old code flipped the status straight to 'pending_mate' in the same
+  // call that found the relationship, which left no point at which to say no.
+  const rel = await relationship_model.findOne({
+    conversation_id: new Types.ObjectId(conversation_id)
+  });
 
-  console.log(rel);
   if (!rel) return ctx.throw(404, 'Relationship not found');
+
+  if (!rel.users.some(u => u.toString() === user_id.toString())) {
+    // The old lookup was by conversation_id alone, so any authenticated user
+    // who knew a conversation id could drive someone else's relationship.
+    return ctx.throw(403, 'Not part of this conversation');
+  }
+
+  if (rel.chat_status === 'pending_mate') {
+    return ctx.throw(400, 'A mate request is already pending');
+  }
+
+  const gate = canSendMateRequest(rel, user_id.toString());
+  if (!gate.allowed) {
+    ctx.status = 429;
+    ctx.body = {
+      error: gate.locked ? 'mate_request_locked' : 'mate_request_cooldown',
+      message: gate.reason,
+      cooldown_until: gate.cooldown_until ?? null
+    };
+    return;
+  }
+
+  // Read before recordMateRequestSent — it increments the counter this reads.
+  const isRepeat = isRepeatMateRequest(rel, user_id.toString());
+
+  rel.chat_status = 'pending_mate';
+  rel.action_user_id = user_id;
+  recordMateRequestSent(rel, user_id.toString());
+  await rel.save();
 
   const partnerId = rel.users.find(u => u.toString() !== user_id.toString());
 
@@ -520,7 +569,12 @@ relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capa
           event: 'chat:mate_requested',
           data: { conversation_id, conversation: populatedConvo, wasExpired: false }
         },
-        push: mateRequestPushNotification(ctx.state.user._id, ctx.state.user.name, ctx.state.user.img, conversation_id)
+        // Only the first ask may buzz their phone. Repeats still land — the
+        // socket event updates the UI and the request is waiting when they next
+        // open the app — but they can't be used to spam notifications.
+        push: isRepeat
+          ? false
+          : mateRequestPushNotification(ctx.state.user._id, ctx.state.user.name, ctx.state.user.img, conversation_id)
       }
     }).catch(err => console.error('Mate request dispatch failed:', err));
   }
@@ -654,6 +708,10 @@ relationshipRouter.post('/:conversation_id/mate-request/cancel', async (ctx) => 
   const isTrialValid = rel.expires_at && dayjs().isBefore(dayjs(rel.expires_at));
   rel.chat_status = isTrialValid ? 'temporary' : 'expired';
   rel.action_user_id = undefined;
+  // Withdrawing isn't a rejection, so it doesn't move the decline ladder — but
+  // the partner was still notified, and cancel/re-send would otherwise be a
+  // free way around every cooldown in the policy.
+  recordMateRequestCancelled(rel, user_id.toString());
   await rel.save();
 
   const partnerId = rel.users.find(u => u.toString() !== user_id.toString());
@@ -681,5 +739,11 @@ relationshipRouter.post('/:conversation_id/mate-request/cancel', async (ctx) => 
     resulting_status: rel.chat_status
   });
 
-  ctx.body = { success: true, status: rel.chat_status };
+  // The canceller's own short cooldown just started — hand it back so their
+  // client greys the button immediately instead of on the next fetch.
+  ctx.body = {
+    success: true,
+    status: rel.chat_status,
+    ...mateRequestStateFor(rel, user_id.toString())
+  };
 });

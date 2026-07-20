@@ -39,6 +39,14 @@ export interface PostReactionDocument extends Document, Omit<BasePostReaction, '
   updatedAt: Date;
 }
 
+export interface PostViewDocument extends Document {
+  _id: Types.ObjectId;
+  post_id: Types.ObjectId;
+  user_id: Types.ObjectId;
+  seen_count: number;
+  last_seen_at: Date;
+}
+
 export interface UserDocument extends Omit<User, '_id' | 'date_of_birth' | 'last_name_change' | 'balloon'> {
   _id: Types.ObjectId;
   date_of_birth?: Date;
@@ -111,6 +119,13 @@ export interface RelationshipDocument extends Omit<BaseRelationship, '_id' | 'us
   createdAt: Date;
   updatedAt: Date;
   blocked_by?: Types.ObjectId;
+  mate_requests?: {
+    requester: Types.ObjectId;
+    declines: number;
+    attempts: number;
+    last_requested_at?: Date;
+    cooldown_until?: Date;
+  }[];
 }
 
 export interface MessageDocument extends Document, Omit<BaseMessage, '_id' | 'sender_id' | 'conversation_id' | 'createdAt' | 'updatedAt' | 'shared_post_id'> {

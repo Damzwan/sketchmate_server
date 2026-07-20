@@ -27,6 +27,24 @@ const relationship_schema = new Schema<RelationshipDocument>({
     followed: { type: ObjectId, ref: 'users', required: true }
   }],
 
+  // Anti-pestering ledger, one entry per direction.
+  //
+  // Declining a mate request used to drop the relationship straight back to
+  // 'temporary' with action_user_id cleared, so the requester could re-send
+  // immediately — and every send fires a push. Nothing capped that loop.
+  //
+  // `declines` is how many times THIS requester has been turned down by the
+  // partner; it only ever grows, and it drives an escalating cooldown. It is
+  // deliberately per-direction: being declined must not stop the OTHER person
+  // from asking, or a single "no" would deadlock the pair.
+  mate_requests: [{
+    requester: { type: ObjectId, ref: 'users', required: true },
+    declines: { type: Number, default: 0 },
+    attempts: { type: Number, default: 0 },
+    last_requested_at: { type: Date },
+    cooldown_until: { type: Date }
+  }],
+
   expires_at: { type: Date },
   cooldown_until: { type: Date },
   deleted_at: { type: Date }

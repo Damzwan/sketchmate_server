@@ -2,7 +2,8 @@ import mongoose, { Schema } from 'mongoose';
 import {
   PostDocument,
   PostCommentDocument,
-  PostReactionDocument
+  PostReactionDocument,
+  PostViewDocument
 } from '../types/mongoose.types';
 
 const { ObjectId } = Schema.Types;
@@ -81,3 +82,32 @@ commentSchema.index({ post_id: 1, createdAt: 1 });
 commentSchema.index({ status: 1, 'createdAt': -1 });
 
 export const post_comment_model = mongoose.model<PostCommentDocument>('post_comments', commentSchema);
+
+/**
+ * Per-viewer view ledger. The `views` counter on a post is global and tells us
+ * nothing about whether YOU already saw it — which is why the feed used to
+ * serve the same posts on every open.
+ *
+ * Deliberately a *soft* signal: `seen_count` lets the feed show a post a couple
+ * of times before suppressing it, rather than burning each post after a single
+ * impression (which would starve the feed while the catalogue is small).
+ *
+ * The TTL is on `last_seen_at`, which the upsert refreshes — so a post you keep
+ * being shown stays suppressed, while one that has dropped out of rotation
+ * becomes eligible again after the window. Nothing is suppressed forever.
+ */
+const POST_VIEW_TTL_DAYS = 30;
+
+const postViewSchema = new Schema<PostViewDocument>({
+  post_id: { type: ObjectId, ref: 'posts', required: true },
+  user_id: { type: ObjectId, ref: 'users', required: true },
+  seen_count: { type: Number, default: 1 },
+  last_seen_at: { type: Date, default: Date.now }
+});
+
+postViewSchema.index({ user_id: 1, post_id: 1 }, { unique: true });
+// Read path: "what has this user seen recently", newest first.
+postViewSchema.index({ user_id: 1, last_seen_at: -1 });
+postViewSchema.index({ last_seen_at: 1 }, { expireAfterSeconds: POST_VIEW_TTL_DAYS * 24 * 60 * 60 });
+
+export const post_view_model = mongoose.model<PostViewDocument>('post_views', postViewSchema);

@@ -1,7 +1,7 @@
 import { FeedPost, HydratedPostComment } from '../../types/types';
 import { LeanPost, UserDocument } from '../../types/mongoose.types';
 import { user_model } from '../../models/user.model';
-import { post_reaction_model } from '../../models/post.model';
+import { post_comment_model, post_reaction_model } from '../../models/post.model';
 import { Types } from 'mongoose';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
 
@@ -55,6 +55,106 @@ export function shapeFeedPost(
         ? post.updatedAt.toISOString()
         : new Date(post.updatedAt).toISOString()
   };
+}
+
+/** Number of comment previews attached to each feed post. */
+const FEED_COMMENT_PREVIEW = 2;
+
+/**
+ * Batch-hydrate a page of posts for the feed: authors, the viewer's own
+ * reactions, and the latest few comments per post — in a fixed number of
+ * queries regardless of page size.
+ *
+ * Lives here rather than inline in the route because all three feed tabs
+ * (for-you / mates / latest) select posts differently but present them
+ * identically.
+ */
+export async function hydrateFeedPosts(
+  posts: LeanPost[],
+  viewerId: string
+): Promise<FeedPost[]> {
+  if (posts.length === 0) return [];
+
+  const postIds = posts.map(p => new Types.ObjectId(p._id));
+  const viewerObjectId = new Types.ObjectId(viewerId);
+
+  const [latestCommentsNested, userReactions] = await Promise.all([
+    Promise.all(
+      postIds.map(id =>
+        post_comment_model
+          .find({ post_id: id, status: { $nin: ['under_review', 'removed'] } })
+          .sort({ createdAt: -1 })
+          .limit(FEED_COMMENT_PREVIEW)
+          .lean()
+      )
+    ),
+    post_reaction_model.find({ user_id: viewerObjectId, post_id: { $in: postIds } }).lean()
+  ]);
+
+  const validComments = latestCommentsNested.flat().filter(Boolean) as any[];
+
+  const authorIds = [
+    ...new Set([
+      ...posts.map(p => p.author_id.toString()),
+      ...validComments.map(c => c.author_id.toString())
+    ])
+  ].map(id => new Types.ObjectId(id));
+
+  const users = (await user_model
+    .find({ _id: { $in: authorIds } })
+    .select('_id name img customization')
+    .lean()) as unknown as UserDocument[];
+
+  const userMap = users.reduce((acc, user) => {
+    acc[user._id.toString()] = user;
+    return acc;
+  }, {} as Record<string, UserDocument>);
+
+  const userReactionMap = userReactions.reduce((acc, rx: any) => {
+    acc[rx.post_id.toString()] = rx.reaction_type;
+    return acc;
+  }, {} as Record<string, string>);
+
+  const toAuthor = (id: string) => {
+    const doc = userMap[id];
+    return doc
+      ? {
+          _id: doc._id.toString(),
+          name: doc.name,
+          img: doc.img,
+          customization: doc.customization
+        }
+      : { _id: id, name: 'Unknown', img: '' };
+  };
+
+  const commentsByPostId = validComments.reduce((acc: Record<string, HydratedPostComment[]>, comment) => {
+    const pid = comment.post_id.toString();
+    if (!acc[pid]) acc[pid] = [];
+    acc[pid].push({
+      _id: comment._id.toString(),
+      post_id: pid,
+      message: comment.message,
+      createdAt: new Date(comment.createdAt).toISOString(),
+      updatedAt: new Date(comment.updatedAt).toISOString(),
+      author: toAuthor(comment.author_id.toString())
+    });
+    return acc;
+  }, {} as Record<string, HydratedPostComment[]>);
+
+  return posts.map(post => {
+    const postIdStr = post._id.toString();
+    // Sort the previews chronologically so the card reads naturally.
+    const comments = (commentsByPostId[postIdStr] || []).sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+
+    return shapeFeedPost(
+      post,
+      toAuthor(post.author_id.toString()),
+      userReactionMap[postIdStr] || null,
+      comments
+    );
+  });
 }
 
 /**

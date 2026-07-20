@@ -5,6 +5,7 @@ import { requireAuth } from '../../middleware/auth';
 import { message_model } from '../../models/message.model';
 import { Types } from 'mongoose';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
+import { mateRequestStateFor } from '../services/mate-request.policy';
 
 export const chatRouter = new Router();
 chatRouter.use(requireAuth);
@@ -48,7 +49,11 @@ chatRouter.get('/active', async (ctx) => {
       trial_expires_at: rel?.expires_at,
       cooldown_until: rel?.cooldown_until,
       initiator_id: rel?.action_user_id?.toString(),
-      relationship_id: rel?._id?.toString()
+      relationship_id: rel?._id?.toString(),
+      // Per-viewer, so the client can hide the "Become Mates" affordance rather
+      // than offer it and have the request rejected. Never the partner's state:
+      // whether they've been declined is not this user's business.
+      ...(rel ? mateRequestStateFor(rel as any, user_id) : {})
     };
   }).filter(c => activeStatuses.includes(c.status));
 
