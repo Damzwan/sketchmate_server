@@ -11,7 +11,19 @@ import { CONTAINER } from '../../s3';
 
 const MAX_REPORT_RATIO = 0.01;
 
-import { applyStrike, evaluateUserStanding, getStanding } from '../services/moderation.service';
+// removeContent/restoreContent used to be duplicated at the bottom of this file.
+// The copies had drifted: neither touched the deletion queue, so content removed
+// through THIS endpoint was never scheduled for deletion, and content restored
+// through it stayed queued for deletion anyway. One implementation, in the
+// service, for both routers.
+import {
+  applyStrike,
+  evaluateUserStanding,
+  getStanding,
+  notifyContentModeration,
+  removeContent,
+  restoreContent
+} from '../services/moderation.service';
 import {
   POLICY_CONSTANTS,
   REPORT_REASONS,
@@ -150,6 +162,8 @@ moderationRouter.post('/:report_id/resolve', async (ctx) => {
   report.resolved_by = ctx.state.user._id;
   await report.save();
 
+  let notify: 'removed' | 'restored' | null = null;
+
   if (action === 'uphold') {
     await applyStrike({
       userId: report.target_author_id.toString(),
@@ -158,8 +172,23 @@ moderationRouter.post('/:report_id/resolve', async (ctx) => {
       adminId: ctx.state.user._id.toString()
     });
     await removeContent(report.target_type, report.target_id.toString());
+    notify = 'removed';
   } else {
-    await restoreContent(report.target_type, report.target_id.toString());
+    // Only announce a restore that actually restored something — most dismissals
+    // are of content that was never hidden in the first place.
+    const restored = await restoreContent(report.target_type, report.target_id.toString());
+    if (restored) notify = 'restored';
+  }
+
+  // Author-facing notice. Skipped for 'user' reports — those target an account,
+  // not a piece of content, and applyStrike already speaks for itself.
+  if (notify && report.target_type !== 'user') {
+    await notifyContentModeration({
+      authorId: report.target_author_id.toString(),
+      type: report.target_type,
+      targetId: report.target_id.toString(),
+      event: notify
+    });
   }
 
   ctx.body = { success: true };
@@ -359,6 +388,12 @@ async function evaluateAutoModeration(params: {
 
   if (surfaceCfg.auto_hide) {
     await quarantineContent(params.type, params.targetId);
+    await notifyContentModeration({
+      authorId: params.targetAuthorId,
+      type: params.type,
+      targetId: params.targetId,
+      event: 'under_review'
+    });
     await evaluateUserStanding(params.targetAuthorId, params.reporterId);
     return;
   }
@@ -393,6 +428,12 @@ async function evaluateAutoModeration(params: {
 
   if (totalWeight >= finalThreshold) {
     await quarantineContent(params.type, params.targetId);
+    await notifyContentModeration({
+      authorId: params.targetAuthorId,
+      type: params.type,
+      targetId: params.targetId,
+      event: 'under_review'
+    });
     await evaluateUserStanding(params.targetAuthorId, params.reporterId);
   }
 }
@@ -467,87 +508,6 @@ async function quarantineContent(type: string, id: string) {
     { $set: { status: 'auto_actioned' } }
   );
 }
-
-async function restoreContent(type: string, id: string) {
-  const oid = new Types.ObjectId(id);
-  switch (type) {
-    case 'post':
-      await post_model.updateOne(
-        { _id: oid, status: 'under_review' },
-        { $set: { status: 'active' } }
-      );
-      break;
-    case 'balloon':
-      await balloon_model.updateOne(
-        { _id: oid, moderation_status: 'under_review' },
-        { $set: { moderation_status: 'active' } }
-      );
-      break;
-    case 'inbox_drawing':
-      await inbox_model.updateOne(
-        { _id: oid, status: 'under_review' },
-        { $set: { status: 'active' } }
-      );
-      break;
-    case 'comment':
-      await post_comment_model.updateOne(
-        { _id: oid, status: 'under_review' },
-        { $set: { status: 'active' } }
-      );
-      break;
-    case 'inbox_comment':
-      await setInboxCommentStatus(oid, 'removed', 'active');
-      break;
-    case 'dm_message':
-      await message_model.updateOne(
-        { _id: oid, moderation_status: 'removed' },
-        { $set: { moderation_status: 'active' } }
-      );
-      break;
-  }
-}
-
-async function removeContent(type: string, id: string) {
-  const oid = new Types.ObjectId(id);
-  const now = new Date();
-
-  switch (type) {
-    case 'post':
-      await post_model.updateOne(
-        { _id: oid },
-        { $set: { status: 'removed', 'moderation.removed_at': now } }
-      );
-      break;
-    case 'balloon':
-      await balloon_model.updateOne(
-        { _id: oid },
-        { $set: { moderation_status: 'removed', 'moderation.removed_at': now } }
-      );
-      break;
-    case 'inbox_drawing':
-      await inbox_model.updateOne(
-        { _id: oid },
-        { $set: { status: 'removed', 'moderation.removed_at': now } }
-      );
-      break;
-    case 'comment':
-      await post_comment_model.updateOne(
-        { _id: oid },
-        { $set: { status: 'removed' } }
-      );
-      break;
-    case 'inbox_comment':
-      await setInboxCommentStatus(oid, null, 'removed');
-      break;
-    case 'dm_message':
-      await message_model.updateOne(
-        { _id: oid },
-        { $set: { moderation_status: 'removed' } }
-      );
-      break;
-  }
-}
-
 
 moderationRouter.get('/standing', async (ctx) => {
   ctx.body = await getStanding(ctx.state.user._id.toString());

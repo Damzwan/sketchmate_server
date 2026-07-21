@@ -37,6 +37,7 @@ const notification_schema = new Schema<NotificationDocument>(
         'follow',
         'moderation_strike',
         'moderation_lifted',
+        'moderation_content',
         'announcement'
       ]
     },

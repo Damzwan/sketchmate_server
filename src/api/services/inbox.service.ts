@@ -425,11 +425,12 @@ export async function findInboxComment(
   return { sender: fromCollection.sender, message: fromCollection.message };
 }
 
+/** @return true if the comment's status actually changed. */
 export async function setInboxCommentStatus(
   oid: Types.ObjectId,
   from: 'active' | 'removed' | null,
   to: 'active' | 'removed'
-) {
+): Promise<boolean> {
   // collection store (migrated)
   const collMatch: any = { _id: oid };
   if (from) collMatch.status = from;
@@ -441,9 +442,10 @@ export async function setInboxCommentStatus(
   if (prev) {
     if (prev.status !== to) {
       await adjustInboxCommentCount(prev.inbox_id, to === 'active' ? 1 : -1);
+      return true;
     }
-    return;
   }
+  return false;
 }
 
 async function adjustInboxCommentCount(inboxId: Types.ObjectId | string, delta: number) {

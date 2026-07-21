@@ -18,6 +18,12 @@ import { v4 as uuidv4 } from 'uuid';
 
 export const inboxRouter = new Router();
 
+/**
+ * Mates one drawing can be sent to in a single publish. Mirrors MAX_SEND_MATES
+ * in the client's useMateSelection — keep the two in sync.
+ */
+const MAX_INBOX_RECIPIENTS = 5;
+
 inboxRouter.get('/legacy', async (ctx) => {
   const { user_id, limit, lastDate } = ctx.query as any;
   if (!user_id) {
@@ -147,11 +153,22 @@ inboxRouter.post(
       return;
     }
 
+    // The picker caps selection at MAX_SEND_MATES, but the cap only means
+    // anything if it's enforced here — the client list is just a request body.
+    // De-duplicate first so a repeated id can't be used to pad the array, and
+    // allow one extra slot because the sender always includes themselves.
+    const uniqueFollowers = [...new Set(followers.map((f: any) => String(f)))];
+    if (uniqueFollowers.length > MAX_INBOX_RECIPIENTS + 1) {
+      ctx.status = 400;
+      ctx.body = { error: `A drawing can go to at most ${MAX_INBOX_RECIPIENTS} mates` };
+      return;
+    }
+
     try {
       const inboxItem = await createInboxItem({
         sender_id: ctx.state.user._id.toString(),
         sender_name: ctx.state.user.name,
-        followers,
+        followers: uniqueFollowers,
         drawing_url,
         image_url,
         thumbnail_url,

@@ -1,6 +1,13 @@
 import dayjs from 'dayjs';
 import { Types } from 'mongoose';
-import { getLevelConfig, POLICY_CONSTANTS, ReportReason, STRIKE_LADDER } from '../../types/moderation.policy';
+import {
+  getLevelConfig,
+  POLICY_CONSTANTS,
+  REPORTABLE,
+  ReportableType,
+  ReportReason,
+  STRIKE_LADDER
+} from '../../types/moderation.policy';
 import { moderation_action_model, report_model } from '../../models/moderation.model';
 import { user_model } from '../../models/user.model';
 import { sendSocketNotificationToUser } from '../socket/socket';
@@ -10,8 +17,72 @@ import { balloon_model } from '../../models/balloon.model';
 import { inbox_model } from '../../models/inbox.model';
 import { message_model } from '../../models/message.model';
 import { deletion_queue_model } from '../../models/deletion.model';
+import { setInboxCommentStatus } from './inbox.service';
 import { dispatchNotification } from './notification.service';
-import { moderationLiftedPushNotification, moderationStrikePushNotification } from '../../config/notification.config';
+import {
+  moderationContentPushNotification,
+  moderationLiftedPushNotification,
+  moderationStrikePushNotification
+} from '../../config/notification.config';
+
+export type ContentModerationEvent = 'under_review' | 'removed' | 'restored';
+
+/**
+ * Tell an author what happened to their content.
+ *
+ * Without this, moderation was silent from the author's side: a quarantined or
+ * removed post simply stopped appearing, with no way to tell it apart from a bug
+ * or from having deleted it themselves. Silence also makes the review look
+ * permanent, which is exactly wrong for `under_review` — that state is temporary
+ * by definition and most of it gets restored.
+ *
+ * Deliberately says nothing about WHO reported it or how many did: that's the
+ * information a retaliating author would act on.
+ *
+ * Never throws — moderation must not fail because a notification did.
+ */
+export async function notifyContentModeration(params: {
+  authorId: string;
+  type: string;
+  targetId: string;
+  event: ContentModerationEvent;
+}) {
+  const { authorId, type, targetId, event } = params;
+  const label = (REPORTABLE[type as ReportableType]?.label ?? 'post').toLowerCase();
+
+  const copy = {
+    under_review: {
+      title: `Your ${label} is being reviewed`,
+      body: `It's hidden while our team takes a look. If everything's fine, it comes straight back.`
+    },
+    removed: {
+      title: `Your ${label} was removed`,
+      body: `Our team reviewed it and found it went against the community guidelines.`
+    },
+    restored: {
+      title: `Your ${label} is back`,
+      body: `We reviewed it and put it back where it was. Thanks for your patience.`
+    }
+  }[event];
+
+  const payload = { status: event, content_type: type, target_id: targetId, ...copy };
+
+  try {
+    await dispatchNotification({
+      recipient_id: authorId,
+      type: 'moderation_content',
+      target_type: 'system',
+      channels: {
+        in_app: true,
+        socket: { event: 'moderation:content', data: payload },
+        push: moderationContentPushNotification(copy.title, copy.body)
+      },
+      payload
+    });
+  } catch (err) {
+    console.error('Content moderation notice failed:', err);
+  }
+}
 
 export async function applyStrike(params: {
   userId: string;
@@ -217,7 +288,7 @@ export async function removeContent(type: string, id: string) {
       await post_comment_model.updateOne({ _id: oid }, { $set: { status: 'removed' } });
       break;
     case 'inbox_comment':
-      await inbox_model.updateOne({ 'comments._id': oid }, { $set: { 'comments.$.status': 'removed' } });
+      await setInboxCommentStatus(oid, null, 'removed');
       break;
     case 'dm_message':
       await message_model.updateOne({ _id: oid }, { $set: { moderation_status: 'removed' } });
@@ -233,39 +304,57 @@ export async function removeContent(type: string, id: string) {
   );
 }
 
-export async function restoreContent(type: string, id: string) {
+/**
+ * Put moderated content back.
+ *
+ * Restores from `removed` as well as `under_review`. It used to match only
+ * `under_review`, which made removal one-way: once a moderator (or the dev
+ * panel) had upheld a report, a later "dismiss & restore" silently did nothing —
+ * the query matched no document, no error was raised, and the content stayed
+ * gone while the UI reported success. Appeals had no path back.
+ *
+ * @return true if a document actually changed state, so callers can avoid
+ * telling an author their content is "back" when it never left.
+ */
+export async function restoreContent(type: string, id: string): Promise<boolean> {
   const oid = new Types.ObjectId(id);
+  const hidden = { $in: ['under_review', 'removed'] };
+  let modified = 0;
 
   switch (type) {
     case 'post':
-      await post_model.updateOne({ _id: oid, status: 'under_review' }, { $set: { status: 'active' } });
+      modified = (await post_model.updateOne({ _id: oid, status: hidden }, { $set: { status: 'active' } })).modifiedCount;
       break;
     case 'balloon':
-      await balloon_model.updateOne({
+      modified = (await balloon_model.updateOne({
         _id: oid,
-        moderation_status: 'under_review'
-      }, { $set: { moderation_status: 'active' } });
+        moderation_status: hidden
+      }, { $set: { moderation_status: 'active' } })).modifiedCount;
       break;
     case 'inbox_drawing':
-      await inbox_model.updateOne({ _id: oid, status: 'under_review' }, { $set: { status: 'active' } });
+      modified = (await inbox_model.updateOne({ _id: oid, status: hidden }, { $set: { status: 'active' } })).modifiedCount;
       break;
     case 'comment':
-      await post_comment_model.updateOne({ _id: oid, status: 'under_review' }, { $set: { status: 'active' } });
+      modified = (await post_comment_model.updateOne({ _id: oid, status: hidden }, { $set: { status: 'active' } })).modifiedCount;
       break;
     case 'inbox_comment':
-      await inbox_model.updateOne({
-        'comments._id': oid,
-        'comments.status': 'removed'
-      }, { $set: { 'comments.$.status': 'active' } });
+      // Purpose-built helper: writes the MIGRATED comment collection and keeps
+      // the parent item's comment_count straight. The embedded-array update this
+      // used to do wrote to the legacy shape and left the count stale.
+      modified = (await setInboxCommentStatus(oid, null, 'active')) ? 1 : 0;
       break;
     case 'dm_message':
-      await message_model.updateOne({
+      modified = (await message_model.updateOne({
         _id: oid,
-        moderation_status: 'removed'
-      }, { $set: { moderation_status: 'active' } });
+        moderation_status: hidden
+      }, { $set: { moderation_status: 'active' } })).modifiedCount;
       break;
   }
+
+  // Unconditional: a queued deletion outlives the status field, so it has to go
+  // even when the status was already 'active'.
   await deletion_queue_model.deleteOne({ target_id: oid, target_type: type });
+  return modified > 0;
 }
 
 const SYSTEM_FLAG_THRESHOLD = 3;

@@ -112,6 +112,20 @@ export const moderationLiftedPushNotification = (): FBNotification => {
   };
 };
 
+export const moderationContentPushNotification = (
+  title: string,
+  body: string
+): FBNotification => ({
+  notification: { title, body: body.slice(0, 140) },
+  android: {
+    // Normal priority, not max: this is informational. A strike changes what the
+    // user can do; "your post is being reviewed" does not need to interrupt.
+    priority: 'normal',
+    notification: { priority: 'default', channelId: '1' }
+  },
+  data: { type: NotificationType.moderation_content }
+});
+
 export const mateRequestPushNotification = (
   senderId: string,
   senderName: string,

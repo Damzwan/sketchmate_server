@@ -6,6 +6,7 @@ export enum NotificationType {
   dm_message = "dm_message",
   moderation_strike = "moderation_strike",
   moderation_lifted = "moderation_lifted",
+  moderation_content = "moderation_content",
   mate_request = "mate_request",
   request_accepted = "request_accepted",
 
@@ -59,6 +60,7 @@ export enum SOCKET_ENDPONTS {
   friend_invitation = "friend-invitation",
   moderation_strike = "moderation:strike",
   moderation_restriction_lifted = "moderation:restriction_lifted",
+  moderation_content = "moderation:content",
 }
 
 // --- SHARED TYPES ---
@@ -853,6 +855,12 @@ export type NotificationKind =
   | "follow"
   | "moderation_strike"
   | "moderation_lifted"
+  // One kind for the whole lifecycle of a single piece of content — quarantined,
+  // removed, restored — discriminated by payload.status. The author needs to be
+  // told their post vanished regardless of which of the three happened, and
+  // three near-identical notification kinds would only be three places to forget
+  // to send one from.
+  | "moderation_content"
   | "lobby_invitation"
   | "announcement";
 

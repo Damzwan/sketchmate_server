@@ -7,6 +7,7 @@ import {
   applyStrike,
   getStanding,
   liftRestriction,
+  notifyContentModeration,
   removeContent,
   restoreContent
 } from '../services/moderation.service';
@@ -44,6 +45,8 @@ devModerationRouter.post('/:report_id/resolve', async (ctx) => {
   report.resolved_by = ctx.state.user._id;
   await report.save();
 
+  let notify: 'removed' | 'restored' | null = null;
+
   if (action === 'uphold') {
     // 1. Strike the user AND remove the content
     await applyStrike({
@@ -53,13 +56,62 @@ devModerationRouter.post('/:report_id/resolve', async (ctx) => {
       adminId: ctx.state.user._id.toString()
     });
     await removeContent(report.target_type, report.target_id.toString());
+    notify = 'removed';
   } else if (action === 'remove_only') {
     await removeContent(report.target_type, report.target_id.toString());
+    notify = 'removed';
   } else {
-    await restoreContent(report.target_type, report.target_id.toString());
+    // Only announce a restore that actually restored something.
+    const restored = await restoreContent(report.target_type, report.target_id.toString());
+    if (restored) notify = 'restored';
+  }
+
+  // 'remove_only' skips the strike, but the author still has to be told their
+  // content is gone — this was the silent path that made posts look like they
+  // had simply vanished.
+  if (notify && report.target_type !== 'user') {
+    await notifyContentModeration({
+      authorId: report.target_author_id.toString(),
+      type: report.target_type,
+      targetId: report.target_id.toString(),
+      event: notify
+    });
   }
 
   ctx.body = { success: true };
+});
+
+/**
+ * POST /:report_id/restore — undo a resolution.
+ *
+ * /resolve refuses to touch an already-resolved report, which left removed
+ * content with no way back: it drops out of the pending queue the moment it is
+ * actioned, so a mistaken removal (or a granted appeal) was unrecoverable from
+ * the dashboard. This is the one endpoint that accepts a resolved report.
+ */
+devModerationRouter.post('/:report_id/restore', async (ctx) => {
+  const report = await report_model.findById(ctx.params.report_id);
+  if (!report) return ctx.throw(404);
+
+  const restored = report.target_type === 'user'
+    ? false
+    : await restoreContent(report.target_type, report.target_id.toString());
+
+  report.status = 'dismissed';
+  report.resolved_at = new Date();
+  report.resolved_by = ctx.state.user._id;
+  await report.save();
+
+  if (restored) {
+    await notifyContentModeration({
+      authorId: report.target_author_id.toString(),
+      type: report.target_type,
+      targetId: report.target_id.toString(),
+      event: 'restored'
+    });
+  }
+
+  ctx.body = { success: true, restored };
 });
 
 // =============================================================================
