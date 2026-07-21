@@ -825,12 +825,14 @@ export type SubscriptionTier = "free" | "pro" | "lifetime";
 export interface DailyQuota {
   balloons_per_day: number;
   posts_per_day: number;
-  max_mates: number;
+  /** New mates a user may make per rolling week. `null` = unlimited (Pro). */
+  mates_per_week: number | null;
 }
 
 export interface QuotaState {
   used: number;
-  limit: number;
+  /** `null` = unlimited. Clients must treat null as "no cap", not zero. */
+  limit: number | null;
   remaining: number;
   reset_at?: string;
 }

@@ -1,7 +1,8 @@
+import dayjs from 'dayjs';
 import { user_model } from '../../models/user.model';
 import { DailyQuota, QuotaState, QuotaSummary } from '../../types/types';
 import { Types } from 'mongoose';
-import { nextResetAt, quotaForTier, startOfUtcDay } from '../../config/quota.config';
+import { MATE_WINDOW_DAYS, nextResetAt, quotaForTier, startOfUtcDay } from '../../config/quota.config';
 import { quota_usage_model } from '../../models/quota_usage.model';
 
 export class QuotaExceededError extends Error {
@@ -74,20 +75,67 @@ export async function getPostQuota(userId: string): Promise<QuotaState> {
   return buildState(used, limit);
 }
 
-export async function getMateQuota(userId: string): Promise<QuotaState> {
-  const user = await user_model
-    .findById(userId)
-    .select('subscription_tier stats.mates')
-    .lean() as any;
+/**
+ * New mates this user has made in the rolling window, plus when the oldest of
+ * them ages out (so the client can say "resets in 2 days"). Cancelled/unfriended
+ * mates are NOT subtracted: you spent the slot the moment you formed the bond.
+ */
+async function countMatesThisWeek(
+  userId: string
+): Promise<{ count: number; resetAt?: string }> {
+  const windowStart = startOfUtcDay(
+    dayjs().subtract(MATE_WINDOW_DAYS - 1, 'day').toDate()
+  );
 
-  const tier = user?.subscription_tier ?? 'free';
-  const limit = quotaForTier(tier).max_mates;
-  const used = user?.stats?.mates || 0;
+  const docs = await quota_usage_model
+    .find({
+      user_id: new Types.ObjectId(userId),
+      date: { $gte: windowStart },
+      mates_made: { $gt: 0 }
+    })
+    .select('date mates_made')
+    .lean();
+
+  const count = docs.reduce((sum, d: any) => sum + (d.mates_made || 0), 0);
+
+  let resetAt: string | undefined;
+  if (docs.length) {
+    const oldest = docs.reduce(
+      (min: Date, d: any) => (d.date < min ? d.date : min),
+      docs[0].date as Date
+    );
+    resetAt = dayjs(oldest).add(MATE_WINDOW_DAYS, 'day').toISOString();
+  }
+
+  return { count, resetAt };
+}
+
+/** Increment today's mate counter. Called once per user each time a mate forms. */
+export async function recordMateMade(userId: string): Promise<void> {
+  await quota_usage_model.updateOne(
+    { user_id: new Types.ObjectId(userId), date: startOfUtcDay() },
+    { $inc: { mates_made: 1 } },
+    { upsert: true }
+  );
+}
+
+export async function getMateQuota(userId: string): Promise<QuotaState> {
+  const tier = await getTier(userId);
+  const limit = quotaForTier(tier).mates_per_week;
+
+  const { count, resetAt } = await countMatesThisWeek(userId);
+
+  // Unlimited (Pro/Lifetime): report usage for context, but no ceiling. reset_at
+  // is meaningless without a cap, so it's omitted.
+  if (limit === null) {
+    return { used: count, limit: null, remaining: Number.MAX_SAFE_INTEGER };
+  }
 
   return {
-    used,
+    used: count,
     limit,
-    remaining: Math.max(0, limit - used)
+    remaining: Math.max(0, limit - count),
+    reset_at: resetAt
   };
 }
 

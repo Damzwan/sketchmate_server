@@ -10,7 +10,7 @@ import { RelationshipDocument } from '../../types/mongoose.types';
 import { isUserOnline, sendSocketNotificationToUser } from '../socket/socket';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
 import { requireCapability } from '../../middleware/moderation.middleware';
-import { assertMateQuota } from '../services/quota.service';
+import { assertMateQuota, QuotaExceededError, recordMateMade } from '../services/quota.service';
 import { dispatchNotification } from '../services/notification.service';
 import {
   matchNotification,
@@ -94,9 +94,31 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
 
       ctx.body = { success: true, conversation: populatedConvo };
     } else if (rel.chat_status === 'pending_mate') {
-      await assertMateQuota(user_id);
+      // Both sides form a mate here, so both spend a weekly slot. `blocker` tells
+      // the accepter whether it was their own cap or the requester's that stopped
+      // it — the copy and the paywall CTA differ ("you've hit your limit" vs
+      // "they've hit theirs, and no upgrade of yours fixes that").
+      try {
+        await assertMateQuota(user_id);
+      } catch (e) {
+        if (e instanceof QuotaExceededError) {
+          ctx.status = 429;
+          ctx.body = { error: 'mate_quota_exceeded', blocker: 'self', state: e.state };
+          return;
+        }
+        throw e;
+      }
       if (partnerId) {
-        await assertMateQuota(partnerId.toString());
+        try {
+          await assertMateQuota(partnerId.toString());
+        } catch (e) {
+          if (e instanceof QuotaExceededError) {
+            ctx.status = 429;
+            ctx.body = { error: 'mate_quota_exceeded', blocker: 'partner', state: e.state };
+            return;
+          }
+          throw e;
+        }
       }
 
       // Same compare-and-set shape as /unfriend, for the same reason: a
@@ -121,6 +143,11 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
         await user_model.updateMany(
           { _id: { $in: rel.users } },
           { $inc: { 'stats.mates': 1 } }
+        );
+        // Only on the winning transition — recording per user, not per pair, so a
+        // retried/double accept can't spend two weekly slots for one friendship.
+        await Promise.all(
+          rel.users.map((u: Types.ObjectId) => recordMateMade(u.toString()))
         );
       }
 
@@ -433,12 +460,25 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
       chat_status: { $nin: ['expired', 'none', 'blocked'] }
     },
     {
+      // No re-invite cooldown. There used to be a 48h `cooldown_until` here and
+      // it was never enforced — nothing on this server reads it before creating
+      // a `pending_invite`, so anyone who reached the chat from the friend
+      // picker or a profile sheet could re-invite immediately. It only ever
+      // greyed out the button for the one user who read the banner and believed
+      // it. (The mate-request decline ladder is a different field,
+      // `mate_requests[].cooldown_until`, and that one IS enforced.)
+      //
+      // Even enforced it would have been the wrong tool: it fires on the pair,
+      // so a mis-tap punished both people equally, and the case it looks like it
+      // guards — being re-invited by someone you just removed — is what block is
+      // for. The weekly mate cap is the real brake now: re-friending costs a
+      // slot, which paces the churn without a timer nobody can see coming.
       $set: {
         chat_status: 'expired',
-        cooldown_until: dayjs().add(48, 'hours').toDate(),
         deleted_at: dayjs().add(30, 'days').toDate(),
         action_user_id: new Types.ObjectId(myId)
-      }
+      },
+      $unset: { cooldown_until: '' }
     },
     { new: false }
   ) as RelationshipDocument | null;
@@ -481,7 +521,6 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
 
   if (populatedConvo) {
     populatedConvo.status = 'expired';
-    populatedConvo.cooldown_until = rel.cooldown_until;
     populatedConvo.relationship_id = rel._id.toString();
   }
 
@@ -493,15 +532,26 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
     target_id: targetId,
     previous_status: oldRel.chat_status
   });
-  ctx.body = { success: true, cooldown_until: rel.cooldown_until };
+  ctx.body = { success: true };
 });
 
 relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capability.SEND_MATE_REQUEST), async (ctx) => {
   const { conversation_id } = ctx.params;
   const user_id = ctx.state.user._id;
 
-
-  await assertMateQuota(user_id.toString());
+  // Gate the ASKER up front: no point queuing a request they can't fulfil this
+  // week. A 429 here is distinct from the anti-pestering cooldown 429 below —
+  // this one is the weekly cap, and the client routes it to the paywall.
+  try {
+    await assertMateQuota(user_id.toString());
+  } catch (e) {
+    if (e instanceof QuotaExceededError) {
+      ctx.status = 429;
+      ctx.body = { error: 'mate_quota_exceeded', blocker: 'self', state: e.state };
+      return;
+    }
+    throw e;
+  }
 
   // Read BEFORE writing so the anti-pestering ledger can veto the request.
   // The old code flipped the status straight to 'pending_mate' in the same
