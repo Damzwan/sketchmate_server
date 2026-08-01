@@ -109,6 +109,9 @@ const user_schema = new Schema<UserDocument>({
 
   date_of_birth: { type: Date, required: false },
   last_seen_version: { type: String, required: false },
+  // IANA timezone (for example "Europe/Zurich"). Kept private and refreshed by
+  // the active client so server-scheduled notifications can follow local time.
+  timezone: { type: String, required: false, trim: true, maxlength: 100 },
   subscriptions: { type: [notificationSchema], default: [] },
 
   stickers: { type: [String], default: [] },
@@ -131,6 +134,7 @@ user_schema.index({ 'balloon.sent': 1 });
 user_schema.index({ 'balloon.received': 1 });
 user_schema.index({ name: 'text' });
 user_schema.index({ migration_version: 1 });
+user_schema.index({ timezone: 1 }, { sparse: true });
 user_schema.index({ 'restriction.level': 1, 'restriction.expires_at': 1 });
 user_schema.index({ 'strike_summary.active_strikes': -1 });
 user_schema.index(

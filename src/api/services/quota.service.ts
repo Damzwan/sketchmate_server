@@ -74,6 +74,36 @@ export async function getPostQuota(userId: string): Promise<QuotaState> {
   return buildState(used, limit);
 }
 
+/**
+ * Give back a post slot when a post from the current quota day is deleted.
+ *
+ * The guarded update makes retries safe and prevents a corrupt/legacy usage row
+ * from going negative. Posts from an earlier UTC day never affect today's quota.
+ */
+export async function releasePostQuota(
+  userId: string,
+  postCreatedAt: Date,
+  now = new Date()
+): Promise<QuotaState> {
+  const dayStart = startOfUtcDay(now);
+  const dayEnd = nextResetAt(now);
+  const belongsToCurrentQuotaDay =
+    postCreatedAt >= dayStart && postCreatedAt < dayEnd;
+
+  if (belongsToCurrentQuotaDay) {
+    await quota_usage_model.updateOne(
+      {
+        user_id: new Types.ObjectId(userId),
+        date: dayStart,
+        posts_created: { $gt: 0 }
+      },
+      { $inc: { posts_created: -1 } }
+    );
+  }
+
+  return getPostQuota(userId);
+}
+
 export async function getQuotaSummary(userId: string): Promise<QuotaSummary> {
   const tier = await getTier(userId);
   const q: DailyQuota = quotaForTier(tier);

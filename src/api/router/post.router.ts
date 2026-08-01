@@ -23,6 +23,7 @@ import { startOfUtcDay } from '../../config/quota.config';
 import { dispatchNotification } from '../services/notification.service';
 import { v4 as uuidv4 } from 'uuid';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
+import { releasePostQuota } from '../services/quota.service';
 
 const postRouter = new Router();
 
@@ -743,14 +744,27 @@ postRouter.delete('/:post_id', requireAuth, async (ctx) => {
       return;
     }
 
-    await Promise.all([
-      post_model.deleteOne({ _id: post._id }),
+    // Claim the deletion before applying any counters. This keeps duplicate
+    // requests from decrementing the user's post count or quota more than once.
+    const deletion = await post_model.deleteOne({
+      _id: post._id,
+      author_id: post.author_id
+    });
+
+    if (deletion.deletedCount === 0) {
+      ctx.status = 404;
+      ctx.body = { error: 'Post not found' };
+      return;
+    }
+
+    const [, , , postQuota] = await Promise.all([
       post_comment_model.deleteMany({ post_id: post._id }),
       post_reaction_model.deleteMany({ post_id: post._id }),
       user_model.updateOne(
         { _id: post.author_id },
         { $inc: { 'stats.posts': -1 } }
-      )
+      ),
+      releasePostQuota(user_id, post.createdAt)
     ]);
 
     const extractKey = (url: string) => url.split('/').pop();
@@ -770,7 +784,10 @@ postRouter.delete('/:post_id', requireAuth, async (ctx) => {
     trackEvent(user_id, mixpanelEvents.post_v2_delete, { post_id });
 
     ctx.status = 200;
-    ctx.body = { message: 'Post and associated data deleted successfully' };
+    ctx.body = {
+      message: 'Post and associated data deleted successfully',
+      post_quota: postQuota
+    };
   } catch (error) {
     console.error('Delete post error:', error);
     ctx.status = 500;

@@ -430,6 +430,33 @@ userRouter.put('/update', requireAuth, requireCapability(Capability.CHANGE_NAME)
   ctx.body = await updateUser(params);
 });
 
+userRouter.put('/timezone', requireAuth, async (ctx) => {
+  const requestedTimezone = ctx.request.body?.timezone;
+  if (typeof requestedTimezone !== 'string' || requestedTimezone.length > 100) {
+    ctx.status = 400;
+    ctx.body = { error: 'Invalid timezone' };
+    return;
+  }
+
+  try {
+    const candidate = requestedTimezone.trim();
+    // Intl both validates the IANA identifier and gives us its canonical form.
+    const timezone = new Intl.DateTimeFormat('en-US', {
+      timeZone: candidate
+    }).resolvedOptions().timeZone;
+
+    await user_model.updateOne(
+      { _id: ctx.state.user._id },
+      { $set: { timezone } }
+    );
+
+    ctx.body = { timezone };
+  } catch {
+    ctx.status = 400;
+    ctx.body = { error: 'Invalid timezone' };
+  }
+});
+
 userRouter.put('/img', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
   if (!ctx.request.files || !ctx.request.files.file) {
     ctx.status = 400;

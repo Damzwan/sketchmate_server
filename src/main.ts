@@ -19,9 +19,6 @@ import cron from 'node-cron';
 import { pairBalloons, removeExpiredBalloons, unPairBalloons } from './api/balloon';
 import * as admin from 'firebase-admin';
 import serviceAccount from '../fcm.json';
-import { inbox_model } from './models/inbox.model';
-import { Types } from 'mongoose';
-import { inbox_comment_model } from './models/inbox-comment.model';
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount as any)
