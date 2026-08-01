@@ -25,7 +25,11 @@ const chatCustomizationSchema = new Schema({
   fontId: { type: String, default: 'sketch' },
   fontEffectId: { type: String, default: '' },
   worldId: { type: String, default: 'none' },
-  effectId: { type: String, default: 'none' }
+  effectId: { type: String, default: 'none' },
+  backgroundImageUrl: { type: String, default: '' },
+  backgroundImageOpacity: { type: Number, default: 0.12, min: 0.06, max: 0.35 },
+  backgroundSourceType: { type: String, enum: ['inbox', 'post'], required: false },
+  backgroundSourceId: { type: String, required: false }
 }, {
   _id: false,
   minimize: false

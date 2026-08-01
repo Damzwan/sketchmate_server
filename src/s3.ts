@@ -76,6 +76,20 @@ export class S3Creator {
     );
   }
 
+  async getObjectBuffer(sourceUrl: string, bucketName: CONTAINER): Promise<Buffer> {
+    if (!this.s3Client) throw new Error('S3 is not configured');
+    const url = new URL(sourceUrl);
+    const key = decodeURIComponent(url.pathname.replace(/^\//, ''));
+    if (!key) throw new Error('Invalid S3 object URL');
+
+    const response = await this.s3Client.send(new GetObjectCommand({
+      Bucket: bucketName,
+      Key: key
+    }));
+    if (!response.Body) throw new Error('S3 object has no body');
+    return Buffer.from(await response.Body.transformToByteArray());
+  }
+
 
   async uploadFile(
     filePath: string,

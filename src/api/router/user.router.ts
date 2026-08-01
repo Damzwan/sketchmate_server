@@ -43,6 +43,11 @@ import { subscribeV2, unsubscribeV2 } from '../services/user.service';
 import { getPublicLobbiesSnapshot } from '../socket/drawSyncing';
 import { router } from './router';
 import { buildItemId, FREE_ITEMS, isPaidTier } from '../../config/catalog.config';
+import {
+  clearChatBackground,
+  setChatBackground,
+  type ChatBackgroundSource
+} from '../services/chat-background.service';
 
 export const userRouter = new Router();
 
@@ -212,6 +217,17 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
         updateData[`chat_customization.${key}`] = chat_customization[key];
       }
     }
+
+    if (
+      isPaidTier(user.subscription_tier) &&
+      typeof chat_customization.backgroundImageOpacity === 'number' &&
+      Number.isFinite(chat_customization.backgroundImageOpacity)
+    ) {
+      updateData['chat_customization.backgroundImageOpacity'] = Math.max(
+        0.06,
+        Math.min(0.35, chat_customization.backgroundImageOpacity)
+      );
+    }
   }
 
   if (Object.keys(updateData).length === 0) {
@@ -221,6 +237,50 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
 
   await user_model.updateOne({ _id: user_id }, { $set: updateData });
   ctx.body = { message: 'Profile updated' };
+});
+
+userRouter.put('/chat-background', requireAuth, async (ctx) => {
+  const userId = ctx.state.user._id.toString();
+  const user = await user_model.findById(userId).select('subscription_tier').lean();
+  if (!user) return ctx.throw(404, 'User not found');
+  if (!isPaidTier(user.subscription_tier)) {
+    ctx.status = 403;
+    ctx.body = { error: 'pro_required' };
+    return;
+  }
+
+  const sourceType = ctx.request.body?.source_type as ChatBackgroundSource;
+  const sourceId = String(ctx.request.body?.source_id ?? '');
+  if (!['inbox', 'post'].includes(sourceType) || !Types.ObjectId.isValid(sourceId)) {
+    ctx.status = 400;
+    ctx.body = { error: 'invalid_background_source' };
+    return;
+  }
+
+  try {
+    const url = await setChatBackground({ userId, sourceType, sourceId });
+    ctx.body = { url };
+  } catch (error: any) {
+    if (error?.message === 'background_source_not_found') {
+      ctx.status = 404;
+      ctx.body = { error: 'background_source_not_found' };
+      return;
+    }
+    console.error('Set chat background error:', error);
+    ctx.status = 500;
+    ctx.body = { error: 'chat_background_failed' };
+  }
+});
+
+userRouter.delete('/chat-background', requireAuth, async (ctx) => {
+  try {
+    await clearChatBackground(ctx.state.user._id.toString());
+    ctx.body = { success: true };
+  } catch (error) {
+    console.error('Clear chat background error:', error);
+    ctx.status = 500;
+    ctx.body = { error: 'chat_background_clear_failed' };
+  }
 });
 
 userRouter.post('/upload-image', requireAuth, requireCapability(Capability.CHANGE_PROFILE_IMG), async (ctx) => {
