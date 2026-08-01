@@ -20,6 +20,17 @@ const customizationSchema = new Schema({
   minimize: false
 });
 
+const chatCustomizationSchema = new Schema({
+  themeId: { type: String, default: 'classic' },
+  fontId: { type: String, default: 'sketch' },
+  fontEffectId: { type: String, default: '' },
+  worldId: { type: String, default: 'none' },
+  effectId: { type: String, default: 'none' }
+}, {
+  _id: false,
+  minimize: false
+});
+
 const engagementMetadataSchema = new Schema({
   last_thought_prompt_at: { type: Date, default: null },
   total_thought_prompts_shown: { type: Number, default: 0 },
@@ -78,6 +89,7 @@ const user_schema = new Schema<UserDocument>({
 
   stats: { type: statsSchema, default: () => ({}) },
   customization: { type: customizationSchema, default: () => ({}) },
+  chat_customization: { type: chatCustomizationSchema, default: () => ({}) },
 
   restriction: { type: restrictionSchema, default: () => ({}) },
   strike_summary: { type: strikeSummarySchema, default: () => ({}) },

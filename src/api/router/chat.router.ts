@@ -10,6 +10,10 @@ import { mateRequestStateFor } from '../services/mate-request.policy';
 export const chatRouter = new Router();
 chatRouter.use(requireAuth);
 
+const conversationActivityAt = (conversation: any): number => {
+  const timestamp = conversation.last_message?.createdAt ?? conversation.createdAt;
+  return timestamp ? new Date(timestamp).getTime() : 0;
+};
 
 chatRouter.get('/active', async (ctx) => {
   const user_id = ctx.state.user._id.toString();
@@ -19,7 +23,6 @@ chatRouter.get('/active', async (ctx) => {
   })
     .populate('last_message')
     .populate('participants', PUBLIC_USER_FIELDS)
-    .sort({ updatedAt: -1 })
     .lean();
 
   if (!conversations.length) {
@@ -29,7 +32,9 @@ chatRouter.get('/active', async (ctx) => {
 
   const relationships = await relationship_model.find({
     users: user_id
-  }).lean();
+  })
+    .select('users conversation_id chat_status expires_at cooldown_until action_user_id mate_requests')
+    .lean();
 
   const activeStatuses = ['temporary', 'mate', 'pending_mate', 'pending_invite', 'expired', 'blocked'];
 
@@ -55,7 +60,14 @@ chatRouter.get('/active', async (ctx) => {
       // whether they've been declined is not this user's business.
       ...(rel ? mateRequestStateFor(rel as any, user_id) : {})
     };
-  }).filter(c => activeStatuses.includes(c.status));
+  })
+    .filter(c =>
+      activeStatuses.includes(c.status) &&
+      // Incoming invites have their own `/requests` payload. Returning them in
+      // both lists mounted duplicate overview rows and double-counted unread.
+      !(c.status === 'pending_invite' && c.initiator_id !== user_id)
+    )
+    .sort((a, b) => conversationActivityAt(b) - conversationActivityAt(a));
 
   ctx.body = activeConvos;
 });
@@ -69,7 +81,9 @@ chatRouter.get('/requests', async (ctx) => {
     users: meOID,
     chat_status: 'pending_invite',
     action_user_id: { $ne: meOID }
-  }).lean();
+  })
+    .select('conversation_id chat_status action_user_id')
+    .lean();
 
   if (!relationships.length) {
     ctx.body = [];
@@ -104,7 +118,6 @@ chatRouter.get('/requests', async (ctx) => {
   })
     .populate('last_message')
     .populate('participants', PUBLIC_USER_FIELDS)
-    .sort({ updatedAt: -1 })
     .lean();
 
   ctx.body = conversations.map(c => {
@@ -116,7 +129,7 @@ chatRouter.get('/requests', async (ctx) => {
       initiator_id: r?.action_user_id?.toString(),
       relationship_id: r?._id?.toString()
     };
-  });
+  }).sort((a, b) => conversationActivityAt(b) - conversationActivityAt(a));
 });
 
 chatRouter.get('/:id/messages', async (ctx) => {
@@ -139,11 +152,27 @@ chatRouter.get('/:id/messages', async (ctx) => {
   };
 });
 
+chatRouter.post('/read-all', async (ctx) => {
+  const user_id = ctx.state.user._id.toString();
+  await conversation_model.updateMany(
+    {
+      participants: new Types.ObjectId(user_id),
+      [`unread_counts.${user_id}`]: { $gt: 0 }
+    },
+    { $set: { [`unread_counts.${user_id}`]: 0 } },
+    // Reading is not conversation activity. In particular, it must not change
+    // overview ordering or the timestamp shown beside the last message.
+    { timestamps: false }
+  );
+  ctx.status = 204;
+});
+
 chatRouter.post('/:id/read', async (ctx) => {
   const user_id = ctx.state.user._id.toString();
   await conversation_model.updateOne(
-    { _id: ctx.params.id },
-    { $set: { [`unread_counts.${user_id}`]: 0 } }
+    { _id: ctx.params.id, participants: new Types.ObjectId(user_id) },
+    { $set: { [`unread_counts.${user_id}`]: 0 } },
+    { timestamps: false }
   );
   ctx.status = 204;
 });

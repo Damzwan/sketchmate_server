@@ -59,32 +59,27 @@ export const saveMessageLogic = async (
     { upsert: true, new: true }
   );
 
-  // 2. Message + conversation meta update — run in parallel
-  const [message] = await Promise.all([
-    message_model.create({
-      conversation_id: conversation._id,
-      sender_id,
-      content,
-      ...(shared_post_id && { shared_post_id: new Types.ObjectId(shared_post_id) }),
-      ...(options.shared_inbox_item_id && { shared_inbox_item_id: new Types.ObjectId(options.shared_inbox_item_id) }),
-      ...(options.messageMeta && {
-        type: options.messageMeta.type,
-        system_kind: options.messageMeta.system_kind,
-        system_payload: options.messageMeta.system_payload
-      })
-    }),
-    conversation_model.updateOne(
-      { _id: conversation._id },
-      {
-        $set: { last_message: conversation._id },
-        $inc: { [`unread_counts.${receiver_id}`]: 1 }
-      }
-    )
-  ]);
-
+  // Create first so the conversation can point at the real message in the same
+  // write that increments unread state. The old placeholder briefly stored the
+  // conversation id in `last_message`, then needed a second metadata write.
+  const message = await message_model.create({
+    conversation_id: conversation._id,
+    sender_id,
+    content,
+    ...(shared_post_id && { shared_post_id: new Types.ObjectId(shared_post_id) }),
+    ...(options.shared_inbox_item_id && { shared_inbox_item_id: new Types.ObjectId(options.shared_inbox_item_id) }),
+    ...(options.messageMeta && {
+      type: options.messageMeta.type,
+      system_kind: options.messageMeta.system_kind,
+      system_payload: options.messageMeta.system_payload
+    })
+  });
   await conversation_model.updateOne(
     { _id: conversation._id },
-    { $set: { last_message: message._id } }
+    {
+      $set: { last_message: message._id },
+      $inc: { [`unread_counts.${receiver_id}`]: 1 }
+    }
   );
 
   // 4. Social graph — caller can override the default 'pending_invite' default

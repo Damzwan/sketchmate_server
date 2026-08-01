@@ -228,6 +228,7 @@ export interface User {
   emblems: string[];
   saved: Saved[];
   customization: UserCustomization;
+  chat_customization?: ChatCustomization;
 
   // System / Auth
   subscriptions: NotificationSubscription[];
@@ -272,6 +273,9 @@ export interface UserCustomization {
   backgroundSketchViewBox?: string;
 }
 
+export type ChatCustomization = Pick<UserCustomization,
+  'themeId' | 'fontId' | 'fontEffectId' | 'worldId' | 'effectId'>;
+
 export interface UserStats {
   posts: number;
   followers: number;
@@ -291,6 +295,7 @@ export interface NetworkUser extends Mate {
   chat_status?: ChatStatus;
   expires_at?: string;
   relationship_id?: string;
+  last_interaction_at?: string;
 }
 
 export interface UserProfileData {
@@ -623,6 +628,7 @@ export interface UpdateProfilePayload {
   name?: string;
   description?: string;
   customization?: UserCustomization;
+  chat_customization?: ChatCustomization;
   subscription_tier?: string;
 }
 
@@ -825,8 +831,6 @@ export type SubscriptionTier = "free" | "pro" | "lifetime";
 export interface DailyQuota {
   balloons_per_day: number;
   posts_per_day: number;
-  /** New mates a user may make per rolling week. `null` = unlimited (Pro). */
-  mates_per_week: number | null;
 }
 
 export interface QuotaState {
@@ -841,7 +845,8 @@ export interface QuotaSummary {
   tier: string;
   balloons: QuotaState;
   posts: QuotaState;
-  mates: QuotaState;
+  /** Deprecated rollout compatibility; mate formation is unlimited. */
+  mates?: QuotaState;
 }
 
 // =============================================================================

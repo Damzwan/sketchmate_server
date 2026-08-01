@@ -42,7 +42,7 @@ import {
 import { subscribeV2, unsubscribeV2 } from '../services/user.service';
 import { getPublicLobbiesSnapshot } from '../socket/drawSyncing';
 import { router } from './router';
-import { isPaidTier } from '../../config/catalog.config';
+import { buildItemId, FREE_ITEMS, isPaidTier } from '../../config/catalog.config';
 
 export const userRouter = new Router();
 
@@ -126,7 +126,7 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
 });
 
 userRouter.put('/profile', requireAuth, async (ctx) => {
-  const { name, description, customization, subscription_tier } = ctx.request.body;
+  const { name, description, customization, chat_customization, subscription_tier } = ctx.request.body;
   const user_id = ctx.state.user._id;
 
   const user = await user_model.findById(user_id) as UserDocument | null;
@@ -187,6 +187,31 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
     Object.keys(customization).forEach(key => {
       updateData[`customization.${key}`] = customization[key];
     });
+  }
+
+  if (chat_customization) {
+    const chatCustomizationFields: Record<string, 'theme' | 'font' | 'font_effect' | 'world' | 'effect'> = {
+      themeId: 'theme',
+      fontId: 'font',
+      fontEffectId: 'font_effect',
+      worldId: 'world',
+      effectId: 'effect'
+    };
+    for (const [key, category] of Object.entries(chatCustomizationFields)) {
+      if (typeof chat_customization[key] === 'string') {
+        const itemId = buildItemId(category, chat_customization[key]);
+        const canUse =
+          FREE_ITEMS.has(itemId) ||
+          user.subscription_tier === 'lifetime' ||
+          (user.inventory ?? []).includes(itemId);
+        if (!canUse) {
+          ctx.status = 403;
+          ctx.body = { error: 'cosmetic_not_owned', item_id: itemId };
+          return;
+        }
+        updateData[`chat_customization.${key}`] = chat_customization[key];
+      }
+    }
   }
 
   if (Object.keys(updateData).length === 0) {

@@ -10,7 +10,6 @@ import { RelationshipDocument } from '../../types/mongoose.types';
 import { isUserOnline, sendSocketNotificationToUser } from '../socket/socket';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
 import { requireCapability } from '../../middleware/moderation.middleware';
-import { assertMateQuota, QuotaExceededError, recordMateMade } from '../services/quota.service';
 import { dispatchNotification } from '../services/notification.service';
 import {
   matchNotification,
@@ -94,33 +93,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
 
       ctx.body = { success: true, conversation: populatedConvo };
     } else if (rel.chat_status === 'pending_mate') {
-      // Both sides form a mate here, so both spend a weekly slot. `blocker` tells
-      // the accepter whether it was their own cap or the requester's that stopped
-      // it — the copy and the paywall CTA differ ("you've hit your limit" vs
-      // "they've hit theirs, and no upgrade of yours fixes that").
-      try {
-        await assertMateQuota(user_id);
-      } catch (e) {
-        if (e instanceof QuotaExceededError) {
-          ctx.status = 429;
-          ctx.body = { error: 'mate_quota_exceeded', blocker: 'self', state: e.state };
-          return;
-        }
-        throw e;
-      }
-      if (partnerId) {
-        try {
-          await assertMateQuota(partnerId.toString());
-        } catch (e) {
-          if (e instanceof QuotaExceededError) {
-            ctx.status = 429;
-            ctx.body = { error: 'mate_quota_exceeded', blocker: 'partner', state: e.state };
-            return;
-          }
-          throw e;
-        }
-      }
-
       // Same compare-and-set shape as /unfriend, for the same reason: a
       // doc.save() after an in-memory status check lets two overlapping accepts
       // both pass and both credit +1, permanently inflating the counter. The
@@ -143,11 +115,6 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
         await user_model.updateMany(
           { _id: { $in: rel.users } },
           { $inc: { 'stats.mates': 1 } }
-        );
-        // Only on the winning transition — recording per user, not per pair, so a
-        // retried/double accept can't spend two weekly slots for one friendship.
-        await Promise.all(
-          rel.users.map((u: Types.ObjectId) => recordMateMade(u.toString()))
         );
       }
 
@@ -471,8 +438,8 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
       // Even enforced it would have been the wrong tool: it fires on the pair,
       // so a mis-tap punished both people equally, and the case it looks like it
       // guards — being re-invited by someone you just removed — is what block is
-      // for. The weekly mate cap is the real brake now: re-friending costs a
-      // slot, which paces the churn without a timer nobody can see coming.
+      // for. Repeated unwanted requests are handled by the enforced,
+      // per-direction decline ladder instead of a global friendship quota.
       $set: {
         chat_status: 'expired',
         deleted_at: dayjs().add(30, 'days').toDate(),
@@ -538,20 +505,6 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
 relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capability.SEND_MATE_REQUEST), async (ctx) => {
   const { conversation_id } = ctx.params;
   const user_id = ctx.state.user._id;
-
-  // Gate the ASKER up front: no point queuing a request they can't fulfil this
-  // week. A 429 here is distinct from the anti-pestering cooldown 429 below —
-  // this one is the weekly cap, and the client routes it to the paywall.
-  try {
-    await assertMateQuota(user_id.toString());
-  } catch (e) {
-    if (e instanceof QuotaExceededError) {
-      ctx.status = 429;
-      ctx.body = { error: 'mate_quota_exceeded', blocker: 'self', state: e.state };
-      return;
-    }
-    throw e;
-  }
 
   // Read BEFORE writing so the anti-pestering ledger can veto the request.
   // The old code flipped the status straight to 'pending_mate' in the same
@@ -680,7 +633,14 @@ relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
       return;
     }
 
-    query.users = { $in: matchingUserIds };
+    // Keep both constraints. Replacing `users: oid` here used to search every
+    // relationship belonging to a name match, including pairs the requester
+    // was not part of.
+    delete query.users;
+    query.$and = [
+      { users: oid },
+      { users: { $in: matchingUserIds } }
+    ];
   }
 
   // 1. Get the real total matches count immediately
@@ -691,29 +651,71 @@ relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
     return;
   }
 
-  // 2. Fetch the paginated subset
-  const rels = await relationship_model
-    .find(query)
-    // _id tiebreaker keeps pagination stable when many rels share updatedAt —
-    // without it, skip/limit returns overlapping rows across pages.
-    .sort({ updatedAt: -1, _id: -1 })
-    .skip(skip)
-    .limit(Number(limit))
-    .lean();
+  // Mates are people, not presence rows: rank them by the exact timestamp of
+  // their latest message. Relationship `updatedAt` changes for requests and
+  // state transitions, so it made pickers feel effectively random.
+  const rels: any[] = type === 'mates'
+    ? await relationship_model.aggregate([
+      { $match: query },
+      {
+        $lookup: {
+          from: 'conversations',
+          localField: 'conversation_id',
+          foreignField: '_id',
+          as: '_conversation'
+        }
+      },
+      { $unwind: { path: '$_conversation', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'messages',
+          localField: '_conversation.last_message',
+          foreignField: '_id',
+          as: '_last_message'
+        }
+      },
+      {
+        $addFields: {
+          last_interaction_at: {
+            $ifNull: [
+              { $arrayElemAt: ['$_last_message.createdAt', 0] },
+              '$createdAt'
+            ]
+          }
+        }
+      },
+      { $sort: { last_interaction_at: -1, _id: -1 } },
+      { $skip: skip },
+      { $limit: Number(limit) },
+      { $project: { _conversation: 0, _last_message: 0 } }
+    ])
+    : await relationship_model
+      .find(query)
+      // _id tiebreaker keeps pagination stable when many rels share updatedAt.
+      .sort({ updatedAt: -1, _id: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .lean();
 
-  const targetIds = rels.map(r => r.users.find(id => id.toString() !== user_id));
+  const targetIds = rels.map(r =>
+    r.users.find((id: Types.ObjectId) => id.toString() !== user_id)
+  );
   const users = await user_model
     .find({ _id: { $in: targetIds } })
     .select(PUBLIC_USER_FIELDS)
     .lean();
 
-  const transformedData = users.map(u => {
-    const rel = rels.find(r => r.users.some(id => id.toString() === u._id.toString()));
+  const userById = new Map(users.map(u => [u._id.toString(), u]));
+  const transformedData = rels.flatMap(rel => {
+    const targetId = rel.users.find((id: Types.ObjectId) => id.toString() !== user_id);
+    const u = targetId ? userById.get(targetId.toString()) : undefined;
+    if (!u) return [];
     return {
       ...u,
-      chat_status: rel?.chat_status,
-      expires_at: rel?.expires_at,
-      relationship_id: rel?._id
+      chat_status: rel.chat_status,
+      expires_at: rel.expires_at,
+      relationship_id: rel._id,
+      last_interaction_at: rel.last_interaction_at
     };
   });
 

@@ -22,3 +22,6 @@ pnpm-debug.log*
 *.sw?
 
 uploads/*
+
+# local DB snapshots taken by src/scripts/backup-user-merge.ts — real user data
+backups/
