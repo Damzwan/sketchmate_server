@@ -44,8 +44,9 @@ import { getPublicLobbiesSnapshot } from '../socket/drawSyncing';
 import { router } from './router';
 import { buildItemId, FREE_ITEMS, isPaidTier } from '../../config/catalog.config';
 import {
+  confirmChatBackground,
   clearChatBackground,
-  setChatBackground,
+  prepareChatBackground,
   type ChatBackgroundSource
 } from '../services/chat-background.service';
 
@@ -241,6 +242,31 @@ userRouter.put('/profile', requireAuth, async (ctx) => {
 
 userRouter.put('/chat-background', requireAuth, async (ctx) => {
   const userId = ctx.state.user._id.toString();
+  const sourceType = ctx.request.body?.source_type as ChatBackgroundSource;
+  const sourceId = String(ctx.request.body?.source_id ?? '');
+  if (!['inbox', 'post'].includes(sourceType) || !Types.ObjectId.isValid(sourceId)) {
+    ctx.status = 400;
+    ctx.body = { error: 'invalid_background_source' };
+    return;
+  }
+
+  try {
+    const url = await prepareChatBackground({ userId, sourceType, sourceId });
+    ctx.body = { url };
+  } catch (error: any) {
+    if (error?.message === 'background_source_not_found') {
+      ctx.status = 404;
+      ctx.body = { error: 'background_source_not_found' };
+      return;
+    }
+    console.error('Set chat background error:', error);
+    ctx.status = 500;
+    ctx.body = { error: 'chat_background_failed' };
+  }
+});
+
+userRouter.post('/chat-background/confirm', requireAuth, async (ctx) => {
+  const userId = ctx.state.user._id.toString();
   const user = await user_model.findById(userId).select('subscription_tier').lean();
   if (!user) return ctx.throw(404, 'User not found');
   if (!isPaidTier(user.subscription_tier)) {
@@ -258,7 +284,7 @@ userRouter.put('/chat-background', requireAuth, async (ctx) => {
   }
 
   try {
-    const url = await setChatBackground({ userId, sourceType, sourceId });
+    const url = await confirmChatBackground({ userId, sourceType, sourceId });
     ctx.body = { url };
   } catch (error: any) {
     if (error?.message === 'background_source_not_found') {
@@ -266,9 +292,9 @@ userRouter.put('/chat-background', requireAuth, async (ctx) => {
       ctx.body = { error: 'background_source_not_found' };
       return;
     }
-    console.error('Set chat background error:', error);
+    console.error('Confirm chat background error:', error);
     ctx.status = 500;
-    ctx.body = { error: 'chat_background_failed' };
+    ctx.body = { error: 'chat_background_confirm_failed' };
   }
 });
 

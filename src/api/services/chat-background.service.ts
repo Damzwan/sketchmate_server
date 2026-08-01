@@ -107,7 +107,7 @@ export async function makeTransparentChatBackground(input: Buffer): Promise<Buff
     .toBuffer();
 }
 
-export async function setChatBackground(params: {
+async function resolveSourceUrl(params: {
   userId: string;
   sourceType: ChatBackgroundSource;
   sourceId: string;
@@ -132,7 +132,32 @@ export async function setChatBackground(params: {
   }
 
   if (!sourceUrl) throw new Error('background_source_not_found');
+  return sourceUrl;
+}
 
+export async function prepareChatBackground(params: {
+  userId: string;
+  sourceType: ChatBackgroundSource;
+  sourceId: string;
+}): Promise<string> {
+  const sourceUrl = await resolveSourceUrl(params);
+  const source = await s3Creator.getObjectBuffer(sourceUrl, CONTAINER.drawings);
+  const processed = await makeTransparentChatBackground(source);
+  // Preview data never touches S3. If the user dismisses or declines Pro, the
+  // bounded data URL simply falls out of client memory and cannot become an
+  // orphaned object in account storage.
+  return `data:image/webp;base64,${processed.toString('base64')}`;
+}
+
+export async function confirmChatBackground(params: {
+  userId: string;
+  sourceType: ChatBackgroundSource;
+  sourceId: string;
+}): Promise<string> {
+  const { userId, sourceType, sourceId } = params;
+  // Re-check access at confirmation time rather than trusting the staged
+  // client state if the source was deleted or removed while previewing.
+  const sourceUrl = await resolveSourceUrl(params);
   const source = await s3Creator.getObjectBuffer(sourceUrl, CONTAINER.drawings);
   const processed = await makeTransparentChatBackground(source);
   const key = `chat-background-${userId}-${uuidv4()}.webp`;
