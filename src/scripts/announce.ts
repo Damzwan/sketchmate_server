@@ -8,19 +8,19 @@ import { user_model } from '../models/user.model';
 import { compareVersions } from '../helper';
 
 /**
- * One-off broadcast: tells users on a given client version that sign-in is
- * temporarily broken and that it's being worked on.
+ * One-off broadcast to users on a given client version.
  *
  *   DRY RUN (default — sends nothing, prints the version histogram + audience):
- *     pnpm ts-node src/scripts/announce-outage.ts
+ *     pnpm ts-node src/scripts/announce.ts
  *
- *   CANARY (send to 20 users only, then check your own device):
- *     pnpm ts-node src/scripts/announce-outage.ts --apply --limit=20
+ *   CANARY (send to 20 users only, then check a device):
+ *     pnpm ts-node src/scripts/announce.ts --apply --limit=20
  *
  *   FULL SEND:
- *     pnpm ts-node src/scripts/announce-outage.ts --apply
+ *     pnpm ts-node src/scripts/announce.ts --apply
  *
  * Flags:
+ *   --campaign=back-online  which message to send (see CAMPAIGNS below)
  *   --version=0.4.3,0.4.2   target these last_seen_versions (comma-separated)
  *   --and-older             also include anything older than the lowest listed version
  *   --all-versions          ignore version entirely (includes users with none recorded)
@@ -33,20 +33,40 @@ import { compareVersions } from '../helper';
  * Two things that matter here:
  *
  * 1. It sends a real `notification` block, not the data-only payload the app's
- *    normal pushes use. Data-only messages are rendered by client code; a build
- *    already in users' hands has no branch for an announcement and would drop
- *    it. A `notification` block is drawn by the OS, so it lands on 0.4.3 with
- *    no client change. No `data.type` is attached for the same reason — an
+ *    normal pushes use. Data-only messages are rendered by client code; builds
+ *    already in users' hands have no branch for an announcement and would drop
+ *    it. A `notification` block is drawn by the OS, so it lands on old clients
+ *    with no client change. No `data.type` is attached for the same reason — an
  *    unknown type would just fall through the client's switch.
  *
  * 2. It targets logged-OUT tokens too, by default. `subscriptions[].logged_in`
- *    is set by the client on login. The audience for this message is precisely
- *    the people who could not log in, so filtering on that flag would skip the
- *    ones who most need it. `--logged-in-only` restores the normal behaviour.
+ *    is set by the client on login, so after a sign-in outage the people who
+ *    most need the message are exactly the ones that flag excludes.
+ *    `--logged-in-only` restores the normal behaviour.
  *
- * Every delivered user id is appended to a ledger file, so a re-run after a
- * crash or a partial send resumes instead of double-notifying people.
+ * Each campaign keeps its own ledger of delivered user ids, so a re-run after a
+ * crash or partial send resumes instead of double-notifying people, and a later
+ * campaign is never suppressed by an earlier one.
  */
+
+const CAMPAIGNS: Record<string, { title: string; body: string }> = {
+  // Plain language on purpose: no "API key", no "suspension", no "Google".
+  // Users need to know it isn't their fault and it isn't their phone.
+  outage: {
+    title: 'Sign-in is temporarily down',
+    body:
+      "Sorry! A problem on our end is stopping people from signing in. " +
+      "We're on it and expect everything back to normal within a day or two. " +
+      'Nothing you made is lost. Thanks for your patience 💛'
+  },
+  'back-online': {
+    title: 'SketchMate is back online',
+    body:
+      'Everything works again and nothing was lost — your account, mates and ' +
+      'drawings are all as you left them. Sorry for the downtime, and thanks ' +
+      'for sticking with me 💛'
+  }
+};
 
 const APPLY = process.argv.includes('--apply');
 const AND_OLDER = process.argv.includes('--and-older');
@@ -56,6 +76,13 @@ const RESET_LEDGER = process.argv.includes('--reset-ledger');
 
 const arg = (name: string) =>
   process.argv.find((a) => a.startsWith(`--${name}=`))?.split('=')[1];
+
+const CAMPAIGN = arg('campaign') ?? 'back-online';
+const MESSAGE = CAMPAIGNS[CAMPAIGN];
+if (!MESSAGE) {
+  console.error(`Unknown campaign "${CAMPAIGN}". Known: ${Object.keys(CAMPAIGNS).join(', ')}`);
+  process.exit(1);
+}
 
 const TARGET_VERSIONS = (arg('version') ?? '0.4.3,0.4.2')
   .split(',')
@@ -68,7 +95,8 @@ const LIMIT = Number(arg('limit') ?? Infinity);
 // versions are targeted.
 const OLDEST_TARGET = [...TARGET_VERSIONS].sort((a, b) => compareVersions(a, b))[0];
 
-const LEDGER = path.resolve(__dirname, '../../announce-outage-sent.jsonl');
+// Per campaign, so the "back online" send isn't suppressed by the outage run.
+const LEDGER = path.resolve(__dirname, `../../announce-${CAMPAIGN}-sent.jsonl`);
 const FCM_BATCH = 500;      // hard cap on messages per sendEach call
 const PAUSE_MS = 250;       // breather between batches
 
@@ -78,18 +106,9 @@ const DEAD_TOKEN_CODES = new Set([
   'messaging/invalid-argument'
 ]);
 
-// Plain language on purpose: no "API key", no "suspension", no "Google".
-// Users need to know it isn't their fault, it isn't their phone, and roughly
-// when it's over.
-const TITLE = 'Sign-in is temporarily down';
-const BODY =
-  "Sorry! A problem on our end is stopping people from signing in. " +
-  "We're on it and expect everything back to normal within a day or two. " +
-  'Nothing you made is lost. Thanks for your patience 💛';
-
 const buildMessage = (token: string): admin.messaging.Message => ({
   token,
-  notification: { title: TITLE, body: BODY },
+  notification: { title: MESSAGE.title, body: MESSAGE.body },
   android: {
     priority: 'high',
     notification: {
@@ -133,6 +152,7 @@ async function main() {
   admin.initializeApp({ credential: admin.credential.cert(loadServiceAccount() as any) });
 
   console.log(`connected — mode: ${APPLY ? 'APPLY (will send)' : 'DRY RUN (sends nothing)'}`);
+  console.log(`campaign: ${CAMPAIGN}`);
   const audience = ONLY_USER
     ? `single user ${ONLY_USER} (version filter ignored)`
     : ALL_VERSIONS
@@ -301,8 +321,8 @@ async function main() {
   }
 
   console.log(`\nmessage that ${APPLY ? 'was' : 'would be'} sent:`);
-  console.log(`  title: ${TITLE}`);
-  console.log(`  body:  ${BODY}`);
+  console.log(`  title: ${MESSAGE.title}`);
+  console.log(`  body:  ${MESSAGE.body}`);
 
   await mongoose.disconnect();
   console.log('\ndone');
