@@ -200,7 +200,15 @@ const DISCOVERY_WINDOW_DAYS = 30;
  * have their own tab now, and without a cap a handful of chatty mates fill the
  * whole page and global discovery never runs at all.
  */
-const CONNECTION_SHARE = 0.6;
+const CONNECTION_SHARE = 0.3;
+
+/**
+ * For You only pulls connection posts this fresh. Without it, a mate who last
+ * posted months ago still occupies a slot forever: the tier was sorted newest
+ * first but never bounded, so "newest" could still be ancient. The Mates tab
+ * stays unbounded — that surface is explicitly "everything from my people".
+ */
+const CONNECTION_WINDOW_DAYS = 3;
 
 /** Over-fetch multiplier for the scored pool, so jitter has room to shuffle. */
 const DISCOVERY_OVERFETCH = 4;
@@ -380,42 +388,77 @@ async function selectDiscoveryPosts(
   return [...ranked, ...filler];
 }
 
+interface ConnectionOptions {
+  excludeIds?: Types.ObjectId[];
+  /** Drop anything older than this. Omitted on the Mates tab. */
+  since?: Date;
+  /**
+   * When present, posts the viewer has exhausted are excluded outright and
+   * posts seen once sink below unseen ones. Omitted on the Mates tab, which is
+   * meant to be an honest chronological list.
+   */
+  seen?: SeenState;
+}
+
 /** Newest-first posts from the viewer's mates and follows. */
 async function selectConnectionPosts(
   audience: Audience,
   slots: number,
-  excludeIds: Types.ObjectId[] = []
+  options: ConnectionOptions = {}
 ): Promise<LeanPost[]> {
+  const { excludeIds = [], since, seen } = options;
   const authorIds = [...audience.mateIds, ...audience.followIds];
   if (slots <= 0 || authorIds.length === 0) return [];
+
+  const baseFilter: Record<string, any> = { status: 'active' };
+  if (since) baseFilter.createdAt = { $gte: since };
+
+  // Suppressed posts are excluded in the query rather than trimmed afterwards,
+  // so a mate whose only recent post is burned yields the slot to discovery
+  // instead of returning it and re-showing it.
+  const blockedPostIds = [...excludeIds, ...(seen?.suppressed ?? [])];
+
+  // Over-fetch: some of what comes back is demoted, and the reorder below can
+  // only push those down if there are unseen posts underneath them to swap with.
+  const fetchLimit = seen ? slots * 2 : slots;
 
   // Mates outrank follows, so query the tiers separately rather than sorting a
   // combined result purely by date.
   const matePosts = (await post_model
     .find({
+      ...baseFilter,
       author_id: { $in: audience.mateIds },
-      status: 'active',
-      _id: { $nin: excludeIds }
+      _id: { $nin: blockedPostIds }
     })
     .sort({ createdAt: -1 })
-    .limit(slots)
+    .limit(fetchLimit)
     .lean()) as unknown as LeanPost[];
 
-  if (matePosts.length >= slots || audience.followIds.length === 0) {
-    return matePosts.slice(0, slots);
+  let combined = matePosts;
+
+  if (matePosts.length < fetchLimit && audience.followIds.length > 0) {
+    const followPosts = (await post_model
+      .find({
+        ...baseFilter,
+        author_id: { $in: audience.followIds },
+        _id: { $nin: [...blockedPostIds, ...matePosts.map(p => new Types.ObjectId(p._id))] }
+      })
+      .sort({ createdAt: -1 })
+      .limit(fetchLimit - matePosts.length)
+      .lean()) as unknown as LeanPost[];
+
+    combined = [...matePosts, ...followPosts];
   }
 
-  const followPosts = (await post_model
-    .find({
-      author_id: { $in: audience.followIds },
-      status: 'active',
-      _id: { $nin: [...excludeIds, ...matePosts.map(p => new Types.ObjectId(p._id))] }
-    })
-    .sort({ createdAt: -1 })
-    .limit(slots - matePosts.length)
-    .lean()) as unknown as LeanPost[];
+  if (!seen) return combined.slice(0, slots);
 
-  return [...matePosts, ...followPosts];
+  // Stable partition: unseen first, each group keeping its mate-then-follow,
+  // newest-first order. A post seen once can still appear, but only once the
+  // fresh material runs out.
+  const unseen = combined.filter(p => !seen.demoted.has(p._id.toString()));
+  const seenOnce = combined.filter(p => seen.demoted.has(p._id.toString()));
+
+  return [...unseen, ...seenOnce].slice(0, slots);
 }
 
 /** Strict reverse-chronological. No ranking, no suppression — Latest is meant
@@ -466,20 +509,34 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
     } else if (tab === 'latest') {
       feedPosts = await selectLatestPosts(audience, userIdObj, feedLevel, limit);
     } else {
-      // For You — connections first, capped so discovery always gets a share.
+      // For You — connections first, capped so discovery always gets a share,
+      // and bounded to recent posts so a quiet mate can't hold a slot forever.
       const seen = await loadSeenState(user_id);
       const connectionCap =
         feedLevel === 'open' ? Math.max(1, Math.round(limit * CONNECTION_SHARE)) : limit;
 
-      feedPosts = await selectConnectionPosts(audience, connectionCap);
+      feedPosts = await selectConnectionPosts(audience, connectionCap, {
+        since: new Date(Date.now() - CONNECTION_WINDOW_DAYS * 24 * 60 * 60 * 1000),
+        seen
+      });
 
-      if (feedLevel === 'open' && feedPosts.length < limit) {
-        const discovery = await selectDiscoveryPosts(
-          [userIdObj, ...audience.mateIds, ...audience.followIds, ...audience.blockedIds],
-          seen,
-          limit - feedPosts.length
-        );
-        feedPosts.push(...discovery);
+      if (feedLevel === 'open') {
+        if (feedPosts.length < limit) {
+          const discovery = await selectDiscoveryPosts(
+            [userIdObj, ...audience.mateIds, ...audience.followIds, ...audience.blockedIds],
+            seen,
+            limit - feedPosts.length
+          );
+          feedPosts.push(...discovery);
+        }
+      } else if (feedPosts.length < limit) {
+        // Mates-only viewers have no discovery stage to absorb what the window
+        // and the seen ledger just removed, so top up with older / already-seen
+        // connection posts rather than handing them a near-empty page.
+        const topUp = await selectConnectionPosts(audience, limit - feedPosts.length, {
+          excludeIds: feedPosts.map(p => new Types.ObjectId(p._id))
+        });
+        feedPosts.push(...topUp);
       }
     }
 

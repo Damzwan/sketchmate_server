@@ -36,6 +36,10 @@ import { deletion_queue_model } from '../models/deletion.model';
  * Google `auth_id` onto the old document is what actually reunites the user
  * with their progress. `--auth-from-merged` (default true) does exactly that.
  *
+ * The visible profile (name, img, description, customization) defaults to the
+ * MERGED account's. Pass `--profile-from-kept` when the merged account is only
+ * a login shell and the survivor's profile is the one the user would recognise.
+ *
  * Idempotent: re-running after a successful apply finds no `--merge` user and
  * exits cleanly.
  *
@@ -56,6 +60,12 @@ const arg = (name: string): string | undefined => {
 const APPLY = argv.includes('--apply');
 const USE_TX = !argv.includes('--no-transaction');
 const AUTH_FROM_MERGED = !argv.includes('--keep-auth');
+// By default the newer account supplies the visible profile, on the assumption
+// that whatever the user set up most recently is what they want to see. When
+// the newer account exists only to carry a login — an anonymous user who was
+// signed out and re-registered with email — that assumption is backwards, and
+// the old profile is the one they'd recognise. --profile-from-kept flips it.
+const PROFILE_FROM_KEPT = argv.includes('--profile-from-kept');
 const DB_NAME = arg('db') ?? 'prod';
 
 const KEEP_ARG = arg('keep');
@@ -591,15 +601,24 @@ async function mergeLegacyUserRefs() {
 async function mergeUserDocuments(keeper: any, loser: any) {
   note('\n── USER DOCUMENT ──');
 
-  // Profile identity comes from the account he is actually using now.
+  // Profile identity comes from the account the user is actually using now,
+  // unless --profile-from-kept says the survivor's profile is the real one.
+  const [profileMain, profileFallback] = PROFILE_FROM_KEPT ? [keeper, loser] : [loser, keeper];
   const set: any = {
-    name: loser.name && loser.name !== 'Anonymous' ? loser.name : keeper.name,
-    img: loser.img ?? keeper.img,
-    description: loser.description ?? keeper.description,
-    customization: { ...(keeper.customization ?? {}), ...(loser.customization ?? {}) },
+    name:
+      profileMain.name && profileMain.name !== 'Anonymous'
+        ? profileMain.name
+        : profileFallback.name,
+    img: profileMain.img ?? profileFallback.img,
+    description: profileMain.description ?? profileFallback.description,
+    // Spread the fallback first so the preferred side wins key by key.
+    customization: {
+      ...(profileFallback.customization ?? {}),
+      ...(profileMain.customization ?? {})
+    },
     chat_customization: {
-      ...(keeper.chat_customization ?? {}),
-      ...(loser.chat_customization ?? {})
+      ...(profileFallback.chat_customization ?? {}),
+      ...(profileMain.chat_customization ?? {})
     },
     date_of_birth: keeper.date_of_birth ?? loser.date_of_birth,
     last_seen_version: loser.last_seen_version ?? keeper.last_seen_version,
@@ -645,7 +664,9 @@ async function mergeUserDocuments(keeper: any, loser: any) {
   };
 
   note(`  auth_id: ${keeper.auth_id} → ${AUTH_FROM_MERGED ? loser.auth_id : keeper.auth_id}`);
+  note(`  profile source: ${PROFILE_FROM_KEPT ? 'KEPT account' : 'MERGED account'}`);
   note(`  name: "${keeper.name}" → "${set.name}"`);
+  note(`  img: ${keeper.img === set.img ? 'unchanged' : 'replaced'}`);
   note(`  subscription_tier: ${keeper.subscription_tier} + ${loser.subscription_tier} → ${set.subscription_tier}`);
   note(`  inventory: ${(keeper.inventory ?? []).length} + ${(loser.inventory ?? []).length} → ${addToSet.inventory.$each.length}`);
   note(`  inbox items: ${(keeper.inbox ?? []).length} + ${(loser.inbox ?? []).length} → ${addToSet.inbox.$each.length}`);
