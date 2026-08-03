@@ -25,3 +25,11 @@ uploads/*
 
 # local DB snapshots taken by src/scripts/backup-user-merge.ts — real user data
 backups/
+
+# one-off broadcast ledger (src/scripts/announce-outage.ts)
+announce-outage-sent.jsonl
+
+# Firebase admin service account private key. NEVER commit this — an earlier
+# copy sat in this repo's public history from 2023-05-15 until it was purged,
+# and the key had to be revoked. Provision it out of band on each machine.
+fcm.json

@@ -18,10 +18,10 @@ import { scheduleResetUploadFolder } from './helper';
 import cron from 'node-cron';
 import { pairBalloons, removeExpiredBalloons, unPairBalloons } from './api/balloon';
 import * as admin from 'firebase-admin';
-import serviceAccount from '../fcm.json';
+import { loadServiceAccount } from './firebase-credential';
 
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount as any)
+  credential: admin.credential.cert(loadServiceAccount() as any)
 });
 
 const app = new Koa();
