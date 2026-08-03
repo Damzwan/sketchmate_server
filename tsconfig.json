@@ -2,6 +2,11 @@
   "extends": "@tsconfig/node18/tsconfig.json",
   "compilerOptions": {
     "outDir": "dist",
+    // Pinned. Without it tsc infers the root from the common parent of the
+    // inputs, so the output path silently moves between dist/src/main.js and
+    // dist/main.js depending on whether anything outside src/ is imported.
+    // start:heroku hardcodes dist/src/main.js.
+    "rootDir": ".",
     "sourceMap": false,
     "resolveJsonModule": true,
     "incremental": false,
