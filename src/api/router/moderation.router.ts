@@ -11,19 +11,24 @@ import { CONTAINER } from '../../s3';
 
 const MAX_REPORT_RATIO = 0.01;
 
-// removeContent/restoreContent used to be duplicated at the bottom of this file.
-// The copies had drifted: neither touched the deletion queue, so content removed
-// through THIS endpoint was never scheduled for deletion, and content restored
-// through it stayed queued for deletion anyway. One implementation, in the
-// service, for both routers.
+// Strike/remove/restore used to be duplicated at the bottom of this file and in
+// the dev router. The copies had drifted: neither touched the deletion queue, so
+// content removed through THIS endpoint was never scheduled for deletion, and
+// content restored through it stayed queued for deletion anyway. Now every
+// decision path — here, and in /dev/moderation — goes through the services.
 import {
-  applyStrike,
   evaluateUserStanding,
   getStanding,
-  notifyContentModeration,
-  removeContent,
-  restoreContent
+  notifyContentModeration
 } from '../services/moderation.service';
+import {
+  getModerationQueue,
+  parseQueueQuery,
+  ResolveAction,
+  resolveAuthorReports,
+  resolveReport,
+  restoreReport
+} from '../services/moderationQueue.service';
 import {
   POLICY_CONSTANTS,
   REPORT_REASONS,
@@ -116,82 +121,73 @@ moderationRouter.post('/', async (ctx) => {
 });
 
 // =============================================================================
-// GET /report/queue — mod dashboard
+// MOD DASHBOARD
 // =============================================================================
+// Paginated, grouped by reported user, and identical to what /dev/moderation
+// serves — same service, so the two dashboards cannot drift apart.
+
 moderationRouter.get('/queue', async (ctx) => {
   if (!ctx.state.user.is_admin) return ctx.throw(403);
-
-  const status = (ctx.query.status as string) || 'pending';
-  const reports = await report_model
-    .find({ status: { $in: status.split(',') } })
-    .sort({ createdAt: 1 })
-    .limit(50)
-    .populate('reporter_id', 'name img')
-    .populate('target_author_id', 'name img restriction strike_summary')
-    .lean();
-
-  // Sign any snapshot URLs so the mod dashboard can render them.
-  // The bucket is private, so we hand out short-lived signed URLs only at
-  // the moment the queue is being viewed.
-  const signedReports = await Promise.all(reports.map(async (r: any) => {
-    if (r.content_snapshot?.snapshot_url) {
-      const signed = await s3Creator.getSnapshotSignedUrl(r.content_snapshot.snapshot_url);
-      if (signed) r.content_snapshot.snapshot_signed_url = signed;
-    }
-    return r;
-  }));
-
-  ctx.body = { reports: signedReports };
+  ctx.body = await getModerationQueue(parseQueueQuery(ctx.query));
 });
 
-// =============================================================================
-// POST /report/:id/resolve — mod uphold/dismiss
-// =============================================================================
+// POST /report/:id/resolve — closes every open report on the same content too.
 moderationRouter.post('/:report_id/resolve', async (ctx) => {
   if (!ctx.state.user.is_admin) return ctx.throw(403);
 
-  const { action } = ctx.request.body as { action: 'uphold' | 'dismiss' };
-  const report = await report_model.findById(ctx.params.report_id);
-  if (!report) return ctx.throw(404);
-  if (report.status === 'upheld' || report.status === 'dismissed') {
-    return ctx.throw(400, 'Already resolved');
+  const { action } = ctx.request.body as { action: ResolveAction };
+  if (!['uphold', 'remove_only', 'dismiss'].includes(action)) {
+    return ctx.throw(400, 'Invalid action');
   }
 
-  report.status = action === 'uphold' ? 'upheld' : 'dismissed';
-  report.resolved_at = new Date();
-  report.resolved_by = ctx.state.user._id;
-  await report.save();
+  const result = await resolveReport({
+    reportId: ctx.params.report_id,
+    action,
+    adminId: ctx.state.user._id.toString()
+  });
 
-  let notify: 'removed' | 'restored' | null = null;
-
-  if (action === 'uphold') {
-    await applyStrike({
-      userId: report.target_author_id.toString(),
-      reason: report.reason as ReportReason,
-      sourceReportId: report._id.toString(),
-      adminId: ctx.state.user._id.toString()
-    });
-    await removeContent(report.target_type, report.target_id.toString());
-    notify = 'removed';
-  } else {
-    // Only announce a restore that actually restored something — most dismissals
-    // are of content that was never hidden in the first place.
-    const restored = await restoreContent(report.target_type, report.target_id.toString());
-    if (restored) notify = 'restored';
+  if (!result.ok) {
+    return result.error === 'not_found' ? ctx.throw(404) : ctx.throw(400, 'Already resolved');
   }
 
-  // Author-facing notice. Skipped for 'user' reports — those target an account,
-  // not a piece of content, and applyStrike already speaks for itself.
-  if (notify && report.target_type !== 'user') {
-    await notifyContentModeration({
-      authorId: report.target_author_id.toString(),
-      type: report.target_type,
-      targetId: report.target_id.toString(),
-      event: notify
-    });
+  ctx.body = { success: true, ...result };
+});
+
+// POST /report/user/:user_id/resolve — one decision for an author's whole queue.
+moderationRouter.post('/user/:user_id/resolve', async (ctx) => {
+  if (!ctx.state.user.is_admin) return ctx.throw(403);
+
+  const { action } = ctx.request.body as { action: ResolveAction };
+  if (!['uphold', 'remove_only', 'dismiss'].includes(action)) {
+    return ctx.throw(400, 'Invalid action');
   }
 
-  ctx.body = { success: true };
+  const result = await resolveAuthorReports({
+    authorId: ctx.params.user_id,
+    action,
+    adminId: ctx.state.user._id.toString()
+  });
+
+  if (!result.ok) {
+    return result.error === 'nothing_open'
+      ? ctx.throw(400, 'No open reports for this user')
+      : ctx.throw(404);
+  }
+
+  ctx.body = { success: true, ...result };
+});
+
+// POST /report/:id/restore — undo a resolution; the strike stays.
+moderationRouter.post('/:report_id/restore', async (ctx) => {
+  if (!ctx.state.user.is_admin) return ctx.throw(403);
+
+  const result = await restoreReport({
+    reportId: ctx.params.report_id,
+    adminId: ctx.state.user._id.toString()
+  });
+  if (!result.ok) return ctx.throw(404);
+
+  ctx.body = { success: true, restored: result.restored };
 });
 
 // =============================================================================

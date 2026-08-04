@@ -35,6 +35,11 @@ report_schema.index({ status: 1, createdAt: -1 });
 // Author lookup: "how many upheld reports does this user have"
 report_schema.index({ target_author_id: 1, status: 1, createdAt: -1 });
 
+// Mod queue grouping: the dashboard groups open reports by reported user, and
+// resolving one report closes every open report on the same content.
+report_schema.index({ status: 1, target_author_id: 1 });
+report_schema.index({ target_id: 1, target_type: 1, status: 1 });
+
 export const report_model = mongoose.model('reports', report_schema);
 
 

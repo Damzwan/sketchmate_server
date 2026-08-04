@@ -285,6 +285,22 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     }
 
 
+    // `room-joined` MUST precede any canvas payload. The client derives its
+    // layer policy (public lobbies run a fixed, non-editable layer set) from
+    // `isPublic`, and that policy is applied while loading the snapshot. Emitted
+    // after the snapshot, a joiner loads the board as an editable document and
+    // never recovers — the `missed-actions` cold-start path below reloads no
+    // canvas at all, so nothing ever corrects it.
+    const updatedSockets = await io.in(roomId).fetchSockets();
+    socket.emit('room-joined', {
+      roomId,
+      users: updatedSockets.map(s => s.data.user),
+      isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0),
+      sessionId: roomState.sessionId,
+      isPublic,
+      claimedAreas: roomState.claimedAreas || []
+    });
+
     // ---- THE VERSIONING SPLIT ----
     // TODO this should be cleaned up sometime
     if (clientVersion === '1') {
@@ -388,16 +404,6 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     }
 
     // ---- BROADCASTS & TRACKING ----
-
-    const updatedSockets = await io.in(roomId).fetchSockets();
-    socket.emit('room-joined', {
-      roomId,
-      users: updatedSockets.map(s => s.data.user),
-      isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0),
-      sessionId: roomState.sessionId,
-      isPublic,
-      claimedAreas: roomState.claimedAreas || []
-    });
 
     // Only announce "user-joined" if they weren't a ghost.
     // If they were a ghost, nobody knew they left, so we don't announce they joined!

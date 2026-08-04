@@ -6,13 +6,17 @@ import { moderation_action_model, report_model } from '../../models/moderation.m
 import {
   applyStrike,
   getStanding,
-  liftRestriction,
-  notifyContentModeration,
-  removeContent,
-  restoreContent
+  liftRestriction
 } from '../services/moderation.service';
+import {
+  getModerationQueue,
+  parseQueueQuery,
+  ResolveAction,
+  resolveAuthorReports,
+  resolveReport,
+  restoreReport
+} from '../services/moderationQueue.service';
 import { requireAdminAuth } from '../../middleware/adminAuth.middleware';
-import { s3Creator } from '../../mongodb';
 
 export const devModerationRouter = new Router();
 
@@ -28,57 +32,51 @@ devModerationRouter.get('/standing/:user_id', async (ctx) => {
   ctx.body = await getStanding(targetUserId);
 });
 
+const RESOLVE_ACTIONS: ResolveAction[] = ['uphold', 'remove_only', 'dismiss'];
+
 devModerationRouter.post('/:report_id/resolve', async (ctx) => {
-  if (!ctx.state.user.is_admin) return ctx.throw(403);
+  const { action } = ctx.request.body as { action: ResolveAction };
+  if (!RESOLVE_ACTIONS.includes(action)) return ctx.throw(400, 'Invalid action');
 
-  // ADDED 'remove_only'
-  const { action } = ctx.request.body as { action: 'uphold' | 'dismiss' | 'remove_only' };
-  const report = await report_model.findById(ctx.params.report_id);
-  if (!report) return ctx.throw(404);
-  if (report.status === 'upheld' || report.status === 'dismissed') {
-    return ctx.throw(400, 'Already resolved');
+  const result = await resolveReport({
+    reportId: ctx.params.report_id,
+    action,
+    adminId: ctx.state.user._id.toString()
+  });
+
+  if (!result.ok) {
+    return result.error === 'not_found'
+      ? ctx.throw(404)
+      : ctx.throw(400, 'Already resolved');
   }
 
-  // Both 'uphold' and 'remove_only' mean we agreed the content was bad (upheld the report)
-  report.status = action === 'dismiss' ? 'dismissed' : 'upheld';
-  report.resolved_at = new Date();
-  report.resolved_by = ctx.state.user._id;
-  await report.save();
+  ctx.body = { success: true, ...result };
+});
 
-  let notify: 'removed' | 'restored' | null = null;
+/**
+ * POST /user/:user_id/resolve — one decision for everything open on an author.
+ *
+ * The queue groups by user because that is how the judgement is actually made;
+ * this is the button that matches it. One strike for the batch, every distinct
+ * piece of content actioned once.
+ */
+devModerationRouter.post('/user/:user_id/resolve', async (ctx) => {
+  const { action } = ctx.request.body as { action: ResolveAction };
+  if (!RESOLVE_ACTIONS.includes(action)) return ctx.throw(400, 'Invalid action');
 
-  if (action === 'uphold') {
-    // 1. Strike the user AND remove the content
-    await applyStrike({
-      userId: report.target_author_id.toString(),
-      reason: report.reason as ReportReason,
-      sourceReportId: report._id.toString(),
-      adminId: ctx.state.user._id.toString()
-    });
-    await removeContent(report.target_type, report.target_id.toString());
-    notify = 'removed';
-  } else if (action === 'remove_only') {
-    await removeContent(report.target_type, report.target_id.toString());
-    notify = 'removed';
-  } else {
-    // Only announce a restore that actually restored something.
-    const restored = await restoreContent(report.target_type, report.target_id.toString());
-    if (restored) notify = 'restored';
+  const result = await resolveAuthorReports({
+    authorId: ctx.params.user_id,
+    action,
+    adminId: ctx.state.user._id.toString()
+  });
+
+  if (!result.ok) {
+    return result.error === 'nothing_open'
+      ? ctx.throw(400, 'No open reports for this user')
+      : ctx.throw(404);
   }
 
-  // 'remove_only' skips the strike, but the author still has to be told their
-  // content is gone — this was the silent path that made posts look like they
-  // had simply vanished.
-  if (notify && report.target_type !== 'user') {
-    await notifyContentModeration({
-      authorId: report.target_author_id.toString(),
-      type: report.target_type,
-      targetId: report.target_id.toString(),
-      event: notify
-    });
-  }
-
-  ctx.body = { success: true };
+  ctx.body = { success: true, ...result };
 });
 
 /**
@@ -90,28 +88,13 @@ devModerationRouter.post('/:report_id/resolve', async (ctx) => {
  * the dashboard. This is the one endpoint that accepts a resolved report.
  */
 devModerationRouter.post('/:report_id/restore', async (ctx) => {
-  const report = await report_model.findById(ctx.params.report_id);
-  if (!report) return ctx.throw(404);
+  const result = await restoreReport({
+    reportId: ctx.params.report_id,
+    adminId: ctx.state.user._id.toString()
+  });
+  if (!result.ok) return ctx.throw(404);
 
-  const restored = report.target_type === 'user'
-    ? false
-    : await restoreContent(report.target_type, report.target_id.toString());
-
-  report.status = 'dismissed';
-  report.resolved_at = new Date();
-  report.resolved_by = ctx.state.user._id;
-  await report.save();
-
-  if (restored) {
-    await notifyContentModeration({
-      authorId: report.target_author_id.toString(),
-      type: report.target_type,
-      targetId: report.target_id.toString(),
-      event: 'restored'
-    });
-  }
-
-  ctx.body = { success: true, restored };
+  ctx.body = { success: true, restored: result.restored };
 });
 
 // =============================================================================
@@ -201,24 +184,7 @@ devModerationRouter.post('/simulate-report', async (ctx) => {
 });
 
 devModerationRouter.get('/queue', async (ctx) => {
-  const status = (ctx.query.status as string) || 'pending';
-  const reports = await report_model
-    .find({ status: { $in: status.split(',') } })
-    .sort({ createdAt: 1 })
-    .limit(50)
-    .populate('reporter_id', 'name img')
-    .populate('target_author_id', 'name img restriction strike_summary')
-    .lean();
-
-  const signedReports = await Promise.all(reports.map(async (r: any) => {
-    if (r.content_snapshot?.snapshot_url) {
-      const signed = await s3Creator.getSnapshotSignedUrl(r.content_snapshot.snapshot_url);
-      if (signed) r.content_snapshot.snapshot_signed_url = signed;
-    }
-    return r;
-  }));
-
-  ctx.body = { reports: signedReports };
+  ctx.body = await getModerationQueue(parseQueueQuery(ctx.query));
 });
 
 export default devModerationRouter;
