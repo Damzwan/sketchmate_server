@@ -14,6 +14,7 @@ import {
   UserDocument
 } from '../../types/mongoose.types';
 import { relationship_model } from '../../models/relationship.model';
+import { requireAdultAccount } from '../services/parental.service';
 import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
@@ -27,7 +28,12 @@ import { releasePostQuota } from '../services/quota.service';
 
 const postRouter = new Router();
 
-postRouter.post('/upload-urls', requireAuth, requireCapability(Capability.CREATE_POST), async (ctx) => {
+// Families policy: the public feed is a stranger surface, off under 13 with no
+// parental override. Gated here as well as in the client so a replayed request
+// can't publish a child's drawing to it.
+const PUBLIC_FEED_AGE_MESSAGE = 'Public posts and comments are available from age 13.';
+
+postRouter.post('/upload-urls', requireAuth, requireCapability(Capability.CREATE_POST), requireAdultAccount(PUBLIC_FEED_AGE_MESSAGE), async (ctx) => {
   try {
     const userId = ctx.state.user._id.toString();
     const uniqueId = uuidv4();
@@ -50,7 +56,7 @@ postRouter.post('/upload-urls', requireAuth, requireCapability(Capability.CREATE
   }
 });
 
-postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POST), async (ctx) => {
+postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POST), requireAdultAccount(PUBLIC_FEED_AGE_MESSAGE), async (ctx) => {
   const {
     drawing_url,
     image_url,
@@ -563,7 +569,7 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
   }
 });
 
-postRouter.post('/:post_id/comment', requireAuth, requireCapability(Capability.COMMENT_ON_POST), async (ctx) => {
+postRouter.post('/:post_id/comment', requireAuth, requireCapability(Capability.COMMENT_ON_POST), requireAdultAccount(PUBLIC_FEED_AGE_MESSAGE), async (ctx) => {
   const { post_id } = ctx.params;
   const { message } = ctx.request.body;
   const author_id = ctx.state.user._id;

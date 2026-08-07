@@ -20,7 +20,8 @@ import {
 } from '../balloon';
 import { user_model } from '../../models/user.model';
 import { relationship_model } from '../../models/relationship.model';
-import { compareVersions, isOldEnough } from '../../helper';
+import { compareVersions } from '../../helper';
+import { isChildDob } from './parental.service';
 import { Capability, getLevelConfig } from '../../types/moderation.policy';
 import { saveMessageLogic } from './chat.service';
 import { quota_usage_model } from '../../models/quota_usage.model';
@@ -243,9 +244,9 @@ export async function routeBalloonToOnlineUserV3(
   const filteredCandidates = onlineUserIds.filter((id) => {
     const userSocket = userSocketMap[id]?.[0];
     if (!userSocket) return false;
-    const oldEnough = userSocket.data.user.date_of_birth
-      ? isOldEnough(userSocket.data.user.date_of_birth)
-      : true;
+    // Default-deny: an unconfirmed birthday could belong to an eight-year-old,
+    // and a balloon is a drawing from a stranger.
+    const oldEnough = !isChildDob(userSocket.data.user.date_of_birth);
     const hasV3Version =
       compareVersions(userSocket.data.user.version, MIN_V3_CLIENT_VERSION) >= 0;
 

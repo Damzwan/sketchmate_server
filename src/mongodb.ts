@@ -48,6 +48,7 @@ import { mixpanelEvents, trackEvent } from './mixpanel';
 import { PUBLIC_USER_FIELDS } from './types/projections';
 import { inbox_comment_model } from './models/inbox-comment.model';
 import { serializeInboxComment } from './api/services/inbox.service';
+import { invalidateParentalCache, sanitizeParental } from './api/services/parental.service';
 
 export let s3Creator: S3Creator;
 
@@ -470,7 +471,31 @@ export async function updateUser(params: UpdateUserParams): Promise<Res<void>> {
   try {
     const { _id, ...updates } = params;
     if (!_id) throw new Error('User _id is required');
-    await user_model.updateOne({ _id }, { $set: updates });
+
+    // Parental switches arrive as a whole object from the controls sheet.
+    // Rebuild it field by field and write with dotted paths, so a payload can
+    // neither smuggle unknown keys in nor blank out flags it didn't mention.
+    const raw = (updates as any).parental;
+    delete (updates as any).parental;
+
+    const $set: Record<string, any> = { ...updates };
+
+    if (raw !== undefined) {
+      const clean = sanitizeParental(raw);
+      if (clean) {
+        Object.entries(clean).forEach(([key, value]) => {
+          $set[`parental.${key}`] = value;
+        });
+      }
+    }
+
+    if (Object.keys($set).length === 0) return;
+
+    await user_model.updateOne({ _id }, { $set });
+
+    // The gate caches age + flags for 30s; a parent flipping a switch should
+    // see it take effect on the next request, not half a minute later.
+    if (raw !== undefined) invalidateParentalCache(String(_id));
   } catch (e) {
     throw new Error('Failed to update user: ' + (e as Error).message);
   }
@@ -810,8 +835,9 @@ export async function searchMate(
 
     // Families policy: under-age accounts are NOT discoverable by name search
     // (they still connect via QR / share link, i.e. people they know in
-    // person). Anyone born after the cutoff is a minor; docs without a
-    // date_of_birth (legacy) stay searchable.
+    // person). An account with no date_of_birth is excluded too — an unknown
+    // age could be eight, and the client blocks on a birthday prompt anyway, so
+    // the pool of unconfirmed accounts is transient.
     const dobCutoff = new Date();
     dobCutoff.setFullYear(dobCutoff.getFullYear() - MINIMUM_SOCIAL_AGE);
 
@@ -819,10 +845,7 @@ export async function searchMate(
       .find({
         _id: { $ne: userId },
         name: { $regex: safeSearchTerm, $options: 'i' },
-        $or: [
-          { date_of_birth: { $lte: dobCutoff } },
-          { date_of_birth: null }
-        ]
+        date_of_birth: { $ne: null, $lte: dobCutoff }
       })
       .select(PUBLIC_USER_FIELDS)
       .limit(limit)

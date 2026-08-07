@@ -112,6 +112,19 @@ const user_schema = new Schema<UserDocument>({
   },
 
   date_of_birth: { type: Date, required: false },
+
+  // Families policy. Every flag defaults to false: consent is something a
+  // parent gave, never something an absent field implies. Enforced server-side
+  // in api/services/parental.service.ts, not only in the client UI.
+  parental: {
+    reviewed_at: { type: Date, default: null },
+    allow_mate_add: { type: Boolean, default: false },
+    allow_mate_chat: { type: Boolean, default: false },
+    allow_mate_send: { type: Boolean, default: false },
+    allow_rooms: { type: Boolean, default: false },
+    safety_ack_at: { type: Date, default: null }
+  },
+
   last_seen_version: { type: String, required: false },
   // IANA timezone (for example "Europe/Zurich"). Kept private and refreshed by
   // the active client so server-scheduled notifications can follow local time.

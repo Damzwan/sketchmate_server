@@ -207,6 +207,26 @@ export interface CapabilityBlockedError {
 // USER & PROFILE
 // =============================================================================
 
+/**
+ * Families policy: peer-to-peer features on an under-13 account are OFF until a
+ * parent/guardian switches them on. A missing flag ALWAYS means "not allowed" —
+ * never default one to true. See api/services/parental.service.ts.
+ */
+export interface ParentalControls {
+  /** An adult opened the controls through the adult gate. */
+  reviewed_at?: string | Date;
+  /** Adding mates by QR / personal link (exchanges name + avatar). */
+  allow_mate_add?: boolean;
+  /** 1:1 chat with mates already added. */
+  allow_mate_chat?: boolean;
+  /** Sending drawings to mates. */
+  allow_mate_send?: boolean;
+  /** Shared drawing rooms with mates. */
+  allow_rooms?: boolean;
+  /** Last acknowledgement of the online-safety reminder. */
+  safety_ack_at?: string | Date;
+}
+
 export interface User {
   is_admin?: boolean;
   _id: string;
@@ -233,6 +253,8 @@ export interface User {
   // System / Auth
   subscriptions: NotificationSubscription[];
   date_of_birth?: string;
+  /** Adult-managed switches for under-age accounts. */
+  parental?: ParentalControls;
   last_seen_version?: string;
   /** Private IANA timezone used for local-time server scheduling. */
   timezone?: string;

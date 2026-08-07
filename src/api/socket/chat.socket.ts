@@ -4,6 +4,7 @@ import { relationship_model } from '../../models/relationship.model';
 import { Types } from 'mongoose';
 import { RelationshipDocument } from '../../types/mongoose.types';
 import { checkSocketCapability } from '../../middleware/moderation.middleware';
+import { checkSocketChildFeature } from '../services/parental.service';
 import { Capability } from '../../types/moderation.policy';
 import { dispatchNotification } from '../services/notification.service';
 import { dmPushNotification } from '../../config/notification.config';
@@ -34,6 +35,14 @@ export function registerChatHandlers(io: Server, socket: Socket) {
       const check = await checkSocketCapability(sender_id, Capability.SEND_DM);
       if (check.blocked) {
         return callback({ error: 'capability_blocked', restriction: check.restriction });
+      }
+
+      // 2b. Families policy: on an under-13 account, chat exists only if a
+      // parent switched it on. The client hides the composer; this is the part
+      // a modified client can't skip.
+      const parental = await checkSocketChildFeature(sender_id, 'mate_chat');
+      if (parental.blocked) {
+        return callback(parental.body);
       }
 
       // 3. Relationship Logic

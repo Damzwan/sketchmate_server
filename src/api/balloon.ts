@@ -16,7 +16,8 @@ import { s3Creator } from '../mongodb';
 import { ObjectId } from 'mongodb';
 import { inbox_model } from '../models/inbox.model';
 import { CONTAINER } from '../s3';
-import { compareVersions, isOldEnough } from '../helper';
+import { compareVersions } from '../helper';
+import { isChildDob } from './services/parental.service';
 
 // Dynamic Policy Integration Imports
 import { Capability, getLevelConfig } from '../types/moderation.policy';
@@ -62,7 +63,9 @@ export async function routeBalloonToOnlineUser(
 
   const filteredCandidates = onlineUserIds.filter(id => {
     const userSocket = userSocketMap[id]?.[0];
-    const oldEnough = userSocket.data.user.date_of_birth ? isOldEnough(userSocket.data.user.date_of_birth) : true;
+    // Default-deny: an unconfirmed birthday could belong to an eight-year-old,
+    // and a balloon is a drawing from a stranger.
+    const oldEnough = !isChildDob(userSocket.data.user.date_of_birth);
     const hasRecentVersion = compareVersions(userSocket.data.user.version, '0.4.1') >= 0;
 
     return (

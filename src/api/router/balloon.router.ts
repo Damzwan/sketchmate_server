@@ -17,15 +17,21 @@ import {
 } from '../services/balloon.service.v3';
 import { v4 as uuidv4 } from 'uuid';
 import { CONTAINER } from '../../s3';
+import { requireAdultAccount } from '../services/parental.service';
 
 
 
 export const balloonRouter = new Router();
 
+// Families policy: balloons are drawings exchanged with strangers, so they are
+// off under 13 with no parental override — same rule as the public feed.
+const BALLOON_AGE_MESSAGE = 'Balloons are available from age 13.';
+
 balloonRouter.post(
   '/upload-urls',
   requireAuth,
   requireCapability(Capability.SEND_BALLOON),
+  requireAdultAccount(BALLOON_AGE_MESSAGE),
   async (ctx) => {
     try {
       const userId = ctx.state.user._id.toString();
@@ -49,6 +55,7 @@ balloonRouter.post(
   '/',
   requireAuth,
   requireCapability(Capability.SEND_BALLOON),
+  requireAdultAccount(BALLOON_AGE_MESSAGE),
   async (ctx) => {
     const { drawing_url, image_url, thumbnail_url, aspect_ratio, message } = ctx.request.body;
 
@@ -132,6 +139,7 @@ balloonRouter.post(
   '/:id/accept',
   requireAuth,
   requireCapability(Capability.RECEIVE_BALLOON),
+  requireAdultAccount(BALLOON_AGE_MESSAGE),
   async (ctx) => {
     const { sender_id } = ctx.request.body;
     if (!sender_id) {

@@ -11,6 +11,7 @@ import { Capability } from '../../types/moderation.policy';
 import { dispatchNotification } from '../services/notification.service';
 import { isPaidTier } from '../../config/catalog.config';
 import { getTier } from '../services/quota.service';
+import { checkSocketChildFeature, isAdultAccount } from '../services/parental.service';
 
 interface PublicLobby {
   id: string;
@@ -174,6 +175,23 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
     const publicRoom = PUBLIC_LOBBY_ROOMS.get(roomId);
     const isPublic = !!publicRoom;
     const clients = await io.in(roomId).fetchSockets();
+
+    // Families policy, checked before anything else about the room matters.
+    // A public lobby puts a child in a live canvas with strangers and is never
+    // available under 13; a private room with mates waits on a parent's switch.
+    const joiningUserId = socket.data.user?._id?.toString();
+    if (isPublic) {
+      if (!joiningUserId || !(await isAdultAccount(joiningUserId))) {
+        socket.emit('join-error', { reason: 'AGE_RESTRICTED' });
+        return;
+      }
+    } else {
+      const parentalCheck = await checkSocketChildFeature(joiningUserId, 'rooms');
+      if (parentalCheck.blocked) {
+        socket.emit('join-error', { reason: 'PARENTAL_LOCKED', ...parentalCheck.body });
+        return;
+      }
+    }
 
     if (isPublic) {
       const totalAllowed = publicRoom.maxUsers + publicRoom.premiumSlots;
@@ -712,7 +730,17 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
 
 
   // socket handler
-  socket.on('friend-invite', ({ roomId, friendId }) => {
+  socket.on('friend-invite', async ({ roomId, friendId }) => {
+    // Pulling someone into a shared canvas is the same exchange as joining one.
+    const inviteCheck = await checkSocketChildFeature(
+      socket.data.user?._id?.toString(),
+      'rooms'
+    );
+    if (inviteCheck.blocked) {
+      socket.emit('join-error', { reason: 'PARENTAL_LOCKED', ...inviteCheck.body });
+      return;
+    }
+
     dispatchNotification({
       recipient_id: friendId,
       type: 'lobby_invitation',

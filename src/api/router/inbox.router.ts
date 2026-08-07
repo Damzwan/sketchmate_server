@@ -3,6 +3,7 @@ import { requireAuth } from '../../middleware/auth';
 import { removeFromInbox, seeInbox, s3Creator } from '../../mongodb';
 import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
+import { requireChildFeature } from '../services/parental.service';
 import {
   commentOnInbox,
   createInboxItem,
@@ -105,6 +106,7 @@ inboxRouter.post(
   '/upload-urls',
   requireAuth,
   requireCapability(Capability.SEND_INBOX_DRAWING),
+  requireChildFeature('mate_send'),
   async (ctx) => {
     try {
       const userId = ctx.state.user._id.toString();
@@ -138,6 +140,7 @@ inboxRouter.post(
   '/',
   requireAuth,
   requireCapability(Capability.SEND_INBOX_DRAWING),
+  requireChildFeature('mate_send'),
   async (ctx) => {
     const { drawing_url, image_url, thumbnail_url, aspect_ratio, followers } = ctx.request.body;
 
@@ -193,6 +196,7 @@ inboxRouter.post(
   '/:inboxId/comment',
   requireAuth,
   requireCapability(Capability.COMMENT_ON_INBOX),
+  requireChildFeature('mate_send'),
   async (ctx) => {
     const { inboxId } = ctx.params;
     const { message, followers } = ctx.request.body;

@@ -10,6 +10,11 @@ import { RelationshipDocument } from '../../types/mongoose.types';
 import { isUserOnline, sendSocketNotificationToUser } from '../socket/socket';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
 import { requireCapability } from '../../middleware/moderation.middleware';
+import {
+  isFeatureAllowed,
+  parentalErrorBody,
+  requireChildFeature
+} from '../services/parental.service';
 import { dispatchNotification } from '../services/notification.service';
 import {
   matchNotification,
@@ -47,6 +52,14 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
   const partnerId = rel.users.find((u: Types.ObjectId) => u.toString() !== user_id);
 
   if (action === 'accept') {
+    // Accepting is what creates the channel, so it needs the parent's switch.
+    // Declining never does — a child must always be able to say no.
+    if (!(await isFeatureAllowed(user_id, 'mate_add'))) {
+      ctx.status = 403;
+      ctx.body = parentalErrorBody('mate_add');
+      return;
+    }
+
     if (rel.chat_status === 'pending_invite') {
       const expiresAt = dayjs().add(24, 'hours').toDate();
 
@@ -502,7 +515,7 @@ relationshipRouter.put('/unfriend/:target_id', async (ctx) => {
   ctx.body = { success: true };
 });
 
-relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capability.SEND_MATE_REQUEST), async (ctx) => {
+relationshipRouter.post('/:conversation_id/mate-request', requireCapability(Capability.SEND_MATE_REQUEST), requireChildFeature('mate_add'), async (ctx) => {
   const { conversation_id } = ctx.params;
   const user_id = ctx.state.user._id;
 
