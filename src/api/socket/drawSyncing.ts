@@ -12,6 +12,7 @@ import { dispatchNotification } from '../services/notification.service';
 import { isPaidTier } from '../../config/catalog.config';
 import { getTier } from '../services/quota.service';
 import { checkSocketChildFeature, isAdultAccount } from '../services/parental.service';
+import { censorText } from '../services/profanity.service';
 
 interface PublicLobby {
   id: string;
@@ -765,8 +766,15 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
   socket.on('lobby-message', ({ roomId, message, tempId }) => {
     const roomState = getOrCreateRoomState(roomId);
 
+    // Lobby messages are never persisted, so the censored twin is computed here
+    // and rides along in the payload — same contract as a DM's
+    // `content_filtered`, so the client picks a field either way and never runs
+    // the matcher itself.
+    const message_filtered = censorText(message) ?? undefined;
+
     const payload = {
       message,
+      message_filtered,
       member: socket.data.user,
       timestamp: new Date().toISOString(),
       id: tempId ? tempId : uuidv4()

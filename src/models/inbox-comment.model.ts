@@ -7,6 +7,8 @@ const inbox_comment_schema = new Schema<InboxCommentDocumentV2>({
   inbox_id: { type: ObjectId, ref: 'inbox', required: true },
   sender:   { type: ObjectId, required: true },
   message:  { type: String, required: true },
+  // Censored twin — see services/profanity.service.
+  message_filtered: { type: String, required: false },
   date:     { type: Date, required: true, default: Date.now },
   status:   { type: String, enum: ['active', 'removed'], default: 'active' },
   reports_count: { type: Number, default: 0 }

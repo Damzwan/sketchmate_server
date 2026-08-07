@@ -17,6 +17,21 @@ const MessageSchema = new Schema<MessageDocument>({
     type: String,
     default: ''
   },
+  // Censored twin of `content`, written once at send time and only when the
+  // text actually matched. Recipients with the profanity filter on render this
+  // instead; the original is never rewritten. See services/profanity.service.
+  content_filtered: {
+    type: String,
+    required: false
+  },
+  // Moderation writes 'removed' here (moderation.service removeContent /
+  // quarantineContent). Without the path declared, mongoose's strict mode
+  // silently DROPPED that $set — a removed DM stayed visible.
+  moderation_status: {
+    type: String,
+    enum: ['active', 'under_review', 'removed'],
+    default: 'active'
+  },
   is_invite: {
     type: Boolean,
     default: false

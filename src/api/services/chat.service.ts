@@ -4,6 +4,7 @@ import { relationship_model } from '../../models/relationship.model';
 import { conversation_model } from '../../models/conversation.model';
 import { RelationshipDocument } from '../../types/mongoose.types';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
+import { censorText } from './profanity.service';
 
 export interface SaveMessageOptions {
   /**
@@ -59,6 +60,11 @@ export const saveMessageLogic = async (
     { upsert: true, new: true }
   );
 
+  // Scanned once, here, and only when there is text to scan. Clean messages
+  // store nothing extra; see services/profanity.service for why the filter is a
+  // write-time job rather than a read-time one.
+  const content_filtered = content ? censorText(content) : null;
+
   // Create first so the conversation can point at the real message in the same
   // write that increments unread state. The old placeholder briefly stored the
   // conversation id in `last_message`, then needed a second metadata write.
@@ -66,6 +72,7 @@ export const saveMessageLogic = async (
     conversation_id: conversation._id,
     sender_id,
     content,
+    ...(content_filtered && { content_filtered }),
     ...(shared_post_id && { shared_post_id: new Types.ObjectId(shared_post_id) }),
     ...(options.shared_inbox_item_id && { shared_inbox_item_id: new Types.ObjectId(options.shared_inbox_item_id) }),
     ...(options.messageMeta && {

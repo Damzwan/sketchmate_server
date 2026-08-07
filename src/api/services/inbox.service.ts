@@ -18,6 +18,7 @@ import { saveMessageLogic } from './chat.service';
 import { dispatchNotification } from './notification.service';
 import { drawingReceivedNotification } from '../../config/notification.config';
 import { inbox_comment_model } from '../../models/inbox-comment.model';
+import { censorText } from './profanity.service';
 
 
 export interface CreateInboxItemParams {
@@ -358,6 +359,7 @@ export function serializeInboxComment(c: any, inboxId?: string): InboxComment {
     inbox_id: (c.inbox_id ?? inboxId)?.toString(),
     sender: c.sender,
     message: c.message,
+    ...(c.message_filtered && { message_filtered: c.message_filtered }),
     date: (c.date instanceof Date ? c.date : new Date(c.date)).toISOString(),
     status: c.status === 'removed' ? 'removed' : 'active',
     reports_count: c.reports_count ?? 0
@@ -398,10 +400,13 @@ export async function createInboxComment(params: CommentParams): Promise<InboxCo
     );
   }
 
+  const message_filtered = censorText(params.message);
+
   const created = await inbox_comment_model.create({
     inbox_id: inboxObjectId,
     sender: params.sender,
     message: params.message,
+    ...(message_filtered && { message_filtered }),
     date: new Date(),
     status: 'active',
     reports_count: 0

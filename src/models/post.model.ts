@@ -68,6 +68,8 @@ const commentSchema = new Schema<PostCommentDocument>({
   post_id: { type: ObjectId, ref: 'posts', required: true },
   author_id: { type: ObjectId, ref: 'users', required: true },
   message: { type: String, required: true },
+  // Censored twin — see services/profanity.service.
+  message_filtered: { type: String, required: false },
 
   status: {
     type: String,

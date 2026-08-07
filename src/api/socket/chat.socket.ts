@@ -105,7 +105,11 @@ export function registerChatHandlers(io: Server, socket: Socket) {
           push: dmPushNotification(
             sender_id.toString(),
             socket.data.user.name,
-            content || '[Shared a drawing]',
+            // Always the censored twin when there is one. A push preview lands
+            // on a lock screen the recipient's parent may be looking at, and
+            // the recipient's own filter preference isn't loaded on this path —
+            // censoring unconditionally is the safe side to err on.
+            (message as any).content_filtered || content || '[Shared a drawing]',
             socket.data.user.img,
             conversation._id.toString(),
           )

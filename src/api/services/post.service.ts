@@ -134,6 +134,7 @@ export async function hydrateFeedPosts(
       _id: comment._id.toString(),
       post_id: pid,
       message: comment.message,
+      ...(comment.message_filtered && { message_filtered: comment.message_filtered }),
       createdAt: new Date(comment.createdAt).toISOString(),
       updatedAt: new Date(comment.updatedAt).toISOString(),
       author: toAuthor(comment.author_id.toString())

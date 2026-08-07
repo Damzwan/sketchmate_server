@@ -137,6 +137,11 @@ const user_schema = new Schema<UserDocument>({
   last_name_change: { type: Date, default: null },
   subscription_tier: { type: String, default: 'free' },
   feed_level: { type: String, enum: ['off', 'mates', 'open'], default: 'open' },
+  // Display preference, not enforcement: when on, the client renders the
+  // censored twin the server stored next to each message. Defaults ON — a lot
+  // of this audience is young, and the safe state is the one you have to opt
+  // out of.
+  profanity_filter: { type: Boolean, default: true },
   migration_version: { type: Number, default: 0 },
   is_admin: { type: Boolean, required: false },
   inventory: { type: [String], default: [] }

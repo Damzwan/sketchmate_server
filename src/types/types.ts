@@ -236,6 +236,8 @@ export interface User {
   img: string;
   subscription_tier?: string;
   feed_level?: 'off' | 'mates' | 'open';
+  /** Render the censored twin of user text. Defaults on. */
+  profanity_filter?: boolean;
   stats: UserStats;
 
   // Moderation — both optional so legacy clients don't crash if absent.
@@ -405,6 +407,8 @@ export interface InboxComment {
   inbox_id: string;
   sender: string;
   message: string;
+  /** Censored twin of `message`, present only when the text matched the filter. */
+  message_filtered?: string;
   date: string;
   status: "active" | "removed";
   reports_count: number;
@@ -413,6 +417,8 @@ export interface InboxComment {
 export interface Comment {
   sender: string;
   message: string;
+  /** Censored twin of `message`, present only when the text matched the filter. */
+  message_filtered?: string;
   _id: string;
   date: string;
   status?: "active" | "removed";
@@ -429,6 +435,8 @@ export interface BasePostComment {
   post_id: string;
   author_id: string;
   message: string;
+  /** Censored twin of `message`, present only when the text matched the filter. */
+  message_filtered?: string;
   createdAt: string;
   updatedAt: string;
 
@@ -508,6 +516,8 @@ export interface Balloon {
   _id: string;
   sender: string;
   message: string;
+  /** Censored twin of `message`, present only when the text matched the filter. */
+  message_filtered?: string;
   drawingJsonUrl: string;
   img: string;
   thumbnail: string;
@@ -542,6 +552,8 @@ export interface BaseMessage {
   conversation_id: string;
   sender_id: string;
   content: string;
+  /** Censored twin of `content`, present only when the text matched the filter. */
+  content_filtered?: string;
   is_invite: boolean;
   createdAt: string;
   updatedAt: string;
@@ -558,7 +570,7 @@ export interface BaseMessage {
     thumbnail?: string;
   };
 
-  moderation_status?: "active" | "removed";
+  moderation_status?: "active" | "under_review" | "removed";
   reports_count?: number;
   shared_post_id?: string;
   shared_inbox_item_id?: string;

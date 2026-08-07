@@ -27,6 +27,7 @@ import { saveMessageLogic } from './chat.service';
 import { quota_usage_model } from '../../models/quota_usage.model';
 import { startOfUtcDay } from '../../config/quota.config';
 import { dispatchNotification } from './notification.service';
+import { censorText } from './profanity.service';
 
 const MIN_V3_CLIENT_VERSION = '0.4.3';
 
@@ -40,6 +41,8 @@ export async function createBalloonV3(params: CreateBalloonV2Params): Promise<Ba
   const balloonId = new Types.ObjectId();
   const now = new Date();
 
+  const message_filtered = censorText(params.message);
+
   const balloonToCreate: Partial<BalloonDocument> = {
     _id: balloonId,
     status: 'pending',
@@ -51,6 +54,7 @@ export async function createBalloonV3(params: CreateBalloonV2Params): Promise<Ba
     aspect_ratio: params.aspect_ratio,
     sender: senderObjectId,
     message: params.message,
+    ...(message_filtered && { message_filtered }),
     cancelledBalloons: [],
     version: 3,
     rejected_by: []

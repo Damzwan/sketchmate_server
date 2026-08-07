@@ -14,6 +14,8 @@ const balloon_schema = new Schema<BalloonDocument>(
   {
     sender: { type: ObjectId, ref: 'users', required: true },
     message: { type: String, default: '' },
+    // Censored twin — see services/profanity.service.
+    message_filtered: { type: String, required: false },
     drawingJsonUrl: { type: String, required: true },
     img: { type: String, required: true },
     thumbnail: { type: String, required: true },

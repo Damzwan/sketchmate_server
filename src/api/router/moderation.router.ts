@@ -492,8 +492,11 @@ async function quarantineContent(type: string, id: string) {
       await setInboxCommentStatus(oid, 'active', 'removed');
       break;
     case 'dm_message':
+      // `$ne: 'removed'` rather than `=== 'active'`: messages written before
+      // the field existed on the schema have no `moderation_status` at all, and
+      // an equality match would skip every one of them.
       await message_model.updateOne(
-        { _id: oid, moderation_status: 'active' },
+        { _id: oid, moderation_status: { $ne: 'removed' } },
         { $set: { moderation_status: 'removed' } }
       );
       break;

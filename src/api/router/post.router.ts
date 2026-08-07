@@ -25,6 +25,7 @@ import { dispatchNotification } from '../services/notification.service';
 import { v4 as uuidv4 } from 'uuid';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
 import { releasePostQuota } from '../services/quota.service';
+import { censorText } from '../services/profanity.service';
 
 const postRouter = new Router();
 
@@ -588,10 +589,13 @@ postRouter.post('/:post_id/comment', requireAuth, requireCapability(Capability.C
       return;
     }
 
+    const message_filtered = censorText(message);
+
     const newComment = await post_comment_model.create({
       post_id: new Types.ObjectId(post_id),
       author_id: new Types.ObjectId(author_id),
-      message
+      message,
+      ...(message_filtered && { message_filtered })
     }) as PostCommentDocument;
 
     await post_model.updateOne({ _id: new Types.ObjectId(post_id) }, { $inc: { comment_count: 1 } });
@@ -960,6 +964,7 @@ postRouter.get('/:id', async (ctx) => {
       _id: comment._id.toString(),
       post_id: comment.post_id.toString(),
       message: comment.message,
+      ...(comment.message_filtered && { message_filtered: comment.message_filtered }),
       createdAt: comment.createdAt instanceof Date
         ? comment.createdAt.toISOString()
         : new Date(comment.createdAt).toISOString(),

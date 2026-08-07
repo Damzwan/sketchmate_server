@@ -137,7 +137,14 @@ chatRouter.get('/:id/messages', async (ctx) => {
   const { before, limit } = ctx.query;
 
   const parsedLimit = Math.min(parseInt(limit as string, 10) || 20, 100);
-  const query: any = { conversation_id: id };
+  // Moderated-away messages don't come back in history. The removal write only
+  // started taking effect once `moderation_status` was declared on the schema
+  // (mongoose strict mode had been dropping it), so without this filter
+  // "remove" from the mod dashboard still left the message on screen.
+  const query: any = {
+    conversation_id: id,
+    moderation_status: { $ne: 'removed' }
+  };
   if (before) query.createdAt = { $lt: new Date(before as string) };
 
   const messages = await message_model
