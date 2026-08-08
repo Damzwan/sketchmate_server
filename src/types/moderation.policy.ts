@@ -71,6 +71,10 @@ export const REPORTABLE = {
   dm_message: { quarantine_threshold: 999, auto_hide: false, label: 'Message' },  // never auto-acts; manual only
   lobby_message: { quarantine_threshold: 2, auto_hide: false, label: 'Lobby message' },
   lobby_drawing: { quarantine_threshold: 2, auto_hide: false, label: 'Lobby drawing' },
+  // Threshold 2, not 3 like posts: an entry sits on a promoted surface with a
+  // prize attached, so err toward review.
+  competition_entry: { quarantine_threshold: 2, auto_hide: false, label: 'Competition entry' },
+  competition_comment: { quarantine_threshold: 2, auto_hide: false, label: 'Competition comment' },
   user: { quarantine_threshold: 5, auto_hide: false, label: 'User' }
 } as const;
 

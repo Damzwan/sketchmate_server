@@ -63,7 +63,10 @@ import { quotaRouter } from './quota.router';
 import { notificationRouter } from './notification.router';
 import { revenuecatWebhookRouter } from './revenuecat.webhook';
 import adminInventoryRouter from './admin.inventory.router';
+import adminCompetitionRouter from './admin.competition.router';
 import { titlesRouter } from './titles.router';
+import competitionRouter from './competition.router';
+import devCompetitionRouter from './devCompetition.router';
 import { savedRouter } from './saved-drawing.router';
 
 export const router = new Router();
@@ -80,9 +83,13 @@ router.use('/v2/quota', quotaRouter.routes(), quotaRouter.allowedMethods());
 router.use('/v2/notification', notificationRouter.routes(), notificationRouter.allowedMethods());
 router.use('/v2/saved', savedRouter.routes(), savedRouter.allowedMethods());
 
+router.use('/v2/competition', competitionRouter.routes(), competitionRouter.allowedMethods());
+
 router.use('/dev/moderation', devModerationRouter.routes(), devModerationRouter.allowedMethods());
+router.use('/dev/competition', devCompetitionRouter.routes(), devCompetitionRouter.allowedMethods());
 router.use('/webhooks', revenuecatWebhookRouter.routes());
 router.use('/admin/inventory', adminInventoryRouter.routes());
+router.use('/admin/competition', adminCompetitionRouter.routes(), adminCompetitionRouter.allowedMethods());
 
 router.get(ENDPOINTS.user, async (ctx) => {
   const res = await getUser(parseParams<GetUserParams>(ctx.query));

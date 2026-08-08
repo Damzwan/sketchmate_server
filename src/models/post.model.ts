@@ -31,6 +31,17 @@ const postSchema = new Schema<PostDocument>({
   views: { type: Number, default: 0 },
   total_reactions: { type: Number, default: 0 },
 
+  // Set when this post's drawing also won a weekly competition. Denormalised
+  // on purpose: the feed renders the badge without a join.
+  competition_win: {
+    type: new Schema({
+      week_key: { type: String, required: true },
+      category_label: { type: String, required: true },
+      theme: { type: String }
+    }, { _id: false }),
+    required: false
+  },
+
   // --- MODERATION ---
   reports_count: { type: Number, default: 0 },
   status: {

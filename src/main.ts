@@ -17,6 +17,9 @@ import * as fs from 'fs';
 import { scheduleResetUploadFolder } from './helper';
 import cron from 'node-cron';
 import { pairBalloons, removeExpiredBalloons, unPairBalloons } from './api/balloon';
+import { advancePhases } from './api/services/competition.service';
+import { runCompetitionNotifications } from './api/services/competitionNotifications.service';
+import { isCompetitionEnabled } from './config/competition.config';
 import * as admin from 'firebase-admin';
 import { loadServiceAccount } from './firebase-credential';
 
@@ -88,6 +91,12 @@ server.listen(port, async () => {
   console.log(`Listening on ${port}`);
   await connectDb();
   scheduleResetUploadFolder();
+
+  // Catch-up on boot: a dyno that was down over a rollover still opens, scores
+  // and announces the weeks it slept through.
+  if (isCompetitionEnabled()) {
+    advancePhases().catch((e) => console.error('[competition] boot advance failed:', e));
+  }
 });
 
 // Make the server not crash on unhandled error
@@ -105,4 +114,15 @@ cron.schedule('0 */1 * * *', async () => {
   await pairBalloons();
   await unPairBalloons();
   await removeExpiredBalloons();
+
+  // Hourly is enough: every transition is date-driven and idempotent, so a
+  // phase flipping up to an hour late breaks nothing.
+  if (isCompetitionEnabled()) {
+    await advancePhases().catch((e) => console.error('[competition] advance failed:', e));
+    // After the advance, so a competition that just flipped to `announced`
+    // gets its results push on this same tick.
+    await runCompetitionNotifications().catch((e) =>
+      console.error('[competition] notifications failed:', e)
+    );
+  }
 });

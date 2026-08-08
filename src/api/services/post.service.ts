@@ -46,6 +46,7 @@ export function shapeFeedPost(
         ? Object.fromEntries(post.reaction_counts)
         : post.reaction_counts || {},
     comments,
+    competition_win: (post as any).competition_win,
     createdAt:
       post.createdAt instanceof Date
         ? post.createdAt.toISOString()

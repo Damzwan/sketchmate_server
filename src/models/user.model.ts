@@ -125,6 +125,15 @@ const user_schema = new Schema<UserDocument>({
     safety_ack_at: { type: Date, default: null }
   },
 
+  // Weekly competition. `last_seen_results_week` is server-side on purpose: the
+  // winners moment must fire once per user, not once per device, and must not
+  // re-fire for an announcement they already saw before a reinstall.
+  competition: {
+    notifications: { type: Boolean, default: true },
+    last_seen_results_week: { type: String, default: null },
+    wins: { type: Number, default: 0 }
+  },
+
   last_seen_version: { type: String, required: false },
   // IANA timezone (for example "Europe/Zurich"). Kept private and refreshed by
   // the active client so server-scheduled notifications can follow local time.

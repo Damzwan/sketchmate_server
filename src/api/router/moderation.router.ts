@@ -7,6 +7,10 @@ import { balloon_model } from '../../models/balloon.model';
 import { message_model } from '../../models/message.model';
 import { user_model } from '../../models/user.model';
 import { inbox_model } from '../../models/inbox.model';
+import {
+  competition_comment_model,
+  competition_entry_model
+} from '../../models/competition.model';
 import { CONTAINER } from '../../s3';
 
 const MAX_REPORT_RATIO = 0.01;
@@ -214,6 +218,10 @@ async function resolveTargetAuthor(
       const c = await findInboxComment(oid);
       return c?.sender ?? null;
     }
+    case 'competition_entry':
+      return (await competition_entry_model.findById(oid).select('user_id').lean() as any)?.user_id ?? null;
+    case 'competition_comment':
+      return (await competition_comment_model.findById(oid).select('author_id').lean() as any)?.author_id ?? null;
     case 'user':
       return oid;
     default:
@@ -257,8 +265,34 @@ async function snapshotContent(type: string, id: string): Promise<any> {
       };
     }
 
+    case 'competition_entry': {
+      const entry = await competition_entry_model
+        .findById(oid)
+        .select('caption thumbnail_url')
+        .lean() as any;
+      if (!entry) return null;
+
+      const snapshot_url = entry.thumbnail_url
+        ? await s3Creator.cloneToSnapshot(entry.thumbnail_url, CONTAINER.drawings)
+        : null;
+
+      return {
+        description: entry.caption,
+        original_url: entry.thumbnail_url,
+        snapshot_url
+      };
+    }
+
     case 'comment': {
       const comment = await post_comment_model
+        .findById(oid)
+        .select('message')
+        .lean() as any;
+      return comment ? { message: comment.message } : null;
+    }
+
+    case 'competition_comment': {
+      const comment = await competition_comment_model
         .findById(oid)
         .select('message')
         .lean() as any;
@@ -482,8 +516,22 @@ async function quarantineContent(type: string, id: string) {
         { $set: { status: 'under_review', 'moderation.quarantined_at': now } }
       );
       break;
+    case 'competition_entry':
+      // Votes are deliberately preserved: if the report is dismissed the entry
+      // re-enters the running with its standing intact.
+      await competition_entry_model.updateOne(
+        { _id: oid, status: 'active' },
+        { $set: { status: 'under_review', 'moderation.quarantined_at': now } }
+      );
+      break;
     case 'comment':
       await post_comment_model.updateOne(
+        { _id: oid, status: 'active' },
+        { $set: { status: 'under_review' } }
+      );
+      break;
+    case 'competition_comment':
+      await competition_comment_model.updateOne(
         { _id: oid, status: 'active' },
         { $set: { status: 'under_review' } }
       );

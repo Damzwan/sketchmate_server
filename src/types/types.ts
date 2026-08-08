@@ -9,6 +9,10 @@ export enum NotificationType {
   moderation_content = "moderation_content",
   mate_request = "mate_request",
   request_accepted = "request_accepted",
+  competition_theme = "competition_theme",
+  competition_last_call = "competition_last_call",
+  competition_results = "competition_results",
+  competition_win = "competition_win",
 
   // Legacy — remove with legacy config
   match = "match",
@@ -126,7 +130,8 @@ export type ReportableType =
   | "inbox_drawing"
   | "inbox_comment"
   | "lobby_message"
-  | "lobby_drawing";
+  | "lobby_drawing"
+  | "competition_entry";
 
 export type ReportStatus = "pending" | "auto_actioned" | "upheld" | "dismissed";
 
@@ -283,6 +288,13 @@ export interface User {
     feedback_opted_out?: boolean;
   };
   inventory: string[];
+  competition?: {
+    /** Weekly competition pushes. Defaults on; capped at 3 a week server-side. */
+    notifications?: boolean;
+    /** Week key of the last results the user was shown, e.g. "2026-W33". */
+    last_seen_results_week?: string | null;
+    wins?: number;
+  };
 }
 
 export interface UserCustomization {
@@ -368,6 +380,12 @@ export interface BasePost {
   status: ContentModerationStatus;
   moderation?: ContentModerationMeta;
   reaction_counts: Record<string, number>;
+  /** Set when this drawing also won a weekly competition. */
+  competition_win?: {
+    week_key: string;
+    category_label: string;
+    theme?: string;
+  };
 }
 
 export type FeedPost = Omit<BasePost, "createdAt" | "updatedAt"> & {
@@ -909,6 +927,7 @@ export type NotificationKind =
   // three near-identical notification kinds would only be three places to forget
   // to send one from.
   | "moderation_content"
+  | "competition"
   | "lobby_invitation"
   | "announcement";
 

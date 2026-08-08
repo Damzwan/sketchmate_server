@@ -1,8 +1,8 @@
 import Router from 'koa-router';
 import { Types } from 'mongoose';
 import { user_model } from '../../models/user.model';
-import { CATALOG_BY_ID, grantsForSku } from '../../config/catalog.config';
 import { requireAdminAuth } from '../../middleware/adminAuth.middleware';
+import { grantItems, resolveGrantItems, revokeItems } from '../services/inventory.service';
 
 /**
  * Admin inventory management.
@@ -41,33 +41,17 @@ adminInventoryRouter.post('/grant/:user_id', async (ctx) => {
     return ctx.throw(400, 'No items or skus provided');
   }
 
-  // Expand SKUs through the catalog
-  const expanded = skus.flatMap((skuId) => {
-    if (!CATALOG_BY_ID[skuId]) {
-      console.warn(`[admin grant] unknown SKU: ${skuId}`);
-      return [];
-    }
-    return grantsForSku(skuId);
-  });
-
-  const toGrant = Array.from(new Set([...items, ...expanded]));
+  const toGrant = resolveGrantItems(items, skus);
   if (toGrant.length === 0) {
     return ctx.throw(400, 'No valid items resolved');
   }
 
-  const result = await user_model.updateOne(
-    { _id: user_id },
-    { $addToSet: { inventory: { $each: toGrant } } }
+  const { matched } = await grantItems(
+    user_id,
+    toGrant,
+    `admin ${ctx.state.user._id}${reason ? `: ${reason}` : ''}`
   );
-
-  if (result.matchedCount === 0) {
-    return ctx.throw(404, 'User not found');
-  }
-
-  console.log(
-    `[admin grant] ${ctx.state.user._id} → ${user_id}: [${toGrant.join(', ')}]` +
-    (reason ? ` (${reason})` : '')
-  );
+  if (!matched) return ctx.throw(404, 'User not found');
 
   ctx.body = { success: true, granted: toGrant };
 });
@@ -90,19 +74,12 @@ adminInventoryRouter.post('/revoke/:user_id', async (ctx) => {
     return ctx.throw(400, 'items[] required');
   }
 
-  const result = await user_model.updateOne(
-    { _id: user_id },
-    { $pull: { inventory: { $in: items } } }
+  const { matched } = await revokeItems(
+    user_id,
+    items,
+    `admin ${ctx.state.user._id}${reason ? `: ${reason}` : ''}`
   );
-
-  if (result.matchedCount === 0) {
-    return ctx.throw(404, 'User not found');
-  }
-
-  console.log(
-    `[admin revoke] ${ctx.state.user._id} → ${user_id}: [${items.join(', ')}]` +
-    (reason ? ` (${reason})` : '')
-  );
+  if (!matched) return ctx.throw(404, 'User not found');
 
   ctx.body = { success: true, revoked: items };
 });

@@ -15,6 +15,10 @@ import { sendSocketNotificationToUser } from '../socket/socket';
 import { post_model, post_comment_model } from '../../models/post.model';
 import { balloon_model } from '../../models/balloon.model';
 import { inbox_model } from '../../models/inbox.model';
+import {
+  competition_comment_model,
+  competition_entry_model
+} from '../../models/competition.model';
 import { message_model } from '../../models/message.model';
 import { deletion_queue_model } from '../../models/deletion.model';
 import { setInboxCommentStatus } from './inbox.service';
@@ -287,8 +291,20 @@ export async function removeContent(type: string, id: string) {
     case 'comment':
       await post_comment_model.updateOne({ _id: oid }, { $set: { status: 'removed' } });
       break;
+    case 'competition_comment':
+      await competition_comment_model.updateOne({ _id: oid }, { $set: { status: 'removed' } });
+      break;
     case 'inbox_comment':
       await setInboxCommentStatus(oid, null, 'removed');
+      break;
+    case 'competition_entry':
+      // Scoring only ever considers `active` entries, so removing one here also
+      // takes it out of the running. If it had already won, announce() rescores
+      // and promotes the runner-up.
+      await competition_entry_model.updateOne(
+        { _id: oid },
+        { $set: { status: 'removed', 'moderation.removed_at': now } }
+      );
       break;
     case 'dm_message':
       await message_model.updateOne({ _id: oid }, { $set: { moderation_status: 'removed' } });
@@ -337,11 +353,22 @@ export async function restoreContent(type: string, id: string): Promise<boolean>
     case 'comment':
       modified = (await post_comment_model.updateOne({ _id: oid, status: hidden }, { $set: { status: 'active' } })).modifiedCount;
       break;
+    case 'competition_comment':
+      modified = (await competition_comment_model.updateOne({ _id: oid, status: hidden }, { $set: { status: 'active' } })).modifiedCount;
+      break;
     case 'inbox_comment':
       // Purpose-built helper: writes the MIGRATED comment collection and keeps
       // the parent item's comment_count straight. The embedded-array update this
       // used to do wrote to the legacy shape and left the count stale.
       modified = (await setInboxCommentStatus(oid, null, 'active')) ? 1 : 0;
+      break;
+    case 'competition_entry':
+      // Votes were never deleted, so a cleared entry comes back with its
+      // standing intact rather than restarting from zero.
+      modified = (await competition_entry_model.updateOne(
+        { _id: oid, status: hidden },
+        { $set: { status: 'active' } }
+      )).modifiedCount;
       break;
     case 'dm_message':
       modified = (await message_model.updateOne({

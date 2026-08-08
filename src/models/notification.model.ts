@@ -38,6 +38,7 @@ const notification_schema = new Schema<NotificationDocument>(
         'moderation_strike',
         'moderation_lifted',
         'moderation_content',
+        'competition',
         'announcement'
       ]
     },
