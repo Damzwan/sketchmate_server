@@ -15,7 +15,7 @@ import {
   competitionWinPushNotification,
 } from '../../config/notification.config';
 import { dispatchNotification } from './notification.service';
-import { phaseFor } from '../../config/competition.config';
+import { isTestWeekKey, phaseFor } from '../../config/competition.config';
 
 /**
  * Weekly competition notifications.
@@ -159,7 +159,14 @@ async function pushCandidates(): Promise<Candidate[]> {
     .select('_id timezone subscriptions')
     .lean();
 
-  return users.filter((u: any) => u.subscriptions?.length > 0).map((u: any) => ({ _id: u._id, timezone: u.timezone }));
+  const withDevice = users.filter((u: any) => u.subscriptions?.length > 0);
+  // "I got no push" is almost always no registered device (a web build, or
+  // notification permission never granted) rather than a scheduling bug. Say so
+  // in the logs instead of making that a debugging session.
+  if (!withDevice.length && users.length) {
+    console.warn(`[competition] ${users.length} users opted in, none with a push subscription`);
+  }
+  return withDevice.map((u: any) => ({ _id: u._id, timezone: u.timezone }));
 }
 
 // ─── SLOTS ───────────────────────────────────────────────────────────────────
@@ -219,8 +226,12 @@ async function sendLastCallSlot(comp: CompetitionDocument, now: Date): Promise<n
 async function sendResultsSlot(comp: CompetitionDocument, now: Date): Promise<number> {
   const announcedAt = comp.announced_at?.getTime() ?? comp.ends_at.getTime();
   const ageHours = (now.getTime() - announcedAt) / HOUR_MS;
+  // A compressed test week is over in minutes. Holding its results push until
+  // the tester's local evening means the push path is never exercised at all,
+  // which is the opposite of what the test cycle exists for.
+  const ignoreLocalHour = isTestWeekKey(comp.week_key);
   const candidates = (await pushCandidates()).filter(
-    (user) => localHour(user.timezone, now) >= SLOT_HOURS.results || ageHours >= 24
+    (user) => ignoreLocalHour || localHour(user.timezone, now) >= SLOT_HOURS.results || ageHours >= 24
   );
   let sent = 0;
 

@@ -421,10 +421,16 @@ export async function announceCompetition(competitionId: Types.ObjectId): Promis
 
   // Nothing to crown — close the week quietly rather than show a 1-person
   // podium. The theme is not reused; next week picks a fresh one.
+  //
+  // "Quietly" means no podium, NOT no notification: someone who entered and
+  // then heard nothing at all assumes the feature is broken. They still get the
+  // results row and push, which lands on a "not enough entries" week rather
+  // than a winner.
   if (!comp.results.length) {
     comp.phase = 'announced';
     comp.announced_at = new Date();
     await comp.save();
+    await notifyCompetitionResults(comp);
     console.log(`[competition] ${comp.week_key} announced with no winners (${comp.skipped_reason ?? 'no votes'})`);
     return comp;
   }

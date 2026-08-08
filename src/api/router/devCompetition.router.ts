@@ -256,6 +256,10 @@ devCompetitionRouter.post('/:id/score', async (ctx) => {
 
   const results = await scoreCompetition(comp._id);
   const announced = await announceCompetition(comp._id);
+  // Announcing only fires the winner push and the in-app rows. The results push
+  // for everyone else lives in the hourly driver, so "Announce now" would
+  // otherwise silently skip the notification most participants actually get.
+  await runCompetitionNotifications();
 
   ctx.body = { results, competition: announced };
 });
@@ -305,6 +309,7 @@ devCompetitionRouter.post('/:id/force-win', async (ctx) => {
 
   const results = await scoreCompetition(comp._id);
   const announced = await announceCompetition(comp._id);
+  await runCompetitionNotifications();
 
   ctx.body = { votes_added: cast, results, competition: announced };
 });
