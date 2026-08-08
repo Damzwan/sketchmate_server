@@ -129,8 +129,8 @@ async function isEngaged(userId: Types.ObjectId): Promise<boolean> {
   const since = new Date(Date.now() - DORMANT_AFTER_WEEKS * 7 * 24 * HOUR_MS);
 
   const [entered, voted] = await Promise.all([
-    competition_entry_model.exists({ user_id: userId, submitted_at: { $gte: since } }),
-    competition_vote_model.exists({ voter_id: userId, createdAt: { $gte: since } }),
+    competition_entry_model.exists({ user_id: userId, seeded: { $ne: true }, submitted_at: { $gte: since } }),
+    competition_vote_model.exists({ voter_id: userId, seeded: { $ne: true }, createdAt: { $gte: since } }),
   ]);
 
   return !!entered || !!voted;
@@ -204,6 +204,7 @@ async function sendLastCallSlot(comp: CompetitionDocument, now: Date): Promise<n
     const alreadyEntered = await competition_entry_model.exists({
       competition_id: comp._id,
       user_id: user._id,
+      seeded: { $ne: true },
     });
     if (alreadyEntered) continue;
     if (!(await isEngaged(user._id))) continue;
@@ -238,10 +239,10 @@ async function sendResultsSlot(comp: CompetitionDocument, now: Date): Promise<nu
   for (const user of candidates) {
     const [entry, voted] = await Promise.all([
       competition_entry_model
-        .findOne({ competition_id: comp._id, user_id: user._id, status: 'active' })
+        .findOne({ competition_id: comp._id, user_id: user._id, status: 'active', seeded: { $ne: true } })
         .select('total_votes')
         .lean(),
-      competition_vote_model.exists({ competition_id: comp._id, voter_id: user._id }),
+      competition_vote_model.exists({ competition_id: comp._id, voter_id: user._id, seeded: { $ne: true } }),
     ]);
     if (!entry && !voted) continue;
 
@@ -279,9 +280,12 @@ export async function notifyWinners(comp: CompetitionDocument): Promise<void> {
     try {
       const [user, entry] = await Promise.all([
         user_model.findById(result.user_id).select('competition subscriptions').lean(),
-        competition_entry_model.findById(result.entry_id).select('thumbnail_url total_votes').lean(),
+        competition_entry_model.findById(result.entry_id).select('thumbnail_url total_votes seeded').lean(),
       ]);
       if (!user) continue;
+      // Dev-seeded entry on a real account. They did not enter, so they must
+      // not be told they won.
+      if (entry?.seeded) continue;
 
       const category = comp.categories.find((c) => c.id === result.category_id);
       const categoryLabel = category?.label ?? 'the competition';
@@ -363,7 +367,7 @@ async function notifySubmissionsClosedInApp(comp: CompetitionDocument): Promise<
   if (!claimed.modifiedCount) return;
 
   const entries = await competition_entry_model
-    .find({ competition_id: comp._id, status: 'active' })
+    .find({ competition_id: comp._id, status: 'active', seeded: { $ne: true } })
     .select('user_id thumbnail_url')
     .lean();
 
@@ -401,9 +405,12 @@ async function notifySubmissionsClosedInApp(comp: CompetitionDocument): Promise<
  * should be waiting whenever the user next opens the app.
  */
 async function notifyParticipantsInApp(comp: CompetitionDocument): Promise<void> {
+  // `seeded: { $ne: true }` on both sides: dev seeding attaches entries AND
+  // votes to real accounts, and neither is a reason to tell someone how a
+  // competition they never touched turned out.
   const [entrants, voters] = await Promise.all([
-    competition_entry_model.distinct('user_id', { competition_id: comp._id }),
-    competition_vote_model.distinct('voter_id', { competition_id: comp._id }),
+    competition_entry_model.distinct('user_id', { competition_id: comp._id, seeded: { $ne: true } }),
+    competition_vote_model.distinct('voter_id', { competition_id: comp._id, seeded: { $ne: true } }),
   ]);
   const winners = new Set(comp.results.map((result) => result.user_id.toString()));
   const participants = new Map<string, Types.ObjectId>();

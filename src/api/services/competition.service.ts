@@ -448,6 +448,21 @@ export async function announceCompetition(competitionId: Types.ObjectId): Promis
         return announceCompetition(comp._id);
       }
 
+      // A dev-seeded entry sits on a REAL account that never entered anything.
+      // It may hold the podium so the results screen looks like a real week,
+      // but nothing may reach the person behind it: no cosmetic, no champion
+      // title, no `wins` bump, no push. `granted_items` stays empty, which is
+      // also what stops the admin Re-grant button from undoing this later.
+      if (entry.seeded) {
+        result.granted_items = [];
+        await competition_entry_model.updateOne(
+          { _id: result.entry_id },
+          { $set: { is_winner: true, won_category: result.category_id } }
+        );
+        console.log(`[competition] ${comp.week_key} / ${result.category_id}: seeded winner, no grant`);
+        continue;
+      }
+
       const items = rewardByCategory.get(result.category_id) ?? [];
 
       // The champion title is earned once, ever. Later wins only bump `wins`.

@@ -8,9 +8,16 @@ import {
   competition_vote_model,
 } from '../../models/competition.model';
 import { user_model } from '../../models/user.model';
-import { DEFAULT_CATEGORIES, isTestWeekKey, MINUTE, testWeekKey, TEST_CYCLE } from '../../config/competition.config';
+import {
+  DEFAULT_CATEGORIES,
+  isTestWeekKey,
+  MINUTE,
+  testWeekKey,
+  TEST_CYCLE,
+} from '../../config/competition.config';
 import { announceCompetition, createCompetition, scoreCompetition } from '../services/competition.service';
 import { notifyWinners, runCompetitionNotifications } from '../services/competitionNotifications.service';
+import { revokeItems } from '../services/inventory.service';
 
 /**
  * Dev-only competition controls.
@@ -152,7 +159,10 @@ devCompetitionRouter.post('/:id/seed-entries', async (ctx) => {
 
   const { count = 20, image_url } = (ctx.request.body ?? {}) as Record<string, any>;
 
-  // Reuse real users so avatars, customization and titles render like production.
+  // Reuse real users so avatars, customization and titles render like
+  // production. Everything created here is flagged `seeded` — these are real
+  // accounts, and scoring must never hand one of them a reward or a "you won"
+  // push for a drawing they did not submit.
   const users = await user_model
     .find({ _id: { $ne: ctx.state.user._id } })
     .select('_id')
@@ -184,6 +194,7 @@ devCompetitionRouter.post('/:id/seed-entries', async (ctx) => {
         thumbnail_url: sample?.thumbnail_url ?? img,
         aspect_ratio: sample?.aspect_ratio ?? 1,
         caption: `Seeded entry #${i + 1}`,
+        seeded: true,
         submitted_at: new Date(Date.now() - i * 1000),
       });
       created.push(entry._id.toString());
@@ -231,6 +242,7 @@ devCompetitionRouter.post('/:id/seed-votes', async (ctx) => {
         voter_id: voter._id,
         category_id: category.id,
         slot: 'entry',
+        seeded: true,
       });
       cast++;
     } catch {
@@ -296,6 +308,7 @@ devCompetitionRouter.post('/:id/force-win', async (ctx) => {
         voter_id: voter._id,
         category_id: category,
         slot: 'entry',
+        seeded: true,
       });
       cast++;
     } catch {
@@ -360,6 +373,24 @@ devCompetitionRouter.delete('/:id', async (ctx) => {
     return ctx.throw(400, `${comp.week_key} is a real week. Pass ?force=1 if you mean it.`);
   }
 
+  // Wind back whatever this test handed out BEFORE deleting it: `results[]` is
+  // the only record of what was granted, so a delete-first order would strand
+  // the items on real accounts with nothing left to trace them by.
+  const revoked: Record<string, string[]> = {};
+  if (isTestWeekKey(comp.week_key)) {
+    for (const result of comp.results) {
+      const items = result.granted_items ?? [];
+      if (items.length) {
+        await revokeItems(result.user_id, items, `deleted test competition ${comp.week_key}`);
+        revoked[result.user_id.toString()] = items;
+      }
+      await user_model.updateOne(
+        { _id: result.user_id, 'competition.wins': { $gt: 0 } },
+        { $inc: { 'competition.wins': -1 } }
+      );
+    }
+  }
+
   const [entries, votes] = await Promise.all([
     competition_entry_model.deleteMany({ competition_id: comp._id }),
     competition_vote_model.deleteMany({ competition_id: comp._id }),
@@ -371,6 +402,7 @@ devCompetitionRouter.delete('/:id', async (ctx) => {
     deleted: comp.week_key,
     entries: entries.deletedCount,
     votes: votes.deletedCount,
+    revoked,
   };
 });
 

@@ -151,6 +151,17 @@ export interface CompetitionEntryDocument extends Document {
   is_winner: boolean;
   won_category?: string;
 
+  /**
+   * Written by `/dev/competition/:id/seed-entries`.
+   *
+   * Seeded entries are attached to REAL user accounts so the grid renders with
+   * real avatars, worlds and titles. That makes them indistinguishable from a
+   * genuine entry everywhere except here — and a seeded entry must never win a
+   * real person a cosmetic, a champion title, a `wins` bump or a push saying
+   * they won something they never entered.
+   */
+  seeded?: boolean;
+
   status: 'active' | 'under_review' | 'removed' | 'withdrawn';
   reports_count: number;
   moderation: {
@@ -209,6 +220,9 @@ const entrySchema = new Schema<CompetitionEntryDocument>(
     // Denormalised at announce time so a winner badge costs no join per card.
     is_winner: { type: Boolean, default: false },
     won_category: { type: String },
+
+    // Dev-seeded entry on a real account. Never granted, never notified.
+    seeded: { type: Boolean },
 
     status: {
       type: String,
@@ -280,6 +294,8 @@ export interface CompetitionVoteDocument extends Document {
   voter_id: Types.ObjectId;
   category_id: string;
   slot?: string;
+  /** Cast by `/dev/competition/:id/seed-votes` or `/force-win`, on a real account. */
+  seeded?: boolean;
   createdAt: Date;
 }
 
@@ -290,6 +306,7 @@ const voteSchema = new Schema<CompetitionVoteDocument>(
     voter_id: { type: ObjectId, ref: 'users', required: true },
     category_id: { type: String, required: true },
     slot: { type: String },
+    seeded: { type: Boolean },
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
