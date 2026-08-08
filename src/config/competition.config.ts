@@ -92,6 +92,16 @@ export const COMPETITION_ACCENTS: Record<string, CompetitionAccent> = {
   forest: { from: '#7FC98B', to: '#D6EFA4', ink: '#1F4A2B', emoji: '🌿' },
   candy: { from: '#FF8FC1', to: '#FFC6E5', ink: '#7A1348', emoji: '🍬' },
   midnight: { from: '#6C7BFF', to: '#B79BFF', ink: '#221A5C', emoji: '🌙' },
+  lavender: { from: '#B9A7FF', to: '#E2D8FF', ink: '#3D286F', emoji: '💜' },
+  mint: { from: '#62D8B5', to: '#BDF1D2', ink: '#0C4C3A', emoji: '🍃' },
+  coral: { from: '#FF7F8D', to: '#FFC0AA', ink: '#6D1D2B', emoji: '🪸' },
+  citrus: { from: '#FFD15C', to: '#FFF0A6', ink: '#604400', emoji: '🍋' },
+  berry: { from: '#C768E8', to: '#F2A5D0', ink: '#4D185D', emoji: '🫐' },
+  aurora: { from: '#58D5C7', to: '#A79BFF', ink: '#183F53', emoji: '✨' },
+  lagoon: { from: '#35C7CB', to: '#91E3DD', ink: '#064A50', emoji: '🐚' },
+  rose: { from: '#F59AB2', to: '#FAD1DC', ink: '#67263C', emoji: '🌹' },
+  sky: { from: '#69B8FF', to: '#C1E5FF', ink: '#123F69', emoji: '☁️' },
+  peach: { from: '#FFAA83', to: '#FFE0BC', ink: '#69351E', emoji: '🍑' },
 };
 
 export const ACCENT_KEYS = Object.keys(COMPETITION_ACCENTS);

@@ -13,6 +13,7 @@ import { CATALOG, describeGrant } from '../../config/catalog.config';
 import {
   ACCENT_KEYS,
   CHAMPION_TITLE_ITEM,
+  COMPETITION_ACCENTS,
   CYCLE,
   DAY,
   DEFAULT_CATEGORIES,
@@ -100,6 +101,10 @@ adminCompetitionRouter.get('/', async (ctx) => {
     schedule_slots: scheduleSlots,
     next_week_key: weekKeyFor(nextWeekStart),
     accents: ACCENT_KEYS,
+    accent_options: Object.entries(COMPETITION_ACCENTS).map(([key, colors]) => ({
+      key,
+      ...colors,
+    })),
     default_categories: DEFAULT_CATEGORIES,
   };
 });

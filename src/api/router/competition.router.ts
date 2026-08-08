@@ -102,6 +102,7 @@ const shapeEntry = (
       ? Object.fromEntries(entry.vote_counts)
       : entry.vote_counts ?? {}
     : undefined,
+  total_votes: revealCounts ? entry.total_votes ?? 0 : undefined,
   my_votes: myVotes,
   submitted_at: new Date(entry.submitted_at).toISOString(),
   comment_count: entry.comment_count ?? 0,
@@ -229,7 +230,7 @@ competitionRouter.get('/current', requireAuth, async (ctx) => {
     competition_entry_model
       .findOne({ competition_id: comp._id, user_id: userId })
       .select(
-        '_id drawing_url image_url thumbnail_url aspect_ratio caption caption_filtered status is_winner won_category comment_count submitted_at'
+        '_id drawing_url image_url thumbnail_url aspect_ratio caption caption_filtered status is_winner won_category vote_counts total_votes comment_count submitted_at'
       )
       .lean(),
     normalizeVotesForVoter(comp._id, userId),
@@ -262,6 +263,13 @@ competitionRouter.get('/current', requireAuth, async (ctx) => {
           status: myEntry.status,
           is_winner: !!myEntry.is_winner,
           won_category: myEntry.won_category,
+          vote_counts:
+            comp.phase === 'announced'
+              ? myEntry.vote_counts instanceof Map
+                ? Object.fromEntries(myEntry.vote_counts)
+                : myEntry.vote_counts ?? {}
+              : undefined,
+          total_votes: comp.phase === 'announced' ? myEntry.total_votes ?? 0 : undefined,
         }
       : null,
     votes_left,
@@ -457,7 +465,14 @@ competitionRouter.get('/:id/entries', requireAuth, async (ctx) => {
   const limit = Math.min(parseInt(ctx.query.limit as string) || ENTRIES_PAGE_SIZE, 60);
   const cursor = parseInt(ctx.query.cursor as string) || 0;
 
-  const entries = await competition_entry_model.find({ competition_id: comp._id, status: 'active' }).lean();
+  const entries = await competition_entry_model
+    .find({ competition_id: comp._id, status: 'active' })
+    // The grid never needs moderation state, timestamps or report metadata.
+    // Project only the card/scoring fields before the in-memory fair shuffle.
+    .select(
+      '_id competition_id user_id drawing_url image_url thumbnail_url aspect_ratio caption caption_filtered post_id vote_counts total_votes impressions comment_count is_winner won_category submitted_at'
+    )
+    .lean();
 
   // Exposure-balanced shuffle (§2.7). Bucket first, so under-seen entries go to
   // the front of everyone's grid and a Friday submission catches up on
@@ -922,7 +937,13 @@ competitionRouter.get('/:id/results', requireAuth, async (ctx) => {
 competitionRouter.get('/archive', requireAuth, async (ctx) => {
   const limit = Math.min(parseInt(ctx.query.limit as string) || 10, 30);
 
-  const past = await competition_model.find({ phase: 'announced' }).sort({ announced_at: -1 }).limit(limit).lean();
+  // The archive is a calendar, so order it by the competition week rather
+  // than announcement time (a delayed announcement must not reshuffle weeks).
+  const past = await competition_model
+    .find({ phase: 'announced' })
+    .sort({ starts_at: -1, _id: -1 })
+    .limit(limit)
+    .lean();
 
   // Hydrate the podium inline: the archive strip is thumbnails and names, and
   // one round-trip per past week would be absurd for a decorative row.
@@ -1012,6 +1033,13 @@ competitionRouter.get('/user/:user_id/entries', requireAuth, async (ctx) => {
           theme: comp.theme,
           accent: comp.accent,
           pending: comp.phase !== 'announced',
+          vote_counts:
+            comp.phase === 'announced'
+              ? e.vote_counts instanceof Map
+                ? Object.fromEntries(e.vote_counts)
+                : e.vote_counts ?? {}
+              : undefined,
+          total_votes: comp.phase === 'announced' ? e.total_votes ?? 0 : undefined,
           // The owner controls their artwork even after results are announced.
           // Deleting an old entry removes it from the archive; only deleting an
           // open competition entry can naturally free this week's entry slot.

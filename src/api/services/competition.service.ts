@@ -10,6 +10,7 @@ import {
   MIN_IMPRESSIONS_TO_WIN,
   MIN_TOTAL_IMPRESSIONS_FOR_RATE,
   phaseFor,
+  isTestWeekKey,
   startOfIsoWeekUtc,
   weekKeyFor,
   wilsonLowerBound,
@@ -171,6 +172,27 @@ export async function getActiveCompetition(now: Date = new Date()): Promise<Comp
   const live = await competition_model
     .findOne({ starts_at: { $lte: now }, ends_at: { $gt: now } })
     .sort({ starts_at: -1 });
+
+  // A newly created compressed test always wins. In particular, it must not be
+  // masked by the result-grace window of the test that was run immediately
+  // before it.
+  if (live && isTestWeekKey(live.week_key)) return live;
+
+  // A compressed test overlaps the real weekly window. Once it announces, the
+  // real competition would otherwise immediately become "current" again and
+  // make the result moment look as if it vanished. Keep freshly announced test
+  // results in front briefly in development; production selection is unchanged.
+  if (process.env.NODE_ENV !== 'production') {
+    const recentTest = await competition_model
+      .findOne({
+        phase: 'announced',
+        week_key: /^test-/,
+        announced_at: { $gte: new Date(now.getTime() - 30 * 60_000), $lte: now },
+      })
+      .sort({ announced_at: -1 });
+    if (recentTest && isTestWeekKey(recentTest.week_key)) return recentTest;
+  }
+
   if (live) return live;
 
   return competition_model.findOne({ phase: 'announced' }).sort({ announced_at: -1 });

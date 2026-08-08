@@ -162,10 +162,17 @@ export const competitionLastCallPushNotification = (theme: string): FBNotificati
   data: { type: NotificationType.competition_last_call },
 });
 
-export const competitionResultsPushNotification = (theme: string, competitionId: string): FBNotification => ({
+export const competitionResultsPushNotification = (
+  theme: string,
+  competitionId: string,
+  voteCount?: number
+): FBNotification => ({
   notification: {
     title: 'The results are in',
-    body: `See who won "${theme}"`,
+    body:
+      voteCount === undefined
+        ? `See who won "${theme}"`
+        : `Your entry received ${voteCount} ${voteCount === 1 ? 'vote' : 'votes'}. See who won.`,
   },
   android: { priority: 'normal', notification: { priority: 'default', channelId: '1' } },
   data: { type: NotificationType.competition_results, competition_id: competitionId },
@@ -178,11 +185,14 @@ export const competitionResultsPushNotification = (theme: string, competitionId:
 export const competitionWinPushNotification = (
   categoryLabel: string,
   reward?: string,
-  competitionId?: string
+  competitionId?: string,
+  voteCount?: number
 ): FBNotification => ({
   notification: {
     title: `🏆 You won ${categoryLabel}!`,
-    body: reward ? `${reward} is yours.` : 'Come and see.',
+    body: `${voteCount === undefined ? '' : `${voteCount} ${voteCount === 1 ? 'vote' : 'votes'}. `}${
+      reward ? `${reward} is yours.` : 'Come and see.'
+    }`,
   },
   android: { priority: 'high', notification: { priority: 'max', channelId: '1' } },
   data: {

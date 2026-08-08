@@ -218,11 +218,14 @@ async function sendResultsSlot(comp: CompetitionDocument, now: Date): Promise<nu
   let sent = 0;
 
   for (const user of candidates) {
-    const [entered, voted] = await Promise.all([
-      competition_entry_model.exists({ competition_id: comp._id, user_id: user._id }),
+    const [entry, voted] = await Promise.all([
+      competition_entry_model
+        .findOne({ competition_id: comp._id, user_id: user._id, status: 'active' })
+        .select('total_votes')
+        .lean(),
       competition_vote_model.exists({ competition_id: comp._id, voter_id: user._id }),
     ]);
-    if (!entered && !voted) continue;
+    if (!entry && !voted) continue;
 
     // Winners already got the far better "you won" push at announce time.
     const isWinner = comp.results.some((r) => r.user_id.toString() === user._id.toString());
@@ -233,7 +236,9 @@ async function sendResultsSlot(comp: CompetitionDocument, now: Date): Promise<nu
     await dispatchNotification({
       recipient_id: user._id.toString(),
       type: 'competition',
-      channels: { push: competitionResultsPushNotification(comp.theme, comp._id.toString()) },
+      channels: {
+        push: competitionResultsPushNotification(comp.theme, comp._id.toString(), entry?.total_votes),
+      },
     });
     sent++;
   }
@@ -256,12 +261,14 @@ export async function notifyWinners(comp: CompetitionDocument): Promise<void> {
     try {
       const [user, entry] = await Promise.all([
         user_model.findById(result.user_id).select('competition subscriptions').lean(),
-        competition_entry_model.findById(result.entry_id).select('thumbnail_url').lean(),
+        competition_entry_model.findById(result.entry_id).select('thumbnail_url total_votes').lean(),
       ]);
       if (!user) continue;
 
       const category = comp.categories.find((c) => c.id === result.category_id);
       const categoryLabel = category?.label ?? 'the competition';
+      const voteCount = entry?.total_votes ?? result.votes;
+      const voteSummary = `${voteCount} ${voteCount === 1 ? 'vote' : 'votes'}`;
 
       const item = result.granted_items.find((id) => !id.startsWith('title.'));
       const reward = item
@@ -284,21 +291,26 @@ export async function notifyWinners(comp: CompetitionDocument): Promise<void> {
         target_type: 'system',
         target_preview: {
           thumbnail: entry?.thumbnail_url,
-          text: `You won ${categoryLabel} — ${comp.theme}`,
+          text: comp.theme,
         },
         payload: {
           title: `You won ${categoryLabel}`,
-          body: reward ? `${reward} is yours.` : `See your winning drawing in ${comp.theme}.`,
+          body: reward
+            ? `Your entry received ${voteSummary}. ${reward} is yours.`
+            : `Your entry received ${voteSummary}. See your winning drawing.`,
           competition_id: comp._id.toString(),
           week_key: comp.week_key,
           category_id: result.category_id,
           category_label: categoryLabel,
           granted_items: result.granted_items,
+          vote_count: voteCount,
         },
         channels: {
           in_app: inAppClaimed,
           socket: inAppClaimed,
-          push: pushClaimed ? competitionWinPushNotification(categoryLabel, reward, comp._id.toString()) : false,
+          push: pushClaimed
+            ? competitionWinPushNotification(categoryLabel, reward, comp._id.toString(), voteCount)
+            : false,
         },
       });
     } catch (error) {
@@ -322,21 +334,35 @@ async function notifyParticipantsInApp(comp: CompetitionDocument): Promise<void>
   const winners = new Set(comp.results.map((result) => result.user_id.toString()));
   const participants = new Map<string, Types.ObjectId>();
   for (const id of [...entrants, ...voters] as Types.ObjectId[]) participants.set(id.toString(), id);
+  const participantEntries = await competition_entry_model
+    .find({ competition_id: comp._id, user_id: { $in: entrants }, status: 'active' })
+    .select('user_id thumbnail_url total_votes')
+    .lean();
+  const entryByUser = new Map(participantEntries.map((entry) => [entry.user_id.toString(), entry]));
 
   for (const [id, userId] of participants) {
     if (winners.has(id)) continue;
     try {
       if (!(await claimSlot(userId, comp.week_key, 'results_in_app'))) continue;
+      const entry = entryByUser.get(id);
+      const voteCount = entry?.total_votes;
       await dispatchNotification({
         recipient_id: id,
         type: 'competition',
         target_type: 'system',
-        target_preview: { text: `Results are in — ${comp.theme}` },
+        target_preview: {
+          thumbnail: entry?.thumbnail_url,
+          text: voteCount === undefined ? `Results are in — ${comp.theme}` : comp.theme,
+        },
         payload: {
           title: 'Competition results',
-          body: `See the winners of ${comp.theme}.`,
+          body:
+            voteCount === undefined
+              ? `See the winners of ${comp.theme}.`
+              : `Your entry received ${voteCount} ${voteCount === 1 ? 'vote' : 'votes'}. See the winners.`,
           competition_id: comp._id.toString(),
           week_key: comp.week_key,
+          ...(voteCount === undefined ? {} : { vote_count: voteCount }),
         },
         channels: { in_app: true, socket: true },
       });

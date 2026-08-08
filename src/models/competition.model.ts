@@ -111,6 +111,7 @@ const competitionSchema = new Schema<CompetitionDocument>(
 competitionSchema.index({ phase: 1, ends_at: 1 });
 // Archive: announced weeks, newest first.
 competitionSchema.index({ phase: 1, announced_at: -1 });
+competitionSchema.index({ phase: 1, starts_at: -1 });
 
 export const competition_model = mongoose.model<CompetitionDocument>('competitions', competitionSchema);
 
