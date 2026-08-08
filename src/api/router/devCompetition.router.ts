@@ -44,13 +44,16 @@ const findComp = async (id: string) => {
 // Body: { theme?, accent?, minutes?, submissions_minutes?, categories? }
 // Defaults to the six-minute cycle: a whole week while you make coffee.
 devCompetitionRouter.post('/create', async (ctx) => {
-  const { theme, theme_blurb, accent, minutes, submissions_minutes, categories, reward_items } = (ctx.request.body ??
-    {}) as Record<string, any>;
+  const { theme, theme_blurb, accent, minutes, submissions_minutes, grace_minutes, categories, reward_items } =
+    (ctx.request.body ?? {}) as Record<string, any>;
 
   const duration_ms = minutes ? minutes * MINUTE : TEST_CYCLE.duration_ms;
   const submissions_close_ms = submissions_minutes
     ? submissions_minutes * MINUTE
     : Math.min(TEST_CYCLE.submissions_close_ms, duration_ms - MINUTE);
+  // The real cycle's six-hour results window would outlast the whole test, so
+  // scale it: long enough to look at the winners, short enough to iterate.
+  const results_grace_ms = grace_minutes ? grace_minutes * MINUTE : TEST_CYCLE.results_grace_ms;
 
   const cats = (categories as any[]) ?? DEFAULT_CATEGORIES.map((c) => ({ ...c }));
   const dummyRewards = ['theme.midnight', 'effect.shimmer-rainbow', 'world.space'];
@@ -66,6 +69,7 @@ devCompetitionRouter.post('/create', async (ctx) => {
     starts_at: new Date(),
     duration_ms,
     submissions_close_ms,
+    results_grace_ms,
     theme: theme ?? 'TEST — draw anything',
     theme_blurb,
     accent,

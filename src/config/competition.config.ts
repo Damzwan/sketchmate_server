@@ -43,13 +43,43 @@ export const CYCLE = {
   duration_ms: 6 * DAY + 18 * HOUR,
   /** Offset from starts_at at which submissions stop (votes continue): Friday. */
   submissions_close_ms: 4 * DAY,
+  /**
+   * How long after `ends_at` the finished competition stays the one the app
+   * shows. This is the results moment, and it is the whole point of the week —
+   * it must outrank whatever opens next.
+   *
+   * For the real cycle it is exactly the Sunday-18:00 → Monday-00:00 gap, so
+   * nothing changes in production. It is stored per competition because a
+   * compressed test cycle overlaps the live weekly one, and without an explicit
+   * hold the app snaps to the real competition the instant the test ends.
+   */
+  results_grace_ms: 6 * HOUR,
 };
 
 /** Shortened cycle used by the dev routes. A full week in six minutes. */
 export const TEST_CYCLE = {
   duration_ms: 6 * MINUTE,
   submissions_close_ms: 4 * MINUTE,
+  /** Long enough to actually look at the winners moment before iterating. */
+  results_grace_ms: 3 * MINUTE,
 };
+
+/**
+ * Never pin the app to something that finished ages ago. Bounds the "ended but
+ * not announced yet" hold so a competition the scorer somehow never reached
+ * cannot hide every future week forever.
+ */
+export const RESULTS_LOOKBACK_MS = 2 * DAY;
+
+/**
+ * How long a competition that has ended but is not yet `announced` stays in
+ * front while it waits to be scored.
+ *
+ * Two hourly ticks. Past that, scoring is not late — it is failing — and
+ * holding the app on a week that will never produce a podium is worse than
+ * moving on to the one that is actually running.
+ */
+export const SCORING_HOLD_MS = 2 * HOUR;
 
 export const DEFAULT_CATEGORIES: CompetitionCategory[] = [
   {

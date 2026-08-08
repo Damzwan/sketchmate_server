@@ -126,3 +126,21 @@ cron.schedule('0 */1 * * *', async () => {
     );
   }
 });
+
+/**
+ * Per-minute advance for compressed test cycles.
+ *
+ * A six-minute test week transitions four times inside a single gap between
+ * hourly ticks, so without this the only way to reach `announced` is to press
+ * "Announce now" by hand — which skips exactly the cron path the test exists to
+ * exercise. Same gate as the dev routes; `advancePhases` is idempotent, so the
+ * extra ticks cost one indexed query when no test is running.
+ */
+const devCompetitionTick = process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_COMPETITION === '1';
+if (devCompetitionTick) {
+  cron.schedule('* * * * *', async () => {
+    if (!isCompetitionEnabled()) return;
+    await advancePhases().catch((e) => console.error('[competition] dev advance failed:', e));
+    await runCompetitionNotifications().catch((e) => console.error('[competition] dev notifications failed:', e));
+  });
+}

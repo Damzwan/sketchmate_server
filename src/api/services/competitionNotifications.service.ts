@@ -35,7 +35,14 @@ import { phaseFor } from '../../config/competition.config';
  * at-most-once ledger; without it a clock change or a double tick resends.
  */
 
-export type NotificationSlot = 'theme' | 'last_call' | 'results' | 'win' | 'results_in_app' | 'win_in_app';
+export type NotificationSlot =
+  | 'theme'
+  | 'last_call'
+  | 'results'
+  | 'win'
+  | 'results_in_app'
+  | 'win_in_app'
+  | 'submissions_closed_in_app';
 
 const PUSH_SLOTS: NotificationSlot[] = ['theme', 'last_call', 'results', 'win'];
 
@@ -294,6 +301,7 @@ export async function notifyWinners(comp: CompetitionDocument): Promise<void> {
           text: comp.theme,
         },
         payload: {
+          kind: 'win',
           title: `You won ${categoryLabel}`,
           body: reward
             ? `Your entry received ${voteSummary}. ${reward} is yours.`
@@ -317,6 +325,61 @@ export async function notifyWinners(comp: CompetitionDocument): Promise<void> {
       // One failed notification must not stop the others, and must never fail
       // the announcement that already granted the rewards.
       console.error(`[competition] winner notify failed for ${result.user_id}:`, error);
+    }
+  }
+}
+
+// ─── SUBMISSIONS CLOSED ──────────────────────────────────────────────────────
+
+/**
+ * "Your entry is in the running" — the moment the drawing stops being editable
+ * and starts being judged.
+ *
+ * In-app only, and deliberately outside `PUSH_SLOTS`: this is a state change
+ * the entrant cares about but nobody should be interrupted for, and it must not
+ * eat one of the three weekly push allowances. Everyone who entered gets it —
+ * no engagement suppression, because entering IS the engagement.
+ */
+async function notifySubmissionsClosedInApp(comp: CompetitionDocument): Promise<void> {
+  // The entrant set is frozen the moment submissions close, so one pass is the
+  // whole job. Claim the competition first: without this the driver would walk
+  // every entrant on every tick for the rest of the voting window, only to have
+  // the per-user ledger reject each one.
+  const claimed = await competition_model.updateOne(
+    { _id: comp._id, submissions_closed_notified_at: { $exists: false } },
+    { $set: { submissions_closed_notified_at: new Date() } }
+  );
+  if (!claimed.modifiedCount) return;
+
+  const entries = await competition_entry_model
+    .find({ competition_id: comp._id, status: 'active' })
+    .select('user_id thumbnail_url')
+    .lean();
+
+  for (const entry of entries) {
+    try {
+      if (!(await claimSlot(entry.user_id, comp.week_key, 'submissions_closed_in_app'))) continue;
+
+      await dispatchNotification({
+        recipient_id: entry.user_id.toString(),
+        type: 'competition',
+        target_type: 'system',
+        target_preview: {
+          thumbnail: entry.thumbnail_url,
+          text: comp.theme,
+        },
+        payload: {
+          kind: 'submissions_closed',
+          title: 'Submissions are closed',
+          body: 'Your entry is now up for votes. Results are on the way.',
+          competition_id: comp._id.toString(),
+          week_key: comp.week_key,
+          ends_at: comp.ends_at.toISOString(),
+        },
+        channels: { in_app: true, socket: true },
+      });
+    } catch (error) {
+      console.error(`[competition] submissions-closed notify failed for ${entry.user_id}:`, error);
     }
   }
 }
@@ -355,6 +418,7 @@ async function notifyParticipantsInApp(comp: CompetitionDocument): Promise<void>
           text: voteCount === undefined ? `Results are in — ${comp.theme}` : comp.theme,
         },
         payload: {
+          kind: 'results',
           title: 'Competition results',
           body:
             voteCount === undefined
@@ -416,7 +480,17 @@ export async function runCompetitionNotifications(now: Date = new Date()): Promi
     const live = await competition_model
       .findOne({ starts_at: { $lte: now }, ends_at: { $gt: now } })
       .sort({ starts_at: -1 });
-    if (!live || phaseFor(live, now) !== 'open') return;
+    if (!live) return;
+
+    // Submissions have stopped but voting has not. Entrants get one bell row
+    // telling them their drawing is now being judged. Ledger-claimed, so the
+    // hourly re-entry into this branch sends nothing on later ticks.
+    if (phaseFor(live, now) === 'voting') {
+      await notifySubmissionsClosedInApp(live);
+      return;
+    }
+
+    if (phaseFor(live, now) !== 'open') return;
 
     const themeSent = await sendThemeSlot(live, now);
     if (themeSent) console.log(`[competition] theme push → ${themeSent} users`);

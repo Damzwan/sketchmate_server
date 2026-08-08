@@ -11,6 +11,8 @@ import {
   MIN_TOTAL_IMPRESSIONS_FOR_RATE,
   phaseFor,
   isTestWeekKey,
+  RESULTS_LOOKBACK_MS,
+  SCORING_HOLD_MS,
   startOfIsoWeekUtc,
   weekKeyFor,
   wilsonLowerBound,
@@ -48,6 +50,7 @@ interface CreateOptions {
   starts_at?: Date;
   duration_ms?: number;
   submissions_close_ms?: number;
+  results_grace_ms?: number;
   theme?: string;
   theme_blurb?: string;
   accent?: string;
@@ -133,6 +136,7 @@ export async function createCompetition(options: CreateOptions = {}): Promise<Co
     starts_at,
     submissions_close_at: new Date(starts_at.getTime() + closeAfter),
     ends_at: new Date(starts_at.getTime() + duration),
+    results_grace_ms: options.results_grace_ms ?? CYCLE.results_grace_ms,
     categories: options.categories ?? DEFAULT_CATEGORIES,
     phase: 'scheduled' as const,
   };
@@ -164,38 +168,60 @@ export async function ensureCurrentCompetition(now: Date = new Date()): Promise<
 }
 
 /**
- * The competition to show right now: the one whose window contains `now`,
- * else the most recently announced one (so the results stay reachable until
- * the next week opens).
+ * The competition to show right now.
+ *
+ * Priority, and the order matters:
+ *
+ *   1. A live compressed test — a dev who just started one always sees it, even
+ *      if the previous test is still inside its results hold.
+ *   2. The competition that most recently ENDED, while it is still owed a
+ *      results moment: either it has not been scored/announced yet, or it was
+ *      announced less than `results_grace_ms` ago.
+ *   3. Whatever is live.
+ *   4. Failing all that, the last thing ever announced.
+ *
+ * Step 2 is the one that stops "voting closed" from instantly becoming "next
+ * competition". In the real cycle the gap between Sunday 18:00 and Monday 00:00
+ * makes it invisible, but two windows do overlap in practice: the hour or so
+ * between `ends_at` and the cron that announces, and every compressed test,
+ * which runs on top of the live weekly competition by construction.
  */
 export async function getActiveCompetition(now: Date = new Date()): Promise<CompetitionDocument | null> {
   const live = await competition_model
     .findOne({ starts_at: { $lte: now }, ends_at: { $gt: now } })
     .sort({ starts_at: -1 });
 
-  // A newly created compressed test always wins. In particular, it must not be
-  // masked by the result-grace window of the test that was run immediately
-  // before it.
   if (live && isTestWeekKey(live.week_key)) return live;
 
-  // A compressed test overlaps the real weekly window. Once it announces, the
-  // real competition would otherwise immediately become "current" again and
-  // make the result moment look as if it vanished. Keep freshly announced test
-  // results in front briefly in development; production selection is unchanged.
-  if (process.env.NODE_ENV !== 'production') {
-    const recentTest = await competition_model
-      .findOne({
-        phase: 'announced',
-        week_key: /^test-/,
-        announced_at: { $gte: new Date(now.getTime() - 30 * 60_000), $lte: now },
-      })
-      .sort({ announced_at: -1 });
-    if (recentTest && isTestWeekKey(recentTest.week_key)) return recentTest;
-  }
+  const justEnded = await competition_model
+    .findOne({ ends_at: { $lte: now, $gte: new Date(now.getTime() - RESULTS_LOOKBACK_MS) } })
+    .sort({ ends_at: -1 });
+
+  if (justEnded && holdsResults(justEnded, now)) return justEnded;
 
   if (live) return live;
 
   return competition_model.findOne({ phase: 'announced' }).sort({ announced_at: -1 });
+}
+
+/**
+ * Is this finished competition still the app's current content?
+ *
+ * Yes while it is being counted (nothing has been shown yet, and jumping to the
+ * next theme here would silently eat the results), and yes for `results_grace_ms`
+ * after the announcement, which is the moment itself.
+ */
+function holdsResults(comp: CompetitionDocument, now: Date): boolean {
+  // Still counting. Bounded: after a couple of cron ticks scoring is not late,
+  // it is broken, and pinning the app to a week that will never produce a
+  // podium is worse than showing the one that is actually running.
+  if (comp.phase !== 'announced') {
+    return now.getTime() < comp.ends_at.getTime() + SCORING_HOLD_MS;
+  }
+
+  const grace = comp.results_grace_ms ?? CYCLE.results_grace_ms;
+  const announcedAt = comp.announced_at?.getTime() ?? comp.ends_at.getTime();
+  return now.getTime() < announcedAt + grace;
 }
 
 // ─── PHASE ADVANCE ───────────────────────────────────────────────────────────

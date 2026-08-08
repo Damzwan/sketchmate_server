@@ -42,6 +42,14 @@ export interface CompetitionDocument extends Document {
   results: CompetitionResult[];
   announced_at?: Date;
   results_notified_at?: Date;
+  /** Set once the entrants have been told submissions closed — see §8. */
+  submissions_closed_notified_at?: Date;
+  /**
+   * How long after `ends_at` this competition stays the one the app shows.
+   * Snapshotted per cycle so a six-minute test gets a proportional results
+   * window instead of the real cycle's six hours.
+   */
+  results_grace_ms?: number;
   /** Set when a cycle ended with too few entries to crown anyone. */
   skipped_reason?: string;
 
@@ -102,6 +110,8 @@ const competitionSchema = new Schema<CompetitionDocument>(
     results: { type: [resultSchema], default: [] },
     announced_at: { type: Date },
     results_notified_at: { type: Date },
+    submissions_closed_notified_at: { type: Date },
+    results_grace_ms: { type: Number },
     skipped_reason: { type: String },
   },
   { timestamps: true }
@@ -109,6 +119,8 @@ const competitionSchema = new Schema<CompetitionDocument>(
 
 // The advancer's read: "anything that isn't finished yet".
 competitionSchema.index({ phase: 1, ends_at: 1 });
+// "What just finished?" — the results-hold lookup in getActiveCompetition().
+competitionSchema.index({ ends_at: -1 });
 // Archive: announced weeks, newest first.
 competitionSchema.index({ phase: 1, announced_at: -1 });
 competitionSchema.index({ phase: 1, starts_at: -1 });
@@ -393,7 +405,14 @@ export const competition_theme_vote_model = mongoose.model<CompetitionThemeVoteD
 export interface CompetitionNotificationDocument extends Document {
   user_id: Types.ObjectId;
   week_key: string;
-  slot: 'theme' | 'last_call' | 'results' | 'win' | 'results_in_app' | 'win_in_app';
+  slot:
+    | 'theme'
+    | 'last_call'
+    | 'results'
+    | 'win'
+    | 'results_in_app'
+    | 'win_in_app'
+    | 'submissions_closed_in_app';
   createdAt: Date;
 }
 
@@ -403,7 +422,15 @@ const notificationLedgerSchema = new Schema<CompetitionNotificationDocument>(
     week_key: { type: String, required: true },
     slot: {
       type: String,
-      enum: ['theme', 'last_call', 'results', 'win', 'results_in_app', 'win_in_app'],
+      enum: [
+        'theme',
+        'last_call',
+        'results',
+        'win',
+        'results_in_app',
+        'win_in_app',
+        'submissions_closed_in_app',
+      ],
       required: true,
     },
   },

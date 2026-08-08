@@ -36,6 +36,7 @@ import {
 } from '../../config/competition.config';
 import { getActiveCompetition } from '../services/competition.service';
 import { censorText } from '../services/profanity.service';
+import { dispatchNotification } from '../services/notification.service';
 import { COMPLETE_PUBLIC_USER_FIELDS, PUBLIC_USER_FIELDS } from '../../types/projections';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
 
@@ -571,6 +572,45 @@ const shapeComment = (comment: any, author: any) => ({
   },
 });
 
+/**
+ * One entry, standalone.
+ *
+ * Exists for deep links that arrive without the grid — tapping "someone
+ * commented on your entry" in the bell has to be able to open that drawing even
+ * when the competition page has never been visited this session.
+ */
+competitionRouter.get('/entry/:entry_id', requireAuth, async (ctx) => {
+  const { entry_id } = ctx.params;
+  if (!Types.ObjectId.isValid(entry_id)) return ctx.throw(400, 'Valid entry_id required');
+
+  const entry = await competition_entry_model
+    .findOne({ _id: new Types.ObjectId(entry_id), status: 'active' })
+    .select(
+      '_id competition_id user_id drawing_url image_url thumbnail_url aspect_ratio caption caption_filtered post_id vote_counts total_votes comment_count is_winner won_category submitted_at'
+    )
+    .lean();
+  if (!entry) return ctx.throw(404, 'Entry not available');
+
+  const viewerId = new Types.ObjectId(ctx.state.user._id);
+  const [comp, authors, myVotes] = await Promise.all([
+    competition_model.findById(entry.competition_id).select('phase').lean(),
+    hydrateAuthors([entry.user_id]),
+    competition_vote_model
+      .find({ entry_id: entry._id, voter_id: viewerId })
+      .select('category_id')
+      .lean(),
+  ]);
+
+  ctx.body = {
+    entry: shapeEntry(
+      entry as any,
+      authors.get(entry.user_id.toString()) ?? null,
+      myVotes.map((vote) => vote.category_id),
+      comp?.phase === 'announced'
+    ),
+  };
+});
+
 competitionRouter.get('/entry/:entry_id/comments', requireAuth, async (ctx) => {
   const { entry_id } = ctx.params;
   if (!Types.ObjectId.isValid(entry_id)) return ctx.throw(400, 'Valid entry_id required');
@@ -616,7 +656,7 @@ competitionRouter.post(
 
     const entry = await competition_entry_model
       .findOne({ _id: new Types.ObjectId(entry_id), status: 'active' })
-      .select('_id')
+      .select('_id competition_id user_id thumbnail_url')
       .lean();
     if (!entry) return ctx.throw(404, 'Entry not available');
 
@@ -629,6 +669,35 @@ competitionRouter.post(
     });
 
     await competition_entry_model.updateOne({ _id: entry._id }, { $inc: { comment_count: 1 } });
+
+    // Same contract as a comment on a feed post: the artist hears about it in
+    // the bell, merged per entry so a busy thread is one row rather than ten.
+    // No push — a competition entry is already noisier than a post, and §8 caps
+    // this feature at three interruptions a week.
+    if (entry.user_id.toString() !== ctx.state.user._id.toString()) {
+      dispatchNotification({
+        recipient_id: entry.user_id.toString(),
+        type: 'competition',
+        aggregation_mode: 'merge_count',
+        aggregation_key: `competition_comment:${entry._id.toString()}`,
+        actor: {
+          _id: ctx.state.user._id.toString(),
+          name: ctx.state.user.name,
+          img: ctx.state.user.img,
+        },
+        target_type: 'system',
+        target_preview: {
+          thumbnail: entry.thumbnail_url,
+          text: cleanMessage.slice(0, 100),
+        },
+        payload: {
+          kind: 'entry_comment',
+          competition_id: entry.competition_id.toString(),
+          entry_id: entry._id.toString(),
+        },
+        channels: { in_app: true, socket: true },
+      }).catch((error) => console.error('[competition] comment notify failed:', error));
+    }
 
     ctx.status = 201;
     ctx.body = {
