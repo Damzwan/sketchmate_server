@@ -25,6 +25,7 @@ import { getPostQuota } from '../services/quota.service';
 import {
   canSubmit,
   canVote,
+  competitionLaunchAt,
   ENTRIES_PAGE_SIZE,
   EXPOSURE_BUCKET,
   isCompetitionEnabled,
@@ -1005,11 +1006,17 @@ competitionRouter.get('/:id/results', requireAuth, async (ctx) => {
 
 competitionRouter.get('/archive', requireAuth, async (ctx) => {
   const limit = Math.min(parseInt(ctx.query.limit as string) || 10, 30);
+  const launchAt = competitionLaunchAt();
 
   // The archive is a calendar, so order it by the competition week rather
   // than announcement time (a delayed announcement must not reshuffle weeks).
   const past = await competition_model
-    .find({ phase: 'announced' })
+    .find({
+      phase: 'announced',
+      ...(launchAt
+        ? { $or: [{ week_key: /^test-/ }, { starts_at: { $gte: launchAt } }] }
+        : {}),
+    })
     .sort({ starts_at: -1, _id: -1 })
     .limit(limit)
     .lean();

@@ -17,6 +17,7 @@ import {
   CYCLE,
   DAY,
   DEFAULT_CATEGORIES,
+  competitionLaunchAt,
   phaseFor,
   startOfIsoWeekUtc,
   weekKeyFor,
@@ -100,6 +101,7 @@ adminCompetitionRouter.get('/', async (ctx) => {
     })),
     schedule_slots: scheduleSlots,
     next_week_key: weekKeyFor(nextWeekStart),
+    launch_at: competitionLaunchAt()?.toISOString() ?? null,
     accents: ACCENT_KEYS,
     accent_options: Object.entries(COMPETITION_ACCENTS).map(([key, colors]) => ({
       key,

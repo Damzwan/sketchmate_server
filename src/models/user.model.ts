@@ -146,6 +146,10 @@ const user_schema = new Schema<UserDocument>({
   last_name_change: { type: Date, default: null },
   subscription_tier: { type: String, default: 'free' },
   feed_level: { type: String, enum: ['off', 'mates', 'open'], default: 'open' },
+  artist_highlights: {
+    enabled: { type: Boolean, default: true },
+    snoozed_until: { type: Date, default: null }
+  },
   // Display preference, not enforcement: when on, the client renders the
   // censored twin the server stored next to each message. Defaults ON — a lot
   // of this audience is young, and the safe state is the one you have to opt

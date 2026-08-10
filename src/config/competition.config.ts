@@ -117,18 +117,18 @@ export interface CompetitionAccent {
 }
 
 export const COMPETITION_ACCENTS: Record<string, CompetitionAccent> = {
-  sunset: { from: '#FF9A6C', to: '#FFD36E', ink: '#7A3412', emoji: '🌅' },
+  sunset: { from: '#FF9A6C', to: '#FFD36E', ink: '#5F290E', emoji: '🌅' },
   ocean: { from: '#5EC8F2', to: '#9BE7D2', ink: '#0B4A63', emoji: '🌊' },
   forest: { from: '#7FC98B', to: '#D6EFA4', ink: '#1F4A2B', emoji: '🌿' },
-  candy: { from: '#FF8FC1', to: '#FFC6E5', ink: '#7A1348', emoji: '🍬' },
-  midnight: { from: '#6C7BFF', to: '#B79BFF', ink: '#221A5C', emoji: '🌙' },
+  candy: { from: '#FF8FC1', to: '#FFC6E5', ink: '#6B113F', emoji: '🍬' },
+  midnight: { from: '#6C7BFF', to: '#B79BFF', ink: '#0C091F', emoji: '🌙' },
   lavender: { from: '#B9A7FF', to: '#E2D8FF', ink: '#3D286F', emoji: '💜' },
   mint: { from: '#62D8B5', to: '#BDF1D2', ink: '#0C4C3A', emoji: '🍃' },
-  coral: { from: '#FF7F8D', to: '#FFC0AA', ink: '#6D1D2B', emoji: '🪸' },
+  coral: { from: '#FF7F8D', to: '#FFC0AA', ink: '#571722', emoji: '🪸' },
   citrus: { from: '#FFD15C', to: '#FFF0A6', ink: '#604400', emoji: '🍋' },
-  berry: { from: '#C768E8', to: '#F2A5D0', ink: '#4D185D', emoji: '🫐' },
-  aurora: { from: '#58D5C7', to: '#A79BFF', ink: '#183F53', emoji: '✨' },
-  lagoon: { from: '#35C7CB', to: '#91E3DD', ink: '#064A50', emoji: '🐚' },
+  berry: { from: '#C768E8', to: '#F2A5D0', ink: '#280C30', emoji: '🫐' },
+  aurora: { from: '#58D5C7', to: '#A79BFF', ink: '#133242', emoji: '✨' },
+  lagoon: { from: '#35C7CB', to: '#91E3DD', ink: '#054146', emoji: '🐚' },
   rose: { from: '#F59AB2', to: '#FAD1DC', ink: '#67263C', emoji: '🌹' },
   sky: { from: '#69B8FF', to: '#C1E5FF', ink: '#123F69', emoji: '☁️' },
   peach: { from: '#FFAA83', to: '#FFE0BC', ink: '#69351E', emoji: '🍑' },
@@ -238,6 +238,13 @@ export const ENTRIES_PAGE_SIZE = 24;
 /** Kill switch — flip off and /current returns null, the home card renders nothing. */
 export const isCompetitionEnabled = (): boolean => process.env.COMPETITION_ENABLED !== '0';
 
+/**
+ * Operational recovery window after Monday 00:00 UTC. Once it has passed, a
+ * missing real competition is scheduled for next Monday instead of backdated
+ * into a shortened week.
+ */
+export const AUTO_START_GRACE_MS = 6 * HOUR;
+
 // ─── WEEK KEYS ───────────────────────────────────────────────────────────────
 
 /** Monday 00:00 UTC of the ISO week containing `date`. */
@@ -248,6 +255,40 @@ export function startOfIsoWeekUtc(date: Date = new Date()): Date {
   const shift = (d.getUTCDay() + 6) % 7;
   d.setUTCDate(d.getUTCDate() - shift);
   return d;
+}
+
+/** Monday 00:00 UTC immediately following the ISO week containing `date`. */
+export function startOfNextIsoWeekUtc(date: Date = new Date()): Date {
+  return new Date(startOfIsoWeekUtc(date).getTime() + WEEK);
+}
+
+/**
+ * Optional one-time public launch boundary.
+ *
+ * Set `COMPETITION_LAUNCH_AT` to an ISO timestamp. Non-Monday values are
+ * intentionally rounded forward to the next Monday 00:00 UTC, making a Friday
+ * deploy safe by construction. Test competitions are not gated by this value.
+ */
+export function competitionLaunchAt(): Date | null {
+  const raw = process.env.COMPETITION_LAUNCH_AT;
+  if (!raw) return null;
+  const requested = new Date(raw);
+  if (Number.isNaN(requested.getTime())) return null;
+
+  const containingMonday = startOfIsoWeekUtc(requested);
+  return requested.getTime() === containingMonday.getTime()
+    ? requested
+    : startOfNextIsoWeekUtc(requested);
+}
+
+/** The first fair real-cycle slot the unattended creator may use. */
+export function automaticCompetitionStart(now: Date = new Date()): Date {
+  const launchAt = competitionLaunchAt();
+  if (launchAt && now.getTime() < launchAt.getTime()) return launchAt;
+
+  const currentWeekStart = startOfIsoWeekUtc(now);
+  const elapsed = now.getTime() - currentWeekStart.getTime();
+  return elapsed <= AUTO_START_GRACE_MS ? currentWeekStart : startOfNextIsoWeekUtc(now);
 }
 
 /** ISO-8601 week key, e.g. "2026-W33". Unique per real week; the idempotency key. */

@@ -13,6 +13,8 @@ import {
   isTestWeekKey,
   RESULTS_LOOKBACK_MS,
   SCORING_HOLD_MS,
+  automaticCompetitionStart,
+  competitionLaunchAt,
   startOfIsoWeekUtc,
   weekKeyFor,
   wilsonLowerBound,
@@ -159,12 +161,31 @@ export async function createCompetition(options: CreateOptions = {}): Promise<Co
   }
 }
 
-/** Guarantee a competition exists for the current real week. */
+/**
+ * Guarantee a fair real competition exists.
+ *
+ * A competition may only be auto-created in the current week during the short
+ * Monday recovery window. Later than that, create (or reuse) next Monday's
+ * scheduled competition so enabling the feature midweek never launches a
+ * shortened cycle. Admin-scheduled weeks win through the unique `week_key`.
+ */
 export async function ensureCurrentCompetition(now: Date = new Date()): Promise<CompetitionDocument> {
-  const key = weekKeyFor(now);
+  const launchAt = competitionLaunchAt();
+  if (launchAt && now.getTime() < launchAt.getTime()) {
+    const launchKey = weekKeyFor(launchAt);
+    const launch = await competition_model.findOne({ week_key: launchKey });
+    if (launch) return launch;
+    return createCompetition({ week_key: launchKey, starts_at: launchAt });
+  }
+
+  const current = await competition_model.findOne({ week_key: weekKeyFor(now) });
+  if (current) return current;
+
+  const startsAt = automaticCompetitionStart(now);
+  const key = weekKeyFor(startsAt);
   const existing = await competition_model.findOne({ week_key: key });
   if (existing) return existing;
-  return createCompetition({ week_key: key, starts_at: startOfIsoWeekUtc(now) });
+  return createCompetition({ week_key: key, starts_at: startsAt });
 }
 
 /**
@@ -178,7 +199,8 @@ export async function ensureCurrentCompetition(now: Date = new Date()): Promise<
  *      results moment: either it has not been scored/announced yet, or it was
  *      announced less than `results_grace_ms` ago.
  *   3. Whatever is live.
- *   4. Failing all that, the last thing ever announced.
+ *   4. The nearest scheduled competition, so launch has a countdown.
+ *   5. Failing all that, the last thing ever announced.
  *
  * Step 2 is the one that stops "voting closed" from instantly becoming "next
  * competition". In the real cycle the gap between Sunday 18:00 and Monday 00:00
@@ -197,9 +219,22 @@ export async function getActiveCompetition(now: Date = new Date()): Promise<Comp
     .findOne({ ends_at: { $lte: now, $gte: new Date(now.getTime() - RESULTS_LOOKBACK_MS) } })
     .sort({ ends_at: -1 });
 
+  // Compressed tests deliberately bypass a future public launch boundary.
+  if (justEnded && isTestWeekKey(justEnded.week_key) && holdsResults(justEnded, now)) return justEnded;
+
+  const launchAt = competitionLaunchAt();
+  if (launchAt && now.getTime() < launchAt.getTime()) {
+    return competition_model.findOne({ starts_at: { $gte: launchAt } }).sort({ starts_at: 1 });
+  }
+
   if (justEnded && holdsResults(justEnded, now)) return justEnded;
 
   if (live) return live;
+
+  // Launch/relaunch: show the upcoming theme rather than pinning the app to a
+  // historical result after its explicit results hold has expired.
+  const upcoming = await competition_model.findOne({ starts_at: { $gt: now } }).sort({ starts_at: 1 });
+  if (upcoming) return upcoming;
 
   return competition_model.findOne({ phase: 'announced' }).sort({ announced_at: -1 });
 }
@@ -234,8 +269,12 @@ function holdsResults(comp: CompetitionDocument, now: Date): boolean {
  * weekend catches up here.
  */
 export async function advancePhases(now: Date = new Date()): Promise<void> {
+  const launchAt = competitionLaunchAt();
   const pending = await competition_model.find({
     phase: { $in: ['scheduled', 'open', 'voting', 'closed'] },
+    ...(launchAt
+      ? { $or: [{ week_key: /^test-/ }, { starts_at: { $gte: launchAt } }] }
+      : {}),
   });
 
   for (const comp of pending) {

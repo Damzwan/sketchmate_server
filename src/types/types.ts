@@ -241,6 +241,11 @@ export interface User {
   img: string;
   subscription_tier?: string;
   feed_level?: 'off' | 'mates' | 'open';
+  artist_highlights?: {
+    /** Missing/undefined is treated as enabled for accounts created before this preference. */
+    enabled?: boolean;
+    snoozed_until?: string | Date | null;
+  };
   /** Render the censored twin of user text. Defaults on. */
   profanity_filter?: boolean;
   stats: UserStats;

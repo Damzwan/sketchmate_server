@@ -15,7 +15,7 @@ import {
   competitionWinPushNotification,
 } from '../../config/notification.config';
 import { dispatchNotification } from './notification.service';
-import { isTestWeekKey, phaseFor } from '../../config/competition.config';
+import { competitionLaunchAt, isTestWeekKey, phaseFor } from '../../config/competition.config';
 
 /**
  * Weekly competition notifications.
@@ -456,6 +456,11 @@ async function notifyParticipantsInApp(comp: CompetitionDocument): Promise<void>
 
 /** Idempotent across announce retries and hourly recovery runs. */
 export async function notifyCompetitionResults(comp: CompetitionDocument): Promise<void> {
+  const launchAt = competitionLaunchAt();
+  if (!isTestWeekKey(comp.week_key) && launchAt && comp.starts_at.getTime() < launchAt.getTime()) {
+    return;
+  }
+
   await Promise.all([notifyWinners(comp), notifyParticipantsInApp(comp)]);
   await competition_model.updateOne(
     { _id: comp._id, results_notified_at: { $exists: false } },
@@ -472,11 +477,16 @@ export async function notifyCompetitionResults(comp: CompetitionDocument): Promi
  */
 export async function runCompetitionNotifications(now: Date = new Date()): Promise<void> {
   try {
+    const launchAt = competitionLaunchAt();
+    const launchFilter = launchAt
+      ? { $or: [{ week_key: /^test-/ }, { starts_at: { $gte: launchAt } }] }
+      : {};
     const recentCutoff = new Date(now.getTime() - 48 * HOUR_MS);
     // Recover an announcement whose process stopped after saving results but
     // before dispatching. Per-user ledger claims keep this retry duplicate-free.
     const missingInApp = await competition_model
       .findOne({
+        ...launchFilter,
         phase: 'announced',
         announced_at: { $gte: recentCutoff },
         results_notified_at: { $exists: false },
@@ -488,7 +498,7 @@ export async function runCompetitionNotifications(now: Date = new Date()): Promi
     // essential for Asia/Oceania, where Sunday 18:00 UTC is already Monday and
     // their preferred local-evening delivery occurs after the rollover.
     const announced = await competition_model
-      .findOne({ phase: 'announced', announced_at: { $gte: recentCutoff, $lte: now } })
+      .findOne({ ...launchFilter, phase: 'announced', announced_at: { $gte: recentCutoff, $lte: now } })
       .sort({ announced_at: -1 });
     if (announced) {
       const sent = await sendResultsSlot(announced, now);
@@ -496,7 +506,7 @@ export async function runCompetitionNotifications(now: Date = new Date()): Promi
     }
 
     const live = await competition_model
-      .findOne({ starts_at: { $lte: now }, ends_at: { $gt: now } })
+      .findOne({ ...launchFilter, starts_at: { $lte: now }, ends_at: { $gt: now } })
       .sort({ starts_at: -1 });
     if (!live) return;
 
