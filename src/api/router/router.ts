@@ -70,6 +70,7 @@ import devCompetitionRouter from './devCompetition.router';
 import { savedRouter } from './saved-drawing.router';
 import artistHighlightRouter from './artist-highlight.router';
 import adminArtistHighlightRouter from './admin.artist-highlight.router';
+import adminSessionRouter from './admin.session.router';
 
 export const router = new Router();
 
@@ -91,7 +92,9 @@ router.use('/v2/competition', competitionRouter.routes(), competitionRouter.allo
 router.use('/dev/moderation', devModerationRouter.routes(), devModerationRouter.allowedMethods());
 router.use('/dev/competition', devCompetitionRouter.routes(), devCompetitionRouter.allowedMethods());
 router.use('/webhooks', revenuecatWebhookRouter.routes());
-router.use('/admin/inventory', adminInventoryRouter.routes());
+router.use('/admin/inventory', adminInventoryRouter.routes(), adminInventoryRouter.allowedMethods());
+router.use('/admin/session', adminSessionRouter.routes(), adminSessionRouter.allowedMethods());
+router.use('/admin/moderation', devModerationRouter.routes(), devModerationRouter.allowedMethods());
 router.use('/admin/competition', adminCompetitionRouter.routes(), adminCompetitionRouter.allowedMethods());
 router.use('/admin/artist-highlights', adminArtistHighlightRouter.routes(), adminArtistHighlightRouter.allowedMethods());
 

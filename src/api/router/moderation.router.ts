@@ -43,6 +43,7 @@ import {
 import { report_model } from '../../models/moderation.model';
 import { s3Creator } from '../../mongodb';
 import { findInboxComment, setInboxCommentStatus } from '../services/inbox.service';
+import { requireAdminAuth } from '../../middleware/adminAuth.middleware';
 
 export const moderationRouter = new Router();
 moderationRouter.use(requireAuth);
@@ -130,15 +131,12 @@ moderationRouter.post('/', async (ctx) => {
 // Paginated, grouped by reported user, and identical to what /dev/moderation
 // serves — same service, so the two dashboards cannot drift apart.
 
-moderationRouter.get('/queue', async (ctx) => {
-  if (!ctx.state.user.is_admin) return ctx.throw(403);
+moderationRouter.get('/queue', requireAdminAuth, async (ctx) => {
   ctx.body = await getModerationQueue(parseQueueQuery(ctx.query));
 });
 
 // POST /report/:id/resolve — closes every open report on the same content too.
-moderationRouter.post('/:report_id/resolve', async (ctx) => {
-  if (!ctx.state.user.is_admin) return ctx.throw(403);
-
+moderationRouter.post('/:report_id/resolve', requireAdminAuth, async (ctx) => {
   const { action } = ctx.request.body as { action: ResolveAction };
   if (!['uphold', 'remove_only', 'dismiss'].includes(action)) {
     return ctx.throw(400, 'Invalid action');
@@ -158,9 +156,7 @@ moderationRouter.post('/:report_id/resolve', async (ctx) => {
 });
 
 // POST /report/user/:user_id/resolve — one decision for an author's whole queue.
-moderationRouter.post('/user/:user_id/resolve', async (ctx) => {
-  if (!ctx.state.user.is_admin) return ctx.throw(403);
-
+moderationRouter.post('/user/:user_id/resolve', requireAdminAuth, async (ctx) => {
   const { action } = ctx.request.body as { action: ResolveAction };
   if (!['uphold', 'remove_only', 'dismiss'].includes(action)) {
     return ctx.throw(400, 'Invalid action');
@@ -182,9 +178,7 @@ moderationRouter.post('/user/:user_id/resolve', async (ctx) => {
 });
 
 // POST /report/:id/restore — undo a resolution; the strike stays.
-moderationRouter.post('/:report_id/restore', async (ctx) => {
-  if (!ctx.state.user.is_admin) return ctx.throw(403);
-
+moderationRouter.post('/:report_id/restore', requireAdminAuth, async (ctx) => {
   const result = await restoreReport({
     reportId: ctx.params.report_id,
     adminId: ctx.state.user._id.toString()

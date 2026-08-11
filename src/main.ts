@@ -29,11 +29,26 @@ admin.initializeApp({
 
 const app = new Koa();
 
+const allowedOrigins = [
+  'https://app.sketchmate.ninja',
+  'https://studio.sketchmate.ninja',
+  'http://localhost:8100',
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost',
+  'https://localhost',
+  'https://sketchmate-testing-5e62bf42145c.herokuapp.com',
+  ...(process.env.ADMIN_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+];
+
 const server = createServer(app.callback());
 const io = new Server(server, {
   maxHttpBufferSize: 1e7,
   cors: {
-    origin: ['https://app.sketchmate.ninja', 'http://localhost:8100', 'http://localhost:3000', 'http://localhost', 'https://localhost', 'https://sketchmate-testing-5e62bf42145c.herokuapp.com'],
+    origin: allowedOrigins,
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true
   }
@@ -54,21 +69,20 @@ if (!fs.existsSync(uploadDir)) {
 
 app
   .use(errorHandler())
+  .use(async (ctx, next) => {
+    ctx.set('X-Content-Type-Options', 'nosniff');
+    ctx.set('X-Frame-Options', 'DENY');
+    ctx.set('Referrer-Policy', 'same-origin');
+    ctx.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    await next();
+  })
   .use(cors({
     origin: (ctx) => {
-      const allowedOrigins = [
-        'https://app.sketchmate.ninja',
-        'http://localhost:8100',
-        'http://localhost:3000',
-        'http://localhost',
-        'https://localhost',
-        'https://sketchmate-testing-5e62bf42145c.herokuapp.com'
-      ];
       const requestOrigin = ctx.get('Origin');
       if (allowedOrigins.includes(requestOrigin)) {
         return requestOrigin;
       }
-      return allowedOrigins[0];
+      return '';
     },
     credentials: true,
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -76,8 +90,16 @@ app
   }))
   .use(
     koaBody({
+      jsonLimit: '1mb',
+      formLimit: '1mb',
+      textLimit: '1mb',
       multipart: true,
-      formidable: { uploadDir: uploadDir }, //This is where the files would come
+      formidable: {
+        uploadDir: uploadDir,
+        maxFileSize: 30 * 1024 * 1024,
+        maxFiles: 4,
+        maxFields: 100,
+      },
       parsedMethods: [HttpMethodEnum.PUT, HttpMethodEnum.POST]
     })
   )

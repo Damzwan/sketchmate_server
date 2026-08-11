@@ -17,10 +17,105 @@ import {
   restoreReport
 } from '../services/moderationQueue.service';
 import { requireAdminAuth } from '../../middleware/adminAuth.middleware';
+import { post_model } from '../../models/post.model';
 
 export const devModerationRouter = new Router();
 
 devModerationRouter.use(requireAdminAuth);
+
+// =============================================================================
+// USER EXPLORER
+// =============================================================================
+
+devModerationRouter.get('/users/search', async (ctx) => {
+  const query = String(ctx.query.q ?? '').trim();
+  if (query.length < 2) {
+    ctx.body = { users: [] };
+    return;
+  }
+
+  const byId = Types.ObjectId.isValid(query) ? [{ _id: new Types.ObjectId(query) }] : [];
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const users = await user_model
+    .find({ $or: [...byId, { name: { $regex: escaped, $options: 'i' } }] })
+    .select('_id name img description stats restriction strike_summary subscription_tier feed_level createdAt')
+    .sort({ 'strike_summary.active_strikes': -1, 'stats.posts': -1 })
+    .limit(16)
+    .lean();
+
+  ctx.body = { users };
+});
+
+devModerationRouter.get('/user/:user_id/overview', async (ctx) => {
+  const userId = ctx.params.user_id;
+  if (!Types.ObjectId.isValid(userId)) return ctx.throw(400, 'Invalid user id');
+  const objectId = new Types.ObjectId(userId);
+
+  const [user, standing, posts, totalReports, openReports, upheldReports, recentReports] = await Promise.all([
+    user_model
+      .findById(objectId)
+      .select('name img description stats customization restriction strike_summary parental competition date_of_birth last_seen_version timezone subscription_tier feed_level artist_highlights profanity_filter inventory is_admin createdAt updatedAt')
+      .lean() as any,
+    getStanding(userId),
+    post_model
+      .find({ author_id: objectId })
+      .select('_id thumbnail_url image_url description status reports_count views total_reactions comment_count competition_win createdAt')
+      .sort({ createdAt: -1 })
+      .limit(12)
+      .lean(),
+    report_model.countDocuments({ target_author_id: objectId }),
+    report_model.countDocuments({ target_author_id: objectId, status: { $in: ['pending', 'auto_actioned'] } }),
+    report_model.countDocuments({ target_author_id: objectId, status: 'upheld' }),
+    report_model
+      .find({ target_author_id: objectId })
+      .select('_id target_type reason details status createdAt resolved_at')
+      .sort({ createdAt: -1 })
+      .limit(12)
+      .lean()
+  ]);
+
+  if (!user) return ctx.throw(404, 'User not found');
+
+  let ageBand: string | null = null;
+  if (user.date_of_birth) {
+    const age = Math.floor((Date.now() - new Date(user.date_of_birth).getTime()) / 31_557_600_000);
+    ageBand = age < 13 ? 'Under 13' : age < 16 ? '13–15' : age < 18 ? '16–17' : '18+';
+  }
+
+  ctx.body = {
+    profile: {
+      _id: user._id.toString(),
+      name: user.name,
+      img: user.img,
+      description: user.description,
+      stats: user.stats,
+      customization: user.customization,
+      restriction: user.restriction,
+      strike_summary: user.strike_summary,
+      parental: user.parental,
+      competition: user.competition,
+      last_seen_version: user.last_seen_version,
+      timezone: user.timezone,
+      subscription_tier: user.subscription_tier,
+      feed_level: user.feed_level,
+      artist_highlights: user.artist_highlights,
+      profanity_filter: user.profanity_filter,
+      inventory_count: user.inventory?.length ?? 0,
+      is_admin: user.is_admin === true,
+      age_band: ageBand,
+      created_at: user.createdAt,
+      updated_at: user.updatedAt
+    },
+    standing,
+    posts,
+    reports: {
+      total: totalReports,
+      open: openReports,
+      upheld: upheldReports,
+      recent: recentReports
+    }
+  };
+});
 
 // =============================================================================
 // PRODUCTION-PARITY ENDPOINTS

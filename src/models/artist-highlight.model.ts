@@ -28,6 +28,13 @@ const artistHighlightEntrySchema = new Schema({
   }
 }, { _id: true });
 
+const artistHighlightHistorySchema = new Schema({
+  user_id: { type: Schema.Types.ObjectId, ref: 'users', required: true },
+  first_featured_at: { type: Date, required: true },
+  last_featured_at: { type: Date, required: true },
+  times_featured: { type: Number, min: 1, default: 1 }
+}, { _id: false });
+
 const artistHighlightConfigSchema = new Schema({
   key: { type: String, required: true, unique: true, default: 'community' },
   enabled: { type: Boolean, default: false },
@@ -40,6 +47,7 @@ const artistHighlightConfigSchema = new Schema({
   },
   visible_count: { type: Number, min: 1, max: 12, default: 3 },
   artists: { type: [artistHighlightEntrySchema], default: [] },
+  history: { type: [artistHighlightHistorySchema], default: [] },
   updated_by: { type: Schema.Types.ObjectId, ref: 'users', required: false }
 }, { timestamps: true });
 
