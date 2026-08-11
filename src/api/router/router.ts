@@ -68,6 +68,7 @@ import { titlesRouter } from './titles.router';
 import competitionRouter from './competition.router';
 import devCompetitionRouter from './devCompetition.router';
 import { savedRouter } from './saved-drawing.router';
+import { cloudDraftRouter } from './cloud-draft.router';
 import artistHighlightRouter from './artist-highlight.router';
 import adminArtistHighlightRouter from './admin.artist-highlight.router';
 import adminSessionRouter from './admin.session.router';
@@ -86,6 +87,7 @@ router.use('/v2/balloon', balloonRouter.routes(), balloonRouter.allowedMethods()
 router.use('/v2/quota', quotaRouter.routes(), quotaRouter.allowedMethods());
 router.use('/v2/notification', notificationRouter.routes(), notificationRouter.allowedMethods());
 router.use('/v2/saved', savedRouter.routes(), savedRouter.allowedMethods());
+router.use('/v2/drafts', cloudDraftRouter.routes(), cloudDraftRouter.allowedMethods());
 router.use('/v2/guest-recovery', guestRecoveryRouter.routes(), guestRecoveryRouter.allowedMethods());
 router.use('/v2/artist-highlights', artistHighlightRouter.routes(), artistHighlightRouter.allowedMethods());
 

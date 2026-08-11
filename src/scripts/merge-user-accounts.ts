@@ -12,6 +12,7 @@ import { balloon_model } from '../models/balloon.model';
 import { notification_model } from '../models/notification.model';
 import { report_model, moderation_action_model } from '../models/moderation.model';
 import { saved_drawing_model } from '../models/saved-drawing.model';
+import { cloud_draft_model } from '../models/cloud-draft.model';
 import { quota_usage_model } from '../models/quota_usage.model';
 import { deletion_queue_model } from '../models/deletion.model';
 
@@ -514,6 +515,9 @@ async function mergeMisc() {
   await reassignScalar(moderation_action_model, 'admin_id');
 
   await reassignScalar(saved_drawing_model, 'user_id');
+  // Unique on (user_id, draft_id), but draft ids are client uuids so the two
+  // accounts cannot collide — a plain reassign is safe here.
+  await reassignScalar(cloud_draft_model, 'user_id');
   await reassignScalar(deletion_queue_model, 'target_id');
 
   // quota usage is unique on (user_id, date) — same UTC day from both accounts

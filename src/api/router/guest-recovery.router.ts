@@ -10,7 +10,15 @@ export const guestRecoveryRouter = new Router();
 const hashSecret = (secret: string) => createHash('sha256').update(secret, 'utf8').digest('hex');
 
 guestRecoveryRouter.post('/register', requireAuth, async (ctx) => {
-  if (ctx.state.sign_in_provider !== 'anonymous' || !ctx.state.user) {
+  if (!ctx.state.user || !ctx.state.auth_id) {
+    return ctx.throw(403, 'Guest account required');
+  }
+
+  // Anonymous sessions become `custom` sessions after recovery. Firebase's
+  // provider list is the durable source of truth: both are guests while there
+  // is no password/OAuth/phone provider linked to the UID.
+  const firebaseUser = await admin.auth().getUser(ctx.state.auth_id);
+  if (firebaseUser.providerData.length > 0) {
     return ctx.throw(403, 'Guest account required');
   }
 

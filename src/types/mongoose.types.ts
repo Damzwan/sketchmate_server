@@ -193,3 +193,17 @@ export interface SavedDrawingDocument extends Document, Omit<BaseSavedDrawing, '
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface CloudDraftDocument extends Document {
+  _id: Types.ObjectId;
+  user_id: Types.ObjectId;
+  draft_id: string;
+  /** Client clock, milliseconds. The value devices compare to resolve conflicts. */
+  updated_at: number;
+  drawing_key: string;
+  thumbnail_key: string;
+  bytes: number;
+  deleted_at: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
