@@ -17,7 +17,7 @@ import {
   RemoveFromInboxParams,
   UnRegisterNotificationParams,
   UpdateUserParams,
-  UploadProfileImgParams
+  UploadProfileImgParams,
 } from '../../types/types';
 import {
   changeUserName,
@@ -40,7 +40,7 @@ import {
   subscribe,
   unsubscribe,
   updateUser,
-  uploadProfileImg
+  uploadProfileImg,
 } from '../../mongodb';
 import { parseParams } from '../../helper';
 import { routeBalloonToOnlineUser } from '../balloon';
@@ -71,6 +71,7 @@ import { savedRouter } from './saved-drawing.router';
 import artistHighlightRouter from './artist-highlight.router';
 import adminArtistHighlightRouter from './admin.artist-highlight.router';
 import adminSessionRouter from './admin.session.router';
+import { guestRecoveryRouter } from './guest-recovery.router';
 
 export const router = new Router();
 
@@ -85,6 +86,7 @@ router.use('/v2/balloon', balloonRouter.routes(), balloonRouter.allowedMethods()
 router.use('/v2/quota', quotaRouter.routes(), quotaRouter.allowedMethods());
 router.use('/v2/notification', notificationRouter.routes(), notificationRouter.allowedMethods());
 router.use('/v2/saved', savedRouter.routes(), savedRouter.allowedMethods());
+router.use('/v2/guest-recovery', guestRecoveryRouter.routes(), guestRecoveryRouter.allowedMethods());
 router.use('/v2/artist-highlights', artistHighlightRouter.routes(), artistHighlightRouter.allowedMethods());
 
 router.use('/v2/competition', competitionRouter.routes(), competitionRouter.allowedMethods());
@@ -96,7 +98,11 @@ router.use('/admin/inventory', adminInventoryRouter.routes(), adminInventoryRout
 router.use('/admin/session', adminSessionRouter.routes(), adminSessionRouter.allowedMethods());
 router.use('/admin/moderation', devModerationRouter.routes(), devModerationRouter.allowedMethods());
 router.use('/admin/competition', adminCompetitionRouter.routes(), adminCompetitionRouter.allowedMethods());
-router.use('/admin/artist-highlights', adminArtistHighlightRouter.routes(), adminArtistHighlightRouter.allowedMethods());
+router.use(
+  '/admin/artist-highlights',
+  adminArtistHighlightRouter.routes(),
+  adminArtistHighlightRouter.allowedMethods()
+);
 
 router.get(ENDPOINTS.user, async (ctx) => {
   const res = await getUser(parseParams<GetUserParams>(ctx.query));
@@ -112,9 +118,8 @@ router.put(`${ENDPOINTS.user}/login`, async (ctx) => {
   ctx.body = await onLoginEvent(parseParams<OnLoginEventParams>(ctx.request.body));
 });
 
-
 router.get(`${ENDPOINTS.user}/search_mate`, async (ctx) => {
-  const params = parseParams<{ mateName: string, user_id: string }>(ctx.query);
+  const params = parseParams<{ mateName: string; user_id: string }>(ctx.query);
   ctx.body = await searchMate(params.mateName, params.user_id);
 });
 
@@ -134,7 +139,6 @@ router.get(ENDPOINTS.inbox, async (ctx) => {
   ctx.body = await getInboxItems(parseParams<GetInboxItemsParams>(params));
 });
 
-
 router.put(ENDPOINTS.user, async (ctx) => {
   ctx.body = await changeUserName(parseParams<ChangeUserNameParams>(ctx.request.body));
 });
@@ -148,7 +152,7 @@ router.put(`${ENDPOINTS.user}/img/:id`, async (ctx) => {
   const params: UploadProfileImgParams = {
     _id: ctx.params.id,
     img: ctx.request.files.file,
-    previousImage: ctx.request.query.previousImage as string
+    previousImage: ctx.request.query.previousImage as string,
   };
 
   ctx.body = await uploadProfileImg(params);
@@ -164,7 +168,7 @@ router.post(`${ENDPOINTS.sticker}/:id`, async (ctx) => {
   if (!ctx.request.files) throw new Error();
   const params: CreateStickerParams = {
     _id: ctx.params.id,
-    img: ctx.request.files.file
+    img: ctx.request.files.file,
   };
   ctx.body = await createSticker(params);
 });
@@ -173,7 +177,7 @@ router.post(`${ENDPOINTS.emblem}/:id`, async (ctx) => {
   if (!ctx.request.files) throw new Error();
   const params: CreateEmblemParams = {
     _id: ctx.params.id,
-    img: ctx.request.files.file
+    img: ctx.request.files.file,
   };
   ctx.body = await createEmblem(params);
 });
@@ -184,7 +188,7 @@ router.post(`${ENDPOINTS.saved}/:id`, async (ctx) => {
   const params: CreateSavedParams = {
     _id: ctx.params.id,
     img: files.img,
-    drawing: files.drawing
+    drawing: files.drawing,
   };
   ctx.body = await createSaved(params);
 });
@@ -212,7 +216,7 @@ router.delete(ENDPOINTS.saved, async (ctx) => {
 router.delete(`${ENDPOINTS.inbox}/:userId/:inboxItemId`, async (ctx) => {
   const params: RemoveFromInboxParams = {
     user_id: ctx.params.userId,
-    inbox_id: ctx.params.inboxItemId
+    inbox_id: ctx.params.inboxItemId,
   };
   ctx.body = await removeFromInbox(params);
 });
@@ -223,7 +227,6 @@ router.post(`${ENDPOINTS.inbox}/see/:id`, async (ctx) => {
 
   ctx.body = await seeInbox({ inbox_id, user_id });
 });
-
 
 const inflateAsync = promisify(zlib.inflate);
 router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
@@ -238,12 +241,12 @@ router.post(`${ENDPOINTS.balloon}`, async (ctx) => {
 
   const [imgBuffer, compressedBuffer] = await Promise.all([
     fsPromises.readFile(files.img.filepath),
-    fsPromises.readFile(files.drawing.filepath)
+    fsPromises.readFile(files.drawing.filepath),
   ]);
 
   await Promise.all([
     fsPromises.unlink(files.img.filepath).catch(console.error),
-    fsPromises.unlink(files.drawing.filepath).catch(console.error)
+    fsPromises.unlink(files.drawing.filepath).catch(console.error),
   ]);
 
   params.img = imgBuffer;
@@ -273,12 +276,12 @@ router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
   // ASYNC I/O: Read both files simultaneously without blocking the server's heartbeat
   const [imgBuffer, compressedBuffer] = await Promise.all([
     fsPromises.readFile(files.img.filepath),
-    fsPromises.readFile(files.drawing.filepath)
+    fsPromises.readFile(files.drawing.filepath),
   ]);
 
   await Promise.all([
     fsPromises.unlink(files.img.filepath).catch(console.error),
-    fsPromises.unlink(files.drawing.filepath).catch(console.error)
+    fsPromises.unlink(files.drawing.filepath).catch(console.error),
   ]);
 
   params.img = imgBuffer;
@@ -295,7 +298,6 @@ router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
   const senderId = balloon.sender.toString();
   const balloonId = balloon._id.toString();
 
-
   routeBalloonToOnlineUser(senderId, balloonId, userSocketMap, 0).catch((err: any) => {
     console.error('Error during balloon routing triage:', err);
   });
@@ -306,9 +308,8 @@ router.post(`${ENDPOINTS.balloon}/v2`, async (ctx) => {
 
 router.get(`${ENDPOINTS.balloon}/:id`, async (ctx) => {
   const balloon_id = ctx.params.id;
-  return ctx.body = await getBalloon(balloon_id);
+  return (ctx.body = await getBalloon(balloon_id));
 });
-
 
 // used by the widget
 router.get('/user/inbox/latest', async (ctx) => {
@@ -320,12 +321,12 @@ router.get('/user/inbox/latest', async (ctx) => {
   }
 
   try {
-    const item = await inbox_model
+    const item = (await inbox_model
       .findOne({ followers: userId })
       .sort({ date: -1 })
       .skip(offset)
       .select('_id thumbnail sender')
-      .lean() as InboxDocument | null;
+      .lean()) as InboxDocument | null;
 
     if (!item) {
       ctx.body = null;
@@ -340,9 +341,8 @@ router.get('/user/inbox/latest', async (ctx) => {
       _id: item._id.toString(),
       image: item.thumbnail,
       senderName: mate_info?.name || 'Unknown',
-      senderImg: mate_info?.img || ''
+      senderImg: mate_info?.img || '',
     };
-
   } catch (err) {
     console.error('Widget API Error:', err);
     ctx.status = 500;

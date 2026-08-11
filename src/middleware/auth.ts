@@ -24,6 +24,7 @@ export const requireAuth = async (ctx: any, next: () => Promise<any>) => {
 
   // Always attach the verified Firebase ID to the state so downstream routes can use it to create accounts
   ctx.state.auth_id = decodedToken.uid;
+  ctx.state.sign_in_provider = decodedToken.firebase?.sign_in_provider;
 
   try {
     const user = await user_model
@@ -36,12 +37,12 @@ export const requireAuth = async (ctx: any, next: () => Promise<any>) => {
         ...user,
         restriction: user.restriction || {
           level: 0,
-          blocked_capabilities: []
+          blocked_capabilities: [],
         },
         strike_summary: user.strike_summary || {
           active_strikes: 0,
-          total_strikes: 0
-        }
+          total_strikes: 0,
+        },
       };
     }
   } catch (dbError) {

@@ -13,24 +13,34 @@ savedRouter.get('/presigned/urls', async (ctx) => {
   const userId = ctx.state.user._id.toString();
   const uniqueId = uuidv4();
 
-  const imgData = await s3Creator.getPresignedUploadUrl('image/webp', CONTAINER.drawings, `saved/${userId}/${uniqueId}.webp`);
-  const jsonData = await s3Creator.getPresignedUploadUrl('application/json', CONTAINER.drawings, `saved/${userId}/${uniqueId}.json`);
+  const imgData = await s3Creator.getPresignedUploadUrl(
+    'image/webp',
+    CONTAINER.drawings,
+    `saved/${userId}/${uniqueId}.webp`
+  );
+  const jsonData = await s3Creator.getPresignedUploadUrl(
+    'application/json',
+    CONTAINER.drawings,
+    `saved/${userId}/${uniqueId}.json`
+  );
 
   ctx.body = {
     imgUploadUrl: imgData.signedUrl,
     imgPublicUrl: imgData.publicUrl,
     jsonUploadUrl: jsonData.signedUrl,
-    jsonPublicUrl: jsonData.publicUrl
+    jsonPublicUrl: jsonData.publicUrl,
   };
 });
 
 savedRouter.get('/:userId', async (ctx) => {
   const user_id = ctx.params.userId;
+  if (user_id !== ctx.state.user._id.toString()) return ctx.throw(403, 'Forbidden');
   ctx.body = await getSavedDrawings(user_id);
 });
 
 savedRouter.post('/:userId', async (ctx) => {
   const { img, drawing } = ctx.request.body as any;
+  if (ctx.params.userId !== ctx.state.user._id.toString()) return ctx.throw(403, 'Forbidden');
 
   if (!img || !drawing) {
     return ctx.throw(400, 'Missing img or drawing URLs in body');
@@ -39,7 +49,7 @@ savedRouter.post('/:userId', async (ctx) => {
   ctx.body = await createSaved({
     _id: ctx.params.userId,
     img,
-    drawing
+    drawing,
   });
 });
 
@@ -48,6 +58,7 @@ savedRouter.delete('/:id', async (ctx) => {
   const user_id = ctx.query.user_id as string;
 
   if (!user_id) return ctx.throw(400, 'user_id is required');
+  if (user_id !== ctx.state.user._id.toString()) return ctx.throw(403, 'Forbidden');
 
   await deleteSaved(saved_id, user_id);
   ctx.status = 200;
