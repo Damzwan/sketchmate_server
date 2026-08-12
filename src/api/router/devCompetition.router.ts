@@ -2,7 +2,9 @@ import Router from 'koa-router';
 import { Types } from 'mongoose';
 import { requireAdminAuth } from '../../middleware/adminAuth.middleware';
 import {
+  competition_comment_model,
   competition_entry_model,
+  competition_impression_model,
   competition_model,
   competition_notification_model,
   competition_vote_model,
@@ -391,10 +393,13 @@ devCompetitionRouter.delete('/:id', async (ctx) => {
     }
   }
 
+  const entryIds = await competition_entry_model.distinct('_id', { competition_id: comp._id });
   const [entries, votes] = await Promise.all([
     competition_entry_model.deleteMany({ competition_id: comp._id }),
     competition_vote_model.deleteMany({ competition_id: comp._id }),
     competition_notification_model.deleteMany({ week_key: comp.week_key }),
+    competition_impression_model.deleteMany({ competition_id: comp._id }),
+    competition_comment_model.deleteMany({ entry_id: { $in: entryIds } }),
   ]);
   await competition_model.deleteOne({ _id: comp._id });
 

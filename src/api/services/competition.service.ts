@@ -502,6 +502,14 @@ export async function announceCompetition(competitionId: Types.ObjectId): Promis
         continue;
       }
 
+      // A winner found inactive further down this loop restarts the whole
+      // announcement (rescore → re-announce), so every result BEFORE it is
+      // processed twice. Everything else here is idempotent — `grantItems` is
+      // `$addToSet`, the flags are `$set` — but `wins` is a `$inc` and would
+      // count the same win twice. The entry's own `is_winner` flag is the
+      // record of "this result already paid out".
+      const alreadyAwarded = entry.is_winner && entry.won_category === result.category_id;
+
       const items = rewardByCategory.get(result.category_id) ?? [];
 
       // The champion title is earned once, ever. Later wins only bump `wins`.
@@ -523,7 +531,9 @@ export async function announceCompetition(competitionId: Types.ObjectId): Promis
           { _id: result.entry_id },
           { $set: { is_winner: true, won_category: result.category_id } }
         ),
-        user_model.updateOne({ _id: result.user_id }, { $inc: { 'competition.wins': 1 } }),
+        alreadyAwarded
+          ? Promise.resolve()
+          : user_model.updateOne({ _id: result.user_id }, { $inc: { 'competition.wins': 1 } }),
         // If the artist also shared this drawing to the feed, the badge follows
         // it there. Denormalised onto the post so a feed card costs no join.
         entry.post_id

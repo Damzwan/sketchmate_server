@@ -330,6 +330,47 @@ voteSchema.index({ entry_id: 1, category_id: 1 });
 // disputed result and the input for a recount when a winner is removed.
 export const competition_vote_model = mongoose.model<CompetitionVoteDocument>('competition_votes', voteSchema);
 
+// ─── IMPRESSIONS ─────────────────────────────────────────────────────────────
+
+/**
+ * One row per (entry, viewer) that has ever counted.
+ *
+ * `impressions` is the DENOMINATOR of the score (§2.7), and a vote is one per
+ * voter per entry — so the numerator counts people while the denominator has to
+ * count people too. Without this ledger a viewer who opens the competition five
+ * times reports five impressions and one vote, and the entries the most engaged
+ * users look at are ranked as if nobody liked them. It also closes the obvious
+ * grief: reloading the page repeatedly to inflate a rival's denominator.
+ *
+ * The client de-dupes per session; this is what makes it true across sessions,
+ * devices and reinstalls.
+ */
+export interface CompetitionImpressionDocument extends Document {
+  competition_id: Types.ObjectId;
+  entry_id: Types.ObjectId;
+  viewer_id: Types.ObjectId;
+  createdAt: Date;
+}
+
+const impressionSchema = new Schema<CompetitionImpressionDocument>(
+  {
+    competition_id: { type: ObjectId, ref: 'competitions', required: true },
+    entry_id: { type: ObjectId, ref: 'competition_entries', required: true },
+    viewer_id: { type: ObjectId, ref: 'users', required: true },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } }
+);
+
+// The claim itself. `impressions` is only incremented when this insert is new.
+impressionSchema.index({ entry_id: 1, viewer_id: 1 }, { unique: true });
+// Nothing here is needed once the week has been scored and archived.
+impressionSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 30 });
+
+export const competition_impression_model = mongoose.model<CompetitionImpressionDocument>(
+  'competition_impressions',
+  impressionSchema
+);
+
 // ─── THEMES ──────────────────────────────────────────────────────────────────
 
 export interface CompetitionThemeDocument extends Document {

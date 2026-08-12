@@ -10,6 +10,7 @@ import { CONTAINER } from '../../s3';
 import {
   competition_comment_model,
   competition_entry_model,
+  competition_impression_model,
   competition_model,
   competition_theme_model,
   competition_theme_vote_model,
@@ -157,9 +158,13 @@ async function normalizeVotesForVoter(competitionId: Types.ObjectId, voterId: Ty
       })
     );
   }
-  if (kept.size) {
+  // Only the rows that are actually missing a slot. `/current` is what the home
+  // card polls, so an unconditional updateMany here rewrote every one of this
+  // voter's rows on every poll, forever, to set a field they already had.
+  const unslotted = Array.from(kept.values()).filter((vote) => !vote.slot);
+  if (unslotted.length) {
     await competition_vote_model.updateMany(
-      { _id: { $in: Array.from(kept.values()).map((vote) => vote._id) } },
+      { _id: { $in: unslotted.map((vote) => vote._id) } },
       { $set: { slot: 'entry' } }
     );
   }
@@ -371,9 +376,15 @@ competitionRouter.post(
       // Votes and comments belong to the artwork, not the stable entry id. If
       // they survived a redraw, a brand-new image could inherit a winning
       // score and conversations about a picture that no longer exists.
+      //
+      // The impression ledger goes with them: `impressions` was just reset to
+      // zero above, and leaving the claims behind would mean nobody who had
+      // already seen the old drawing could ever be counted again — the new
+      // artwork would sit below MIN_IMPRESSIONS_TO_WIN for the rest of the week.
       await Promise.all([
         competition_vote_model.deleteMany({ entry_id: entry._id }),
         competition_comment_model.deleteMany({ entry_id: entry._id }),
+        competition_impression_model.deleteMany({ entry_id: entry._id }),
       ]);
     }
 
@@ -451,6 +462,7 @@ competitionRouter.delete('/:id/entry', requireAuth, async (ctx) => {
       // they should not be penalised for someone else's withdrawal.
       competition_vote_model.deleteMany({ entry_id: entry._id }),
       competition_comment_model.deleteMany({ entry_id: entry._id }),
+      competition_impression_model.deleteMany({ entry_id: entry._id }),
     ]);
   }
 
@@ -542,20 +554,49 @@ competitionRouter.post('/:id/impressions', requireAuth, async (ctx) => {
 
   if (!oids.length) return ctx.throw(400, 'Invalid entry_ids array');
 
+  const competitionId = new Types.ObjectId(ctx.params.id);
+  const viewerId = new Types.ObjectId(ctx.state.user._id);
+
   // An author scrolling past their own entry must not inflate its denominator —
   // that would penalise them, since their own view can never become a vote.
-  await competition_entry_model.updateMany(
-    {
-      _id: { $in: oids },
-      competition_id: new Types.ObjectId(ctx.params.id),
-      status: 'active',
-      user_id: { $ne: new Types.ObjectId(ctx.state.user._id) },
-    },
-    { $inc: { impressions: 1 } }
+  const eligible = await competition_entry_model
+    .find({ _id: { $in: oids }, competition_id: competitionId, status: 'active', user_id: { $ne: viewerId } })
+    .select('_id')
+    .lean();
+  if (!eligible.length) {
+    ctx.status = 200;
+    ctx.body = { success: true, counted: 0 };
+    return;
+  }
+
+  // Claim one impression per (entry, viewer), ever. The numerator is one vote
+  // per voter per entry, so the denominator has to count people rather than
+  // page loads — otherwise the entries that engaged users revisit are ranked as
+  // if nobody liked them, and a rival's score can be pushed down by reloading.
+  const claim = await competition_impression_model.bulkWrite(
+    eligible.map((entry) => ({
+      updateOne: {
+        filter: { entry_id: entry._id, viewer_id: viewerId },
+        update: { $setOnInsert: { competition_id: competitionId, createdAt: new Date() } },
+        upsert: true,
+      },
+    })),
+    { ordered: false }
   );
 
+  // `upsertedIds` is keyed by the operation's position in the batch — it holds
+  // the ledger row's _id, not the entry's — so map the keys back through
+  // `eligible` to find which entries this viewer had never been counted for.
+  const newlySeen = Object.keys(claim.upsertedIds ?? {})
+    .map((index) => eligible[Number(index)]?._id)
+    .filter(Boolean) as Types.ObjectId[];
+
+  if (newlySeen.length) {
+    await competition_entry_model.updateMany({ _id: { $in: newlySeen } }, { $inc: { impressions: 1 } });
+  }
+
   ctx.status = 200;
-  ctx.body = { success: true };
+  ctx.body = { success: true, counted: newlySeen.length };
 });
 
 // ─── COMMENTS ────────────────────────────────────────────────────────────────
@@ -1072,8 +1113,30 @@ competitionRouter.get('/user/:user_id/entries', requireAuth, async (ctx) => {
   const isSelf = user_id === ctx.state.user._id.toString();
   const limit = Math.min(parseInt(ctx.query.limit as string) || 12, 30);
 
+  // Resolve which competitions this viewer may see BEFORE paging the entries.
+  // Filtering after `.limit()` silently shortened (or emptied) the strip: one
+  // in-flight week at the top of someone else's history hid an announced entry
+  // that should have taken its place.
+  const visibleComps = await competition_model
+    .find(isSelf ? {} : { phase: 'announced' })
+    .sort({ starts_at: -1 })
+    .limit(60)
+    .select('_id week_key theme accent phase')
+    .lean();
+
+  if (!visibleComps.length) {
+    ctx.body = { entries: [] };
+    return;
+  }
+
+  const compById = new Map(visibleComps.map((c) => [c._id.toString(), c]));
+
   const entries = await competition_entry_model
-    .find({ user_id: new Types.ObjectId(user_id), status: 'active' })
+    .find({
+      user_id: new Types.ObjectId(user_id),
+      status: 'active',
+      competition_id: { $in: visibleComps.map((c) => c._id) },
+    })
     .sort({ submitted_at: -1 })
     .limit(limit)
     .lean();
@@ -1083,19 +1146,9 @@ competitionRouter.get('/user/:user_id/entries', requireAuth, async (ctx) => {
     return;
   }
 
-  const comps = await competition_model
-    .find({ _id: { $in: entries.map((e) => e.competition_id) } })
-    .select('_id week_key theme accent phase')
-    .lean();
-
-  const compById = new Map(comps.map((c) => [c._id.toString(), c]));
-
   ctx.body = {
     entries: entries
-      .filter((e) => {
-        const comp = compById.get(e.competition_id.toString());
-        return comp && (comp.phase === 'announced' || isSelf);
-      })
+      .filter((e) => compById.has(e.competition_id.toString()))
       .map((e) => {
         const comp = compById.get(e.competition_id.toString())!;
         return {

@@ -198,8 +198,14 @@ export const MIN_IMPRESSIONS_TO_WIN = 25;
 
 /**
  * Below this many total impressions across the whole competition, the client
- * clearly is not reporting them (old build, tracking broken). Scoring falls
- * back to raw vote counts rather than ranking on noise.
+ * clearly is not reporting them (old build, tracking broken). Scoring then
+ * REFUSES to crown anyone and records `skipped_reason` — it deliberately does
+ * not fall back to raw vote counts, because that would hand the week to
+ * whoever entered first, which is the exact failure §2.7 exists to prevent.
+ *
+ * Note this counts DISTINCT viewers per entry, not page loads: the impression
+ * ledger claims one per (entry, viewer), so this floor is "100 people looked at
+ * something this week", not "100 renders happened".
  */
 export const MIN_TOTAL_IMPRESSIONS_FOR_RATE = 100;
 
