@@ -32,7 +32,6 @@ import {
   UploadProfileImgParams
 } from '../../types/types';
 import { LeanPost, RelationshipDocument, UserDocument } from '../../types/mongoose.types';
-import { isUserOnline } from '../socket/socket';
 import { COMPLETE_PUBLIC_USER_FIELDS, PUBLIC_USER_FIELDS } from '../../types/projections';
 import {
   parseParams,
@@ -431,12 +430,15 @@ userRouter.get('/online-friends', requireAuth, async (ctx) => {
     return;
   }
 
-  const partnerIds = relationships.map(rel =>
+  const partnerIds = [...new Set(relationships.map(rel =>
     rel.users.find(id => id.toString() !== viewerId)?.toString()
-  ).filter(Boolean) as string[];
+  ).filter(Boolean) as string[])];
 
-  const onlineFlags = await Promise.all(partnerIds.map(id => isUserOnline(io, id)));
-  const onlineIds = partnerIds.filter((_, i) => onlineFlags[i]);
+  const sockets = await io.in(partnerIds).fetchSockets();
+  const onlineSet = new Set<string>(sockets
+    .map((socket: any) => socket.data.user?._id?.toString())
+    .filter((id: string | undefined): id is string => !!id));
+  const onlineIds = partnerIds.filter(id => onlineSet.has(id));
 
   if (!onlineIds.length) {
     ctx.body = [];

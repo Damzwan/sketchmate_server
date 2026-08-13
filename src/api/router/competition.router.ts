@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { requireAuth } from '../../middleware/auth';
 import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
-import { requireAdultAccount } from '../services/parental.service';
+import { isAdultAccount, requireAdultAccount } from '../services/parental.service';
 import { s3Creator } from '../../mongodb';
 import { CONTAINER } from '../../s3';
 import {
@@ -47,7 +47,21 @@ export const competitionRouter = new Router();
 // The competition is a public stranger surface, same as the feed: off under 13
 // with no parental override. Gated here as well as in the client so a replayed
 // request can't enter a child's drawing into a public contest.
+//
+// READS are gated too, not only writes. The grid, the archive, the podium and
+// the entry comments are all strangers' artwork and strangers' free text on a
+// promoted surface — exactly the content Play's Families policy is about, and
+// hiding the button in the client is not a control when the same GET can be
+// replayed. `requireAdultAccount` defaults to DENY on an unknown birthday, so a
+// guest or an account that never confirmed its age sees nothing either.
+//
+// The only routes deliberately left ungated are the ones that touch the
+// caller's OWN records: deleting their entry, their comment, their vote or
+// their pending theme, marking results seen, and the notification preference.
+// An account reclassified as a child (a corrected birthday) must still be able
+// to withdraw whatever it left behind.
 const COMPETITION_AGE_MESSAGE = 'The weekly competition is available from age 13.';
+const requireCompetitionAge = () => requireAdultAccount(COMPETITION_AGE_MESSAGE);
 
 // ─── SHAPING ─────────────────────────────────────────────────────────────────
 
@@ -222,6 +236,15 @@ async function hydrateAuthors(userIds: Types.ObjectId[], full = false) {
 competitionRouter.get('/current', requireAuth, async (ctx) => {
   if (!isCompetitionEnabled()) {
     ctx.body = { competition: null };
+    return;
+  }
+
+  // Under 13 this reads as "no competition" rather than a 403. The home card
+  // polls it on every app open and already renders the locked variant from an
+  // empty payload; answering with an error would only turn a normal state into
+  // console noise. Nothing about the week leaks either way.
+  if (!(await isAdultAccount(ctx.state.user._id.toString()))) {
+    ctx.body = { competition: null, age_restricted: true };
     return;
   }
 
@@ -471,7 +494,7 @@ competitionRouter.delete('/:id/entry', requireAuth, async (ctx) => {
 
 // ─── ENTRIES ─────────────────────────────────────────────────────────────────
 
-competitionRouter.get('/:id/entries', requireAuth, async (ctx) => {
+competitionRouter.get('/:id/entries', requireAuth, requireCompetitionAge(), async (ctx) => {
   const comp = await competition_model.findById(ctx.params.id);
   if (!comp) return ctx.throw(404, 'Competition not found');
 
@@ -541,7 +564,7 @@ competitionRouter.get('/:id/entries', requireAuth, async (ctx) => {
  * winner is decided on, and the ordering uses the counter to balance exposure.
  * If this stops being called, scoring degrades to raw vote counts.
  */
-competitionRouter.post('/:id/impressions', requireAuth, async (ctx) => {
+competitionRouter.post('/:id/impressions', requireAuth, requireCompetitionAge(), async (ctx) => {
   const { entry_ids } = ctx.request.body as { entry_ids?: string[] };
   if (!Array.isArray(entry_ids) || entry_ids.length === 0) {
     return ctx.throw(400, 'Invalid entry_ids array');
@@ -621,7 +644,7 @@ const shapeComment = (comment: any, author: any) => ({
  * commented on your entry" in the bell has to be able to open that drawing even
  * when the competition page has never been visited this session.
  */
-competitionRouter.get('/entry/:entry_id', requireAuth, async (ctx) => {
+competitionRouter.get('/entry/:entry_id', requireAuth, requireCompetitionAge(), async (ctx) => {
   const { entry_id } = ctx.params;
   if (!Types.ObjectId.isValid(entry_id)) return ctx.throw(400, 'Valid entry_id required');
 
@@ -653,7 +676,7 @@ competitionRouter.get('/entry/:entry_id', requireAuth, async (ctx) => {
   };
 });
 
-competitionRouter.get('/entry/:entry_id/comments', requireAuth, async (ctx) => {
+competitionRouter.get('/entry/:entry_id/comments', requireAuth, requireCompetitionAge(), async (ctx) => {
   const { entry_id } = ctx.params;
   if (!Types.ObjectId.isValid(entry_id)) return ctx.throw(400, 'Valid entry_id required');
 
@@ -953,7 +976,7 @@ competitionRouter.delete('/:id/vote', requireAuth, async (ctx) => {
  * yet, and "your votes" must be a trustworthy receipt rather than a partial
  * view of whichever cards happen to be mounted.
  */
-competitionRouter.get('/:id/my-votes', requireAuth, async (ctx) => {
+competitionRouter.get('/:id/my-votes', requireAuth, requireCompetitionAge(), async (ctx) => {
   if (!Types.ObjectId.isValid(ctx.params.id)) {
     return ctx.throw(404, 'Competition not found');
   }
@@ -1010,7 +1033,7 @@ competitionRouter.get('/:id/my-votes', requireAuth, async (ctx) => {
   };
 });
 
-competitionRouter.get('/:id/results', requireAuth, async (ctx) => {
+competitionRouter.get('/:id/results', requireAuth, requireCompetitionAge(), async (ctx) => {
   const comp = await competition_model.findById(ctx.params.id);
   if (!comp) return ctx.throw(404, 'Competition not found');
   if (comp.phase !== 'announced') return ctx.throw(409, 'Results are not out yet');
@@ -1045,7 +1068,7 @@ competitionRouter.get('/:id/results', requireAuth, async (ctx) => {
   };
 });
 
-competitionRouter.get('/archive', requireAuth, async (ctx) => {
+competitionRouter.get('/archive', requireAuth, requireCompetitionAge(), async (ctx) => {
   const limit = Math.min(parseInt(ctx.query.limit as string) || 10, 30);
   const launchAt = competitionLaunchAt();
 
@@ -1106,7 +1129,7 @@ competitionRouter.get('/archive', requireAuth, async (ctx) => {
  * own current entry. Someone else's in-flight entry stays where it belongs (the
  * grid), so the profile can't be used to scout the field before voting closes.
  */
-competitionRouter.get('/user/:user_id/entries', requireAuth, async (ctx) => {
+competitionRouter.get('/user/:user_id/entries', requireAuth, requireCompetitionAge(), async (ctx) => {
   const { user_id } = ctx.params;
   if (!Types.ObjectId.isValid(user_id)) return ctx.throw(400, 'Valid user_id required');
 
@@ -1414,7 +1437,7 @@ competitionRouter.post(
  * A single competition for archive/detail screens. Kept last because `/archive`
  * and `/themes` are also one-segment routes and must win first.
  */
-competitionRouter.get('/:id', requireAuth, async (ctx) => {
+competitionRouter.get('/:id', requireAuth, requireCompetitionAge(), async (ctx) => {
   if (!Types.ObjectId.isValid(ctx.params.id)) return ctx.throw(404, 'Competition not found');
 
   const comp = await competition_model.findById(ctx.params.id);

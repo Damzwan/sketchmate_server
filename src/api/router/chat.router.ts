@@ -15,28 +15,123 @@ const conversationActivityAt = (conversation: any): number => {
   return timestamp ? new Date(timestamp).getTime() : 0;
 };
 
+const ACTIVE_CHAT_STATUSES = ['temporary', 'mate', 'pending_mate', 'pending_invite', 'expired', 'blocked'];
+
+/**
+ * One compact startup response for unread counts, request counts and presence.
+ * Message history is intentionally excluded and remains lazy per conversation.
+ */
+chatRouter.get('/shell', async (ctx) => {
+  const userId = ctx.state.user._id.toString();
+  const userOid = new Types.ObjectId(userId);
+
+  const relationships = await relationship_model.find({
+    users: userOid,
+    chat_status: { $in: ACTIVE_CHAT_STATUSES }
+  })
+    .select('users conversation_id chat_status expires_at cooldown_until action_user_id blocked_by mate_requests')
+    .lean();
+
+  const conversationIds = relationships
+    .map(rel => rel.conversation_id)
+    .filter((id): id is Types.ObjectId => !!id);
+
+  const onlineCandidates = new Set<string>();
+  const blockedUserIds: string[] = [];
+  for (const rel of relationships) {
+    const partnerId = rel.users.find(id => id.toString() !== userId)?.toString();
+    if (!partnerId) continue;
+    if (['temporary', 'pending_mate', 'mate'].includes(rel.chat_status)) {
+      onlineCandidates.add(partnerId);
+    }
+    if (rel.chat_status === 'blocked' && rel.blocked_by?.toString() === userId) {
+      blockedUserIds.push(partnerId);
+    }
+  }
+
+  const candidateIds = [...onlineCandidates];
+  const conversationsPromise = conversationIds.length
+    ? conversation_model.find({
+      _id: { $in: conversationIds },
+      participants: userOid
+    })
+      .populate('last_message')
+      .populate('participants', PUBLIC_USER_FIELDS)
+      .lean()
+    : Promise.resolve([]);
+  // All user rooms can be inspected in one adapter operation. The old endpoint
+  // performed one fetchSockets() call per mate, which scaled startup latency
+  // with the size of the social graph (and is especially costly with an adapter).
+  const onlineSocketsPromise = candidateIds.length
+    ? ctx.app.context.io.in(candidateIds).fetchSockets()
+    : Promise.resolve([]);
+  const [conversations, onlineSockets] = await Promise.all([
+    conversationsPromise,
+    onlineSocketsPromise
+  ]);
+
+  const conversationById = new Map(
+    conversations.map(conversation => [conversation._id.toString(), conversation])
+  );
+  const activeChats: any[] = [];
+  const pendingRequests: any[] = [];
+
+  for (const rel of relationships) {
+    const conversationId = rel.conversation_id?.toString();
+    const conversation = conversationId ? conversationById.get(conversationId) : undefined;
+    if (!conversation) continue;
+
+    const hydrated = {
+      ...conversation,
+      status: rel.chat_status,
+      trial_expires_at: rel.expires_at,
+      cooldown_until: rel.cooldown_until,
+      initiator_id: rel.action_user_id?.toString(),
+      relationship_id: rel._id.toString(),
+      ...mateRequestStateFor(rel as any, userId)
+    };
+
+    if (rel.chat_status === 'pending_invite' && rel.action_user_id?.toString() !== userId) {
+      pendingRequests.push(hydrated);
+    } else {
+      activeChats.push(hydrated);
+    }
+  }
+
+  activeChats.sort((a, b) => conversationActivityAt(b) - conversationActivityAt(a));
+  pendingRequests.sort((a, b) => conversationActivityAt(b) - conversationActivityAt(a));
+
+  const onlineSet = new Set<string>(
+    onlineSockets
+      .map((socket: any) => socket.data.user?._id?.toString())
+      .filter((id: string | undefined): id is string => !!id)
+  );
+
+  ctx.body = {
+    activeChats,
+    pendingRequests,
+    onlineFriendIds: candidateIds.filter(id => onlineSet.has(id)),
+    blockedUserIds
+  };
+});
+
 chatRouter.get('/active', async (ctx) => {
   const user_id = ctx.state.user._id.toString();
 
-  const conversations = await conversation_model.find({
-    participants: user_id
-  })
-    .populate('last_message')
-    .populate('participants', PUBLIC_USER_FIELDS)
-    .lean();
+  const [conversations, relationships] = await Promise.all([
+    conversation_model.find({ participants: user_id })
+      .populate('last_message')
+      .populate('participants', PUBLIC_USER_FIELDS)
+      .lean(),
+    relationship_model.find({ users: user_id })
+      .select('users conversation_id chat_status expires_at cooldown_until action_user_id mate_requests')
+      .lean()
+  ]);
 
   if (!conversations.length) {
     ctx.body = [];
     return;
   }
-
-  const relationships = await relationship_model.find({
-    users: user_id
-  })
-    .select('users conversation_id chat_status expires_at cooldown_until action_user_id mate_requests')
-    .lean();
-
-  const activeStatuses = ['temporary', 'mate', 'pending_mate', 'pending_invite', 'expired', 'blocked'];
 
   const activeConvos = conversations.map(c => {
     const partnerId = c.participants.find((p: any) => p._id.toString() !== user_id)?._id.toString();
@@ -62,7 +157,7 @@ chatRouter.get('/active', async (ctx) => {
     };
   })
     .filter(c =>
-      activeStatuses.includes(c.status) &&
+      ACTIVE_CHAT_STATUSES.includes(c.status) &&
       // Incoming invites have their own `/requests` payload. Returning them in
       // both lists mounted duplicate overview rows and double-counted unread.
       !(c.status === 'pending_invite' && c.initiator_id !== user_id)
