@@ -42,6 +42,26 @@ const postSchema = new Schema<PostDocument>({
     required: false
   },
 
+  // Lineage: which post this drawing was started from. `author_id` is
+  // denormalised alongside the id so the credit row costs no second lookup on
+  // the origin post — and so the credit survives the origin being deleted.
+  remix_of: {
+    type: new Schema({
+      post_id: { type: ObjectId, ref: 'posts', required: true },
+      author_id: { type: ObjectId, ref: 'users', required: true }
+    }, { _id: false }),
+    required: false
+  },
+
+  // Peers who drew on this canvas in a shared room. Verified and capped at
+  // publish time — see `resolveCollaborators` in the post router.
+  collaborators: [{ type: ObjectId, ref: 'users' }],
+
+  // Shoutouts the artist picked in the composer. Same verification and cap as
+  // collaborators; removable by the tagged user, which is why they are stored
+  // as their own path rather than folded in with collaborators.
+  mentions: [{ type: ObjectId, ref: 'users' }],
+
   // --- MODERATION ---
   reports_count: { type: Number, default: 0 },
   status: {
@@ -62,6 +82,11 @@ postSchema.index({ status: 1, views: -1, total_reactions: -1, createdAt: -1 });
 
 // --- MOD QUEUE INDEX ---
 postSchema.index({ status: 1, 'moderation.quarantined_at': 1 });
+
+// --- LINEAGE INDEX ---
+// Read path: "what has been remixed from this post", newest first. Sparse
+// because the overwhelming majority of posts have no origin.
+postSchema.index({ 'remix_of.post_id': 1, status: 1, createdAt: -1 }, { sparse: true });
 
 export const post_model = mongoose.model<PostDocument>('posts', postSchema);
 

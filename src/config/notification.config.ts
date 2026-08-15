@@ -147,7 +147,7 @@ export const requestAcceptedPushNotification = (mateName: string, mateImg: strin
 export const competitionThemePushNotification = (theme: string, reward?: string): FBNotification => ({
   notification: {
     title: `New theme: ${theme}`,
-    body: reward ? `Draw it before Friday. Winner gets ${reward}.` : 'Draw it before Friday.',
+    body: reward ? `Draw it before Saturday. Winner gets ${reward}.` : 'Draw it before Saturday.',
   },
   android: { priority: 'normal', notification: { priority: 'default', channelId: '1' } },
   data: { type: NotificationType.competition_theme },

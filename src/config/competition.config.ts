@@ -41,8 +41,19 @@ export const CYCLE = {
    * window the results are the only competition content in the app.
    */
   duration_ms: 6 * DAY + 18 * HOUR,
-  /** Offset from starts_at at which submissions stop (votes continue): Friday. */
-  submissions_close_ms: 4 * DAY,
+  /**
+   * Offset from starts_at at which submissions stop and the voting-only phase
+   * begins: Saturday 18:00 UTC, exactly ONE day before `ends_at`.
+   *
+   * It used to be Friday 00:00, i.e. 2d 18h of voting-only. Nearly three days
+   * with nothing left to draw is dead air on the one surface that is supposed
+   * to be the week's event — people stop opening it, and an entry finished on
+   * Thursday sits unseen longer than it was worked on. Voting stays open for
+   * the whole competition (`canVote` covers `open` too), so shrinking this
+   * window takes nothing away from voters; it only moves the submission
+   * deadline later, which is the direction that costs no entries.
+   */
+  submissions_close_ms: 5 * DAY + 18 * HOUR,
   /**
    * How long after `ends_at` the finished competition stays the one the app
    * shows. This is the results moment, and it is the whole point of the week —
@@ -59,7 +70,8 @@ export const CYCLE = {
 /** Shortened cycle used by the dev routes. A full week in six minutes. */
 export const TEST_CYCLE = {
   duration_ms: 6 * MINUTE,
-  submissions_close_ms: 4 * MINUTE,
+  /** Same shape as the real cycle: the last sixth is voting-only. */
+  submissions_close_ms: 5 * MINUTE,
   /** Long enough to actually look at the winners moment before iterating. */
   results_grace_ms: 3 * MINUTE,
 };

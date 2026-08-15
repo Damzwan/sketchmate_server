@@ -31,6 +31,7 @@ const notification_schema = new Schema<NotificationDocument>(
       enum: [
         'post_reaction',
         'post_comment',
+        'post_mention',
         'inbox_drawing',
         'inbox_comment',
         'dm_message',

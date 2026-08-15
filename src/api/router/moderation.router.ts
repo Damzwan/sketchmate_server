@@ -12,6 +12,7 @@ import {
   competition_entry_model
 } from '../../models/competition.model';
 import { CONTAINER } from '../../s3';
+import { snapshotLobbyContext } from '../socket/drawSyncing';
 
 const MAX_REPORT_RATIO = 0.01;
 
@@ -52,7 +53,8 @@ moderationRouter.use(requireAuth);
 // POST /report — user submits a report
 // =============================================================================
 moderationRouter.post('/', async (ctx) => {
-  const { target_id, target_type, reason, details } = ctx.request.body as any;
+  const { target_id, target_type, reason, details, context_room_id } =
+    ctx.request.body as any;
   const reporter_id = ctx.state.user._id.toString();
 
   if (!REPORTABLE[target_type as ReportableType]) {
@@ -86,7 +88,13 @@ moderationRouter.post('/', async (ctx) => {
 
   // Snapshot — for ephemeral OR deletable content. Images cloned to a
   // dedicated bucket so they survive the original being removed.
-  const snapshot = await snapshotContent(target_type, target_id);
+  const snapshot = await snapshotContent(
+    target_type,
+    target_id,
+    typeof context_room_id === 'string' && context_room_id.length <= 100
+      ? context_room_id
+      : undefined
+  );
 
   let report;
   try {
@@ -237,10 +245,23 @@ async function resolveTargetAuthor(
  * Fire-and-forget on clone failure — we never want a snapshot failure to
  * cause the report submission to fail. Partial evidence is fine.
  */
-async function snapshotContent(type: string, id: string): Promise<any> {
+async function snapshotContent(
+  type: string,
+  id: string,
+  contextRoomId?: string
+): Promise<any> {
   const oid = new Types.ObjectId(id);
 
   switch (type) {
+    // An account-level flag has no content of its own. Raised from a lobby it
+    // does have an exchange behind it, and that exchange only exists in the
+    // room's live buffer — so it is captured here or nowhere.
+    case 'user': {
+      if (!contextRoomId) return null;
+      const context = snapshotLobbyContext(contextRoomId, id);
+      return context ? { source: 'lobby', room_id: contextRoomId, context } : null;
+    }
+
     case 'post': {
       const post = await post_model
         .findById(oid)
@@ -334,26 +355,69 @@ async function snapshotContent(type: string, id: string): Promise<any> {
     case 'dm_message': {
       const msg = await message_model.findById(oid).lean() as any;
       if (!msg) return null;
-      // Context window: messages within a 10-minute window around the report
-      // give the moderator enough conversational flow to judge.
-      const context = await message_model
-        .find({
-          conversation_id: msg.conversation_id,
-          createdAt: {
-            $gte: dayjs(msg.createdAt).subtract(10, 'minute').toDate(),
-            $lte: dayjs(msg.createdAt).add(10, 'minute').toDate()
-          }
-        })
-        .sort({ createdAt: 1 })
-        .limit(11)
-        .select('sender_id content createdAt')
-        .lean();
-      return { reported_message: msg.content, context };
+      return {
+        reported_message: msg.content,
+        context: await dmConversationContext(msg)
+      };
     }
 
     default:
       return null;
   }
+}
+
+/** How much conversation rides along with a reported message, either side of it. */
+const CONTEXT_BEFORE = 8;
+const CONTEXT_AFTER = 4;
+
+/**
+ * The messages around a reported one, so a moderator judges the exchange rather
+ * than one line out of it — "shut up" reads differently after a threat than
+ * after a joke, and that is exactly the call being made here.
+ *
+ * Taken as two bounded queries either side of the message rather than one
+ * time-window query with a `limit`. A window sorted ascending and capped spends
+ * its whole budget on the OLDEST messages in the window, so a busy conversation
+ * returned nothing after the reported line — the half that shows what the
+ * reported message provoked.
+ */
+async function dmConversationContext(msg: any) {
+  const [before, after] = await Promise.all([
+    message_model
+      .find({ conversation_id: msg.conversation_id, createdAt: { $lt: msg.createdAt } })
+      .sort({ createdAt: -1 })
+      .limit(CONTEXT_BEFORE)
+      .select('sender_id content createdAt shared_post_id shared_inbox_item_id')
+      .lean(),
+    message_model
+      .find({ conversation_id: msg.conversation_id, createdAt: { $gt: msg.createdAt } })
+      .sort({ createdAt: 1 })
+      .limit(CONTEXT_AFTER)
+      .select('sender_id content createdAt shared_post_id shared_inbox_item_id')
+      .lean()
+  ]) as any[][];
+
+  const rows = [...before.reverse(), msg, ...after];
+
+  // Names, once, for the two or three participants — an id tells a moderator
+  // nothing about who is doing the talking.
+  const senderIds = [...new Set(rows.map(r => String(r.sender_id)).filter(Boolean))];
+  const users = await user_model
+    .find({ _id: { $in: senderIds } })
+    .select('name')
+    .lean() as any[];
+  const nameById = new Map(users.map(u => [String(u._id), u.name]));
+
+  const reportedId = String(msg._id);
+  return rows.map(r => ({
+    _id: String(r._id),
+    sender_id: String(r.sender_id ?? ''),
+    name: nameById.get(String(r.sender_id)) ?? 'Unknown',
+    content: r.content ?? '',
+    has_attachment: !!(r.shared_post_id || r.shared_inbox_item_id),
+    createdAt: r.createdAt,
+    is_reported: String(r._id) === reportedId
+  }));
 }
 
 async function getReporterTrust(reporterId: string): Promise<number> {

@@ -391,15 +391,60 @@ export interface BasePost {
     category_label: string;
     theme?: string;
   };
+  /**
+   * Lineage. Set at publish time when the drawing was started from another
+   * post's canvas, resolved server-side from the origin post — never taken
+   * from the client, so it can't be used to fake an association.
+   */
+  remix_of?: {
+    post_id: string;
+    author_id: string;
+  };
+  /**
+   * Peers who drew on this canvas in a shared room. Client-proposed and
+   * server-verified: only ids that resolve to real users survive, and the list
+   * is capped so an open lobby can't produce an unbounded credit line.
+   */
+  collaborators?: string[];
+  /**
+   * Deliberate shoutouts the artist picked in the composer. Structured ids, not
+   * parsed out of the caption text: that keeps renames from rotting, keeps a
+   * tag from being forged by typing someone's name, and gives the tagged person
+   * something concrete to remove.
+   */
+  mentions?: string[];
 }
 
-export type FeedPost = Omit<BasePost, "createdAt" | "updatedAt"> & {
+/** The trimmed author shape credits render with — no `customization`. */
+export interface PostCreditUser {
+  _id: string;
+  name: string;
+  img: string;
+}
+
+export type FeedPost = Omit<
+  BasePost,
+  "createdAt" | "updatedAt" | "remix_of" | "collaborators" | "mentions"
+> & {
   author: { _id: string; name: string; img: string; customization?: any };
   user_reaction: string | null;
   comments: any[];
   createdAt: string;
   updatedAt: string;
   commentsLoaded?: boolean;
+  /**
+   * Hydrated twin of `BasePost['remix_of']`. Carries name + img only: the feed
+   * already ships the full customization for the post's own author, and a
+   * second decorated identity per card is the thing that would make it heavy.
+   */
+  remix_of?: {
+    post_id: string;
+    author: PostCreditUser;
+  };
+  /** Hydrated twin of `BasePost['collaborators']`. Omitted when empty. */
+  collaborators?: PostCreditUser[];
+  /** Hydrated twin of `BasePost['mentions']`. Omitted when empty. */
+  mentions?: PostCreditUser[];
 };
 
 export interface InboxItem {
@@ -920,6 +965,7 @@ export interface QuotaSummary {
 export type NotificationKind =
   | "post_reaction"
   | "post_comment"
+  | "post_mention"
   | "inbox_drawing"
   | "inbox_comment"
   | "dm_message"

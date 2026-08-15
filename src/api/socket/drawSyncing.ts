@@ -932,6 +932,41 @@ You will be disconnected. I am sorry :(`,
   socket.emit('lobby-message', payload);
 }
 
+/**
+ * The recent lobby chat, for a report raised inside a lobby.
+ *
+ * Lobby messages are never persisted (see the `lobby-message` handler), so the
+ * only copy is this in-memory ring — once the room empties, the exchange the
+ * reporter was reacting to is gone for good. A report has to take its evidence
+ * out of the buffer at the moment it is filed or have none at all.
+ *
+ * `aboutUserId` is a relevance gate, not an auth check: the room id comes from
+ * the reporter's client, and a buffer where the reported user never spoke is
+ * either the wrong room or a fabricated one. Either way it is not evidence.
+ */
+export function snapshotLobbyContext(
+  roomId: string,
+  aboutUserId: string,
+  limit = 20
+) {
+  const roomState = ROOM_STATES.get(roomId);
+  if (!roomState?.messageBuffer?.length) return null;
+
+  const messages = roomState.messageBuffer
+    .slice(-limit)
+    .map((entry: any) => ({
+      sender_id: String(entry.payload?.member?._id ?? ''),
+      name: entry.payload?.member?.name ?? 'Unknown',
+      // The raw text: a censored copy is worthless as evidence.
+      content: entry.payload?.message ?? '',
+      createdAt: entry.payload?.timestamp ?? new Date(entry.timestampMs).toISOString()
+    }))
+    .filter((m: any) => m.content);
+
+  if (!messages.some((m: any) => m.sender_id === String(aboutUserId))) return null;
+  return messages;
+}
+
 export function getPublicLobbiesSnapshot(io: Server) {
   return Array.from(PUBLIC_LOBBY_ROOMS.values()).map(room => {
     const clients = io.sockets.adapter.rooms.get(room.id);

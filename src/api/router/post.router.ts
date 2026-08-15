@@ -18,7 +18,8 @@ import { requireAdultAccount } from '../services/parental.service';
 import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
-import { hydrateFeedPosts, shapeFeedPost } from '../services/post.service';
+import { fetchRemixCredits, hydrateFeedPosts, shapeFeedPost, shapePostCredits } from '../services/post.service';
+import { isChildDob } from '../services/parental.service';
 import { quota_usage_model } from '../../models/quota_usage.model';
 import { startOfUtcDay } from '../../config/quota.config';
 import { dispatchNotification } from '../services/notification.service';
@@ -57,6 +58,130 @@ postRouter.post('/upload-urls', requireAuth, requireCapability(Capability.CREATE
   }
 });
 
+/**
+ * Resolve the lineage stamp for a publish. The client sends only the origin
+ * post id — the author is read off the origin here, so a client can't credit
+ * (or blame) someone it wasn't actually derived from.
+ *
+ * Returns `undefined` for every case where the credit isn't earned, rather than
+ * failing the publish: the drawing is already finished by this point, and
+ * losing an attribution line is a far better outcome than losing the artwork.
+ */
+async function resolveRemixOf(
+  originPostId: unknown,
+  publisherId: Types.ObjectId
+): Promise<{ post_id: Types.ObjectId; author_id: Types.ObjectId } | undefined> {
+  if (typeof originPostId !== 'string' || !Types.ObjectId.isValid(originPostId)) return undefined;
+
+  const origin = await post_model
+    .findById(originPostId)
+    .select('_id author_id enable_remix status')
+    .lean() as unknown as (Pick<LeanPost, '_id' | 'author_id' | 'enable_remix' | 'status'> | null);
+
+  if (!origin) return undefined;
+  // A post the artist opted out of remixes on doesn't get their name stamped
+  // onto someone else's work — that opt-out is the whole signal here.
+  if (origin.enable_remix === false) return undefined;
+  if (origin.status && origin.status !== 'active') return undefined;
+  // Remixing your own drawing is a normal thing to do and needs no credit row.
+  if (origin.author_id.toString() === publisherId.toString()) return undefined;
+
+  return { post_id: origin._id, author_id: origin.author_id };
+}
+
+/** Stored ceiling on the collaborator list. The row itself shows three faces. */
+const MAX_COLLABORATORS = 12;
+
+/**
+ * A shoutout is a deliberate act, not a record of one, so the cap is much
+ * tighter than the collaborator one — three names is a credit, twenty is a
+ * broadcast, and every name here becomes a notification.
+ */
+const MAX_MENTIONS = 3;
+
+/**
+ * Verify a list of credited user ids a client proposes. Both kinds of credit
+ * have to be client-supplied — the server has no record of who drew in a room
+ * once the session ends, and a shoutout is a choice only the artist can make —
+ * so every id is re-checked here.
+ *
+ * Under-13 accounts are dropped. They are allowed in rooms (with a parent's
+ * switch) and are not allowed on the public feed; crediting one by name on a
+ * public post would put a child's identity on a stranger surface through the
+ * back door, which is exactly what the feed's own age gate exists to prevent.
+ */
+async function resolveCredits(
+  proposed: unknown,
+  publisherId: Types.ObjectId,
+  cap: number
+): Promise<Types.ObjectId[]> {
+  if (!Array.isArray(proposed) || proposed.length === 0) return [];
+
+  const publisher = publisherId.toString();
+  const candidateIds = [
+    ...new Set(
+      proposed
+        .filter((id): id is string => typeof id === 'string' && Types.ObjectId.isValid(id))
+        .filter(id => id !== publisher)
+    )
+  ].slice(0, cap);
+
+  if (candidateIds.length === 0) return [];
+
+  const users = await user_model
+    .find({ _id: { $in: candidateIds.map(id => new Types.ObjectId(id)) } })
+    .select('_id date_of_birth')
+    .lean() as unknown as { _id: Types.ObjectId; date_of_birth?: Date }[];
+
+  const eligible = new Set(
+    users.filter(user => !isChildDob(user.date_of_birth)).map(user => user._id.toString())
+  );
+
+  // Ordered by the client's list, not by the query: for collaborators that
+  // order is "who drew first", and for mentions it is the order the artist
+  // picked them — both are the order the credit row should read in.
+  return candidateIds.filter(id => eligible.has(id)).map(id => new Types.ObjectId(id));
+}
+
+/**
+ * Mentions on top of the generic credit check: you can only shout out a
+ * PERMANENT mate.
+ *
+ * Not a UI nicety — the composer only offers permanent mates, but the composer
+ * is not the security boundary. Without this, a crafted publish could put any
+ * user's name and face on a public post, which is a way to drag someone into
+ * a stranger's content without ever having met them. A 24h trial is excluded
+ * for the same reason: it is not yet a relationship either party has committed
+ * to.
+ *
+ * Collaborators deliberately do NOT get this check — public lobbies are full of
+ * strangers, and someone who actually drew on the canvas earns the credit
+ * whether or not you went on to become mates.
+ */
+async function resolveMentions(
+  proposed: unknown,
+  publisherId: Types.ObjectId
+): Promise<Types.ObjectId[]> {
+  const candidates = await resolveCredits(proposed, publisherId, MAX_MENTIONS);
+  if (candidates.length === 0) return [];
+
+  const mateRelationships = await relationship_model
+    .find({
+      chat_status: 'mate',
+      $and: [{ users: publisherId }, { users: { $in: candidates } }]
+    })
+    .select('users')
+    .lean() as unknown as { users: Types.ObjectId[] }[];
+
+  const mateIds = new Set(
+    mateRelationships.flatMap(rel =>
+      rel.users.map(id => id.toString()).filter(id => id !== publisherId.toString())
+    )
+  );
+
+  return candidates.filter(id => mateIds.has(id.toString()));
+}
+
 postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POST), requireAdultAccount(PUBLIC_FEED_AGE_MESSAGE), async (ctx) => {
   const {
     drawing_url,
@@ -65,11 +190,22 @@ postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POS
     aspect_ratio,
     description,
     enable_comments,
-    enable_remix
+    enable_remix,
+    remix_of_post_id,
+    collaborator_ids,
+    mention_ids
   } = ctx.request.body;
   const authorObjectId = new Types.ObjectId(ctx.state.user._id);
 
+  console.log(collaborator_ids, mention_ids)
+
   try {
+    const [remix_of, collaborators, mentions] = await Promise.all([
+      resolveRemixOf(remix_of_post_id, authorObjectId),
+      resolveCredits(collaborator_ids, authorObjectId, MAX_COLLABORATORS),
+      resolveMentions(mention_ids, authorObjectId)
+    ]);
+
     const [postDoc, authorDoc] = await Promise.all([
       post_model.create({
         author_id: authorObjectId,
@@ -79,7 +215,10 @@ postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POS
         aspect_ratio,
         description,
         enable_comments,
-        enable_remix
+        enable_remix,
+        ...(remix_of && { remix_of }),
+        ...(collaborators.length && { collaborators }),
+        ...(mentions.length && { mentions })
       }) as Promise<PostDocument>,
       user_model
         .findById(authorObjectId)
@@ -107,13 +246,39 @@ postRouter.post('/publish', requireAuth, requireCapability(Capability.CREATE_POS
       }
       : { _id: ctx.state.user._id.toString(), name: 'Unknown', img: '' };
 
-    const hydrated = shapeFeedPost(leanPost, author, null, []);
+    // Only on the rare credited path, and only after the post itself is safely
+    // created — a failed lookup here must not cost the artist their publish.
+    const credits =
+      remix_of || collaborators.length || mentions.length
+        ? (await fetchRemixCredits([leanPost]))[leanPost._id.toString()]
+        : undefined;
+
+    const hydrated = shapeFeedPost(leanPost, author, null, [], credits);
+
+    // Told, not discovered. A shoutout nobody sees is not a shoutout — and this
+    // is also how someone learns they were tagged so they can remove it.
+    // Fire-and-forget: a notification failure must not fail the publish.
+    for (const mentionedId of mentions) {
+      void dispatchNotification({
+        recipient_id: mentionedId.toString(),
+        type: 'post_mention',
+        actor: { _id: author._id, name: author.name, img: author.img },
+        target_type: 'post',
+        target_id: leanPost._id.toString(),
+        target_preview: { thumbnail: leanPost.thumbnail_url },
+        // In-app only, matching the other post notifications — a shoutout is
+        // not urgent enough to be worth a push.
+        channels: { in_app: true }
+      }).catch(error => console.error('Mention notification failed:', error));
+    }
 
     trackEvent(author._id, mixpanelEvents.post_v2_publish, {
       post_id: leanPost._id.toString(),
       has_description: !!description,
       enable_comments: !!enable_comments,
       enable_remix: !!enable_remix,
+      is_remix: !!remix_of,
+      collaborator_count: collaborators.length,
       aspect_ratio
     });
 
@@ -792,6 +957,41 @@ postRouter.post('/:post_id/react', requireAuth, requireCapability(Capability.REA
   }
 });
 
+/**
+ * Remove YOUR OWN name from someone else's post.
+ *
+ * The cheap alternative to an accept-before-it-shows flow: a shoutout appears
+ * immediately (which is the point of a shoutout), and the person named keeps
+ * the last word on whether their name stays on a stranger's post. Only ever
+ * touches the caller's own id, so it is not a way to edit someone else's
+ * credits — and it deliberately leaves the post itself alone.
+ */
+postRouter.delete('/:post_id/mention', requireAuth, async (ctx) => {
+  const { post_id } = ctx.params;
+  const user_id = ctx.state.user._id.toString();
+
+  if (!Types.ObjectId.isValid(post_id)) {
+    ctx.status = 404;
+    ctx.body = { error: 'Post not found' };
+    return;
+  }
+
+  const result = await post_model.updateOne(
+    { _id: post_id },
+    { $pull: { mentions: new Types.ObjectId(user_id) } }
+  );
+
+  if (result.matchedCount === 0) {
+    ctx.status = 404;
+    ctx.body = { error: 'Post not found' };
+    return;
+  }
+
+  // Idempotent by design: removing a tag that is already gone is a success,
+  // not an error — the caller's name is not on the post either way.
+  ctx.body = { removed: result.modifiedCount > 0 };
+});
+
 postRouter.delete('/:post_id', requireAuth, async (ctx) => {
   const { post_id } = ctx.params;
   const user_id = ctx.state.user._id.toString();
@@ -977,12 +1177,18 @@ postRouter.get('/:id', async (ctx) => {
     };
   });
 
+  // Credits are stored as bare ids, so they can't ride the spread below — they
+  // need the same reshape into hydrated users the feed does.
+  const leanPost = post as unknown as LeanPost;
+  const credits = (await fetchRemixCredits([leanPost]))[post._id.toString()];
+
   // Match the FeedPost shape your frontend expects
-  const { author_id, ...rest } = post as any;
+  const { author_id, remix_of, collaborators, mentions, ...rest } = post as any;
   ctx.body = {
     post: {
       ...rest,
       author: author_id,
+      ...shapePostCredits(leanPost, credits),
       user_reaction: null, // or compute from a reactions lookup if you have one
       comments
     }

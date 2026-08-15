@@ -615,12 +615,20 @@ relationshipRouter.get('/:user_id/network/:type', async (ctx) => {
     query.chat_status = 'blocked';
     query.blocked_by = oid;
   } else if (type === 'mates') {
-    // Permanent mates + pending requests always count. A 'temporary' (24h trial)
-    // only counts while it hasn't expired — an expired trial is not a mate.
-    query.$or = [
-      { chat_status: { $in: ['mate', 'pending_mate'] } },
-      { chat_status: 'temporary', expires_at: { $gt: new Date() } }
-    ];
+    // `?status=mate` narrows to PERMANENT mates only. Opt-in, so every existing
+    // caller keeps the broad list: pickers that hand someone a drawing are
+    // happy to include a live trial, but ones that put a name on a public post
+    // are not — a 24h trial is not a friendship worth publishing.
+    if (String(ctx.query.status || '') === 'mate') {
+      query.chat_status = 'mate';
+    } else {
+      // Permanent mates + pending requests always count. A 'temporary' (24h trial)
+      // only counts while it hasn't expired — an expired trial is not a mate.
+      query.$or = [
+        { chat_status: { $in: ['mate', 'pending_mate'] } },
+        { chat_status: 'temporary', expires_at: { $gt: new Date() } }
+      ];
+    }
   } else if (type === 'followers') {
     query.follows = { $elemMatch: { followed: oid } };
   } else if (type === 'following') {

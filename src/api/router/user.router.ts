@@ -38,6 +38,7 @@ import {
   shouldShowThoughtPrompt,
   syncAndFinalizeMigrationStats
 } from '../../helper';
+import { fetchRemixCredits, shapeFeedPost } from '../services/post.service';
 import { subscribeV2, unsubscribeV2 } from '../services/user.service';
 import { getPublicLobbiesSnapshot } from '../socket/drawSyncing';
 import { router } from './router';
@@ -93,34 +94,17 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
       customization: authorInfo.customization
     } : { _id: targetUserId, name: 'Unknown', img: '' };
 
+    const remixCredits = await fetchRemixCredits(posts);
+
     const hydratedPosts: FeedPost[] = posts.map((post) => {
       const postIdStr = post._id.toString();
-      const authorIdStr = post.author_id.toString();
-
-      return {
-        _id: postIdStr,
-        author_id: authorIdStr,
-        drawing_url: post.drawing_url,
-        image_url: post.image_url,
-        thumbnail_url: post.thumbnail_url,
-        aspect_ratio: post.aspect_ratio,
-        enable_remix: post.enable_remix ?? true,
-        enable_comments: post.enable_comments ?? true,
-        description: post.description || '',
-        status: post.status || 'active',
-        comment_count: post.comment_count || 0,
-        reports_count: post.reports_count || 0,
-        views: post.views || 0,
-        total_reactions: post.total_reactions || 0,
+      return shapeFeedPost(
+        post,
         author,
-        user_reaction: userReactionMap[postIdStr] || null,
-        reaction_counts: post.reaction_counts instanceof Map
-          ? Object.fromEntries(post.reaction_counts)
-          : post.reaction_counts || {},
-        comments: [],
-        createdAt: new Date(post.createdAt).toISOString(),
-        updatedAt: new Date(post.updatedAt).toISOString()
-      };
+        userReactionMap[postIdStr] || null,
+        [],
+        remixCredits[postIdStr]
+      );
     });
     ctx.body = { posts: hydratedPosts };
   } catch (error) {
@@ -365,32 +349,18 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
       return acc;
     }, {} as Record<string, string>);
 
+    const remixCredits = await fetchRemixCredits(posts);
+    const profileAuthor = { _id: user._id.toString(), name: user.name, img: user.img };
+
     const hydratedPosts: FeedPost[] = posts.map(post => {
       const postIdStr = post._id.toString();
-      return {
-        _id: postIdStr,
-        author_id: post.author_id.toString(),
-        drawing_url: post.drawing_url,
-        image_url: post.image_url,
-        thumbnail_url: post.thumbnail_url,
-        aspect_ratio: post.aspect_ratio,
-        enable_remix: post.enable_remix ?? true,
-        enable_comments: post.enable_comments ?? true,
-        description: post.description || '',
-        status: post.status || 'active',
-        comment_count: post.comment_count || 0,
-        reports_count: post.reports_count || 0,
-        views: post.views || 0,
-        total_reactions: post.total_reactions || 0,
-        author: { _id: user._id.toString(), name: user.name, img: user.img },
-        user_reaction: userReactionMap[postIdStr] || null,
-        reaction_counts: post.reaction_counts instanceof Map
-          ? Object.fromEntries(post.reaction_counts)
-          : post.reaction_counts || {},
-        comments: [],
-        createdAt: new Date(post.createdAt).toISOString(),
-        updatedAt: new Date(post.updatedAt).toISOString()
-      };
+      return shapeFeedPost(
+        post,
+        profileAuthor,
+        userReactionMap[postIdStr] || null,
+        [],
+        remixCredits[postIdStr]
+      );
     });
 
     ctx.body = {

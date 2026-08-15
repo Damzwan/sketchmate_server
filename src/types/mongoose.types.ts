@@ -11,10 +11,16 @@ import {
 } from './types';
 import { Document } from 'mongodb';
 
-export interface PostDocument extends Document, Omit<BasePost, '_id' | 'author_id' | 'reaction_counts' | 'createdAt' | 'updatedAt'> {
+export interface PostDocument extends Document, Omit<BasePost, '_id' | 'author_id' | 'reaction_counts' | 'createdAt' | 'updatedAt' | 'remix_of' | 'collaborators' | 'mentions'> {
   _id: Types.ObjectId;
   author_id: Types.ObjectId;
   reaction_counts: Map<string, number>;
+  remix_of?: {
+    post_id: Types.ObjectId;
+    author_id: Types.ObjectId;
+  };
+  collaborators?: Types.ObjectId[];
+  mentions?: Types.ObjectId[];
   createdAt: Date;
   updatedAt: Date;
 }
