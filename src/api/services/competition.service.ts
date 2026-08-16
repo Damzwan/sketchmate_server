@@ -13,7 +13,6 @@ import {
   isTestWeekKey,
   RESULTS_LOOKBACK_MS,
   SCORING_HOLD_MS,
-  automaticCompetitionStart,
   competitionLaunchAt,
   startOfIsoWeekUtc,
   weekKeyFor,
@@ -162,33 +161,6 @@ export async function createCompetition(options: CreateOptions = {}): Promise<Co
 }
 
 /**
- * Guarantee a fair real competition exists.
- *
- * A competition may only be auto-created in the current week during the short
- * Monday recovery window. Later than that, create (or reuse) next Monday's
- * scheduled competition so enabling the feature midweek never launches a
- * shortened cycle. Admin-scheduled weeks win through the unique `week_key`.
- */
-export async function ensureCurrentCompetition(now: Date = new Date()): Promise<CompetitionDocument> {
-  const launchAt = competitionLaunchAt();
-  if (launchAt && now.getTime() < launchAt.getTime()) {
-    const launchKey = weekKeyFor(launchAt);
-    const launch = await competition_model.findOne({ week_key: launchKey });
-    if (launch) return launch;
-    return createCompetition({ week_key: launchKey, starts_at: launchAt });
-  }
-
-  const current = await competition_model.findOne({ week_key: weekKeyFor(now) });
-  if (current) return current;
-
-  const startsAt = automaticCompetitionStart(now);
-  const key = weekKeyFor(startsAt);
-  const existing = await competition_model.findOne({ week_key: key });
-  if (existing) return existing;
-  return createCompetition({ week_key: key, starts_at: startsAt });
-}
-
-/**
  * The competition to show right now.
  *
  * Priority, and the order matters:
@@ -262,11 +234,12 @@ function holdsResults(comp: CompetitionDocument, now: Date): boolean {
 // ─── PHASE ADVANCE ───────────────────────────────────────────────────────────
 
 /**
- * Recompute every unfinished competition's phase from the clock, score and
- * announce anything that has ended, and make sure the current week exists.
+ * Recompute every unfinished competition's phase from the clock, and score and
+ * announce anything that has ended.
  *
  * Safe to call on every cron tick and on boot. A server that was down all
- * weekend catches up here.
+ * weekend catches up here. It never creates a competition: weeks exist only
+ * because an admin scheduled them (or a dev started a compressed test).
  */
 export async function advancePhases(now: Date = new Date()): Promise<void> {
   const launchAt = competitionLaunchAt();
@@ -296,8 +269,6 @@ export async function advancePhases(now: Date = new Date()): Promise<void> {
       console.error(`[competition] advance failed for ${comp.week_key}:`, error);
     }
   }
-
-  await ensureCurrentCompetition(now);
 }
 
 // ─── SCORING ─────────────────────────────────────────────────────────────────

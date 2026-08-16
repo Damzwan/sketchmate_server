@@ -256,13 +256,6 @@ export const ENTRIES_PAGE_SIZE = 24;
 /** Kill switch — flip off and /current returns null, the home card renders nothing. */
 export const isCompetitionEnabled = (): boolean => process.env.COMPETITION_ENABLED !== '0';
 
-/**
- * Operational recovery window after Monday 00:00 UTC. Once it has passed, a
- * missing real competition is scheduled for next Monday instead of backdated
- * into a shortened week.
- */
-export const AUTO_START_GRACE_MS = 6 * HOUR;
-
 // ─── WEEK KEYS ───────────────────────────────────────────────────────────────
 
 /** Monday 00:00 UTC of the ISO week containing `date`. */
@@ -297,16 +290,6 @@ export function competitionLaunchAt(): Date | null {
   return requested.getTime() === containingMonday.getTime()
     ? requested
     : startOfNextIsoWeekUtc(requested);
-}
-
-/** The first fair real-cycle slot the unattended creator may use. */
-export function automaticCompetitionStart(now: Date = new Date()): Date {
-  const launchAt = competitionLaunchAt();
-  if (launchAt && now.getTime() < launchAt.getTime()) return launchAt;
-
-  const currentWeekStart = startOfIsoWeekUtc(now);
-  const elapsed = now.getTime() - currentWeekStart.getTime();
-  return elapsed <= AUTO_START_GRACE_MS ? currentWeekStart : startOfNextIsoWeekUtc(now);
 }
 
 /** ISO-8601 week key, e.g. "2026-W33". Unique per real week; the idempotency key. */
