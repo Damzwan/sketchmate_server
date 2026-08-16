@@ -12,7 +12,8 @@
     "start": "cross-env NODE_ENV=development nodemon",
     "start:heroku": "node dist/src/main.js",
     "build": "tsc",
-    "admin:entitle": "ts-node src/scripts/set-admin-entitlement.ts"
+    "admin:entitle": "ts-node src/scripts/set-admin-entitlement.ts",
+    "moderation:bucket": "ts-node src/scripts/create-moderation-bucket.ts"
   },
   "keywords": [],
   "author": "",

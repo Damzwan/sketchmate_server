@@ -155,6 +155,14 @@ const user_schema = new Schema<UserDocument>({
   // of this audience is young, and the safe state is the one you have to opt
   // out of.
   profanity_filter: { type: Boolean, default: true },
+  // Presence privacy only: invisible users stay connected so chat, push
+  // routing and collaborative rooms continue to work normally.
+  presence_invisible: { type: Boolean, default: false },
+  presence_status: {
+    type: String,
+    enum: ['online', 'busy', 'invisible'],
+    default: 'online'
+  },
   migration_version: { type: Number, default: 0 },
   is_admin: { type: Boolean, required: false },
   inventory: { type: [String], default: [] }

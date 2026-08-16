@@ -71,6 +71,12 @@ export const REPORTABLE = {
   dm_message: { quarantine_threshold: 999, auto_hide: false, label: 'Message' },  // never auto-acts; manual only
   lobby_message: { quarantine_threshold: 2, auto_hide: false, label: 'Lobby message' },
   lobby_drawing: { quarantine_threshold: 2, auto_hide: false, label: 'Lobby drawing' },
+  // A photo one artist pushed onto everyone else's screen in a live room, and
+  // the room is where children draw with strangers. The least tolerant surface
+  // in the app: one report pulls the image from every screen immediately and
+  // puts the author in front of a moderator. Re-sharing is one tap, so a wrong
+  // call costs the owner nothing.
+  lobby_reference: { quarantine_threshold: 1, auto_hide: true, label: 'Reference image' },
   // Threshold 2, not 3 like posts: an entry sits on a promoted surface with a
   // prize attached, so err toward review.
   competition_entry: { quarantine_threshold: 2, auto_hide: false, label: 'Competition entry' },

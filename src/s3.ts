@@ -1,7 +1,7 @@
 import {
   CopyObjectCommand,
   CreateBucketCommand,
-  DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command,
+  DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command,
   PutObjectCommand,
   PutObjectCommandInput,
   S3Client
@@ -188,6 +188,10 @@ export class S3Creator {
 
       await this.s3Client.send(new CopyObjectCommand({
         Bucket: CONTAINER.moderation_snapshots,
+        // Without a destination Key the copy throws, the catch below turns it
+        // into `null`, and the report is filed with no evidence — silently.
+        // Every visual snapshot went missing this way.
+        Key: destKey,
         // CopySource format: "{source-bucket}/{source-key}", URL-encoded
         CopySource: encodeURIComponent(`${sourceBucket}/${key}`)
       } as any));
@@ -207,16 +211,51 @@ export class S3Creator {
   async getSnapshotSignedUrl(snapshotUrl: string): Promise<string | null> {
     if (!snapshotUrl || !this.s3Client) return null;
     try {
-      const key = snapshotUrl.substring(snapshotUrl.lastIndexOf('/') + 1);
+      // The WHOLE path, not the last segment: snapshot keys carry a `YYYY-MM-DD/`
+      // prefix, and signing `uuid-name.webp` signs an object that isn't there.
+      const key = decodeURIComponent(new URL(snapshotUrl).pathname).replace(/^\/+/, '');
+      if (!key) return null;
+
+      // Signing never checks existence, so a wrong key produces a URL that only
+      // fails in the dashboard's <img> — as a blank box, with the reason buried
+      // in an S3 error body nobody sees. Resolve it here instead, and fall back
+      // to the flat key that earlier snapshots were written with.
+      const resolved = (await this.snapshotKeyExists(key))
+        ? key
+        : await this.firstExistingSnapshotKey([key.substring(key.lastIndexOf('/') + 1)]);
+      if (!resolved) {
+        console.warn(`Snapshot object missing for key "${key}"`);
+        return null;
+      }
+
       const getCommand = new GetObjectCommand({
         Bucket: CONTAINER.moderation_snapshots,
-        Key: key
+        Key: resolved
       });
       return await getSignedUrl(this.s3Client as any, getCommand as any, { expiresIn: 900 });
     } catch (e) {
       console.error('Failed to sign snapshot URL:', e);
       return null;
     }
+  }
+
+  private async snapshotKeyExists(key: string): Promise<boolean> {
+    try {
+      await this.s3Client!.send(new HeadObjectCommand({
+        Bucket: CONTAINER.moderation_snapshots,
+        Key: key
+      }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async firstExistingSnapshotKey(keys: string[]): Promise<string | null> {
+    for (const key of keys) {
+      if (key && (await this.snapshotKeyExists(key))) return key;
+    }
+    return null;
   }
 
   async uploadLobbyThumbnail(

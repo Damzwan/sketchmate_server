@@ -37,6 +37,17 @@ const PUBLIC_LOBBY_ROOMS = new Map<string, PublicLobby>([
 
 const ROOM_STATES = new Map();
 const MAX_BUFFER_SIZE = 100;
+/**
+ * Shared reference images live only in the clients' memory and in the relayed
+ * action — nothing about them is persisted. A report filed on one therefore has
+ * to take its evidence out of the live room, exactly like lobby chat does, so
+ * the room keeps the last few images it has seen.
+ *
+ * The dataUrl is bounded by the client's own 600KB per-action limit; this cap
+ * bounds how many of them a room can pin in memory at once.
+ */
+const MAX_TRACKED_REFERENCES = 12;
+const MAX_TRACKED_REFERENCE_BYTES = 3 * 1024 * 1024;
 const DISCONNECT_GRACE_PERIOD_MS = 15000;
 const MAX_MESSAGE_BUFFER = 50;
 const ROOM_CLEANUP_TIMEOUT_MS = 30000;
@@ -150,6 +161,13 @@ function getOrCreateRoomState(roomId: any) {
       cleanupTimeout: null,
 
       messageBuffer: [],
+      // referenceId -> { ownerId, name, dataUrl, at }. Owner comes from the
+      // socket, never from the payload.
+      sharedReferences: new Map(),
+      // Reported-and-pulled references. Kept for the life of the room because
+      // the cached canvas snapshot is an opaque gzip blob we cannot edit: a
+      // joiner loads the image out of it and has to be told to drop it.
+      purgedReferences: new Set(),
       ghostUsers: new Map(),
 
       // Claimed areas: lobby-scoped read-only regions, max 2 per user. Cleared
@@ -165,7 +183,17 @@ function getOrCreateRoomState(roomId: any) {
   return ROOM_STATES.get(roomId);
 }
 
+/**
+ * The io instance, captured on the first handler registration.
+ *
+ * Moderation runs on the HTTP side and has no socket of its own, but pulling a
+ * reported image off everyone's screen has to happen on the live room — see
+ * `purgeLobbyReference`.
+ */
+let ioRef: Server | null = null;
+
 export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
+  ioRef = io;
 
   socket.on('join-room', async ({ roomId, intent, lastSequenceId, lastSessionId }) => {
 
@@ -317,7 +345,10 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
       isCreator: intent === 'create' || (isPublic && potentialHosts.length == 0),
       sessionId: roomState.sessionId,
       isPublic,
-      claimedAreas: roomState.claimedAreas || []
+      claimedAreas: roomState.claimedAreas || [],
+      // The cached snapshot can still carry a reported image; this is what lets
+      // the joiner drop it on the way in.
+      purgedReferences: Array.from(roomState.purgedReferences || [])
     });
 
     // ---- THE VERSIONING SPLIT ----
@@ -666,6 +697,10 @@ export function registerDrawSyncingHandlers(io: Server, socket: Socket) {
   socket.on('draw-event', async ({ roomId, action }) => {
     const roomState = getOrCreateRoomState(roomId);
 
+    if (!trackSharedReference(roomState, action, socket.data.user?._id?.toString())) {
+      return;
+    }
+
     roomState.currentSequenceId += 1;
 
     roomState.actionBuffer.push({ sequenceId: roomState.currentSequenceId, ...action, userId: socket.data.user._id });
@@ -930,6 +965,96 @@ You will be disconnected. I am sorry :(`,
   };
 
   socket.emit('lobby-message', payload);
+}
+
+/**
+ * Record a shared reference image against the room, keyed by the id its owner
+ * generated. Called on the relay path, so it sees exactly what the peers see.
+ *
+ * `ownerId` is the AUTHENTICATED socket user, not `reference.ownerId` from the
+ * payload — a report has to name the person who actually pushed the image, and
+ * the payload field is client-supplied.
+ */
+function trackSharedReference(roomState: any, action: any, ownerId?: string): boolean {
+  if (!action?.type || !ownerId) return true;
+
+  if (action.type === 'ReferenceRemoved') {
+    const removed = action.params?.referenceId;
+    if (typeof removed === 'string') roomState.sharedReferences.delete(removed);
+    return true;
+  }
+  if (action.type !== 'ReferenceAdded') return true;
+
+  const reference = action.params?.reference;
+  if (!reference || typeof reference.id !== 'string') return true;
+  if (typeof reference.dataUrl !== 'string') return true;
+  // Re-sharing under the same id is how a purge would be undone. The owner can
+  // share the image again — it gets a new id and can be reported again.
+  if (roomState.purgedReferences.has(reference.id)) return false;
+
+  roomState.sharedReferences.set(reference.id, {
+    ownerId,
+    name: typeof reference.name === 'string' ? reference.name.slice(0, 100) : '',
+    dataUrl: reference.dataUrl,
+    at: new Date().toISOString()
+  });
+
+  // Oldest out first — Map preserves insertion order. Bounded by BOTH count and
+  // bytes: twelve images at the client's 380KB ceiling is ~4.5MB, and a server
+  // holding that for every live room is a memory profile nobody signed up for.
+  let tracked = 0;
+  for (const entry of roomState.sharedReferences.values()) {
+    tracked += entry.dataUrl.length;
+  }
+  while (
+    roomState.sharedReferences.size > MAX_TRACKED_REFERENCES ||
+    (tracked > MAX_TRACKED_REFERENCE_BYTES && roomState.sharedReferences.size > 1)
+  ) {
+    const oldest = roomState.sharedReferences.keys().next().value;
+    tracked -= roomState.sharedReferences.get(oldest)?.dataUrl.length ?? 0;
+    roomState.sharedReferences.delete(oldest);
+  }
+  return true;
+}
+
+/**
+ * Pull a reference off every screen in the room, for good.
+ *
+ * Called when someone reports it: an image nobody consented to is not left up
+ * while a moderator gets to it, and a reference is one tap to share, so the
+ * cost of being wrong is that the owner shares it again.
+ *
+ * Three places can put it back, so all three are handled: the live room (the
+ * broadcast), the replay buffer (the ReferenceAdded is dropped), and the cached
+ * canvas snapshot (opaque gzip — hence the purge list sent to joiners).
+ */
+export function purgeLobbyReference(roomId: string, referenceId: string): boolean {
+  const roomState = ROOM_STATES.get(roomId);
+  if (!roomState) return false;
+
+  roomState.sharedReferences.delete(referenceId);
+  roomState.purgedReferences.add(referenceId);
+  roomState.actionBuffer = roomState.actionBuffer.filter(
+    (entry: any) =>
+      !(entry?.type === 'ReferenceAdded' && entry?.params?.reference?.id === referenceId)
+  );
+
+  ioRef?.to(roomId).emit('reference-purged', { referenceId });
+  return true;
+}
+
+export function getPurgedLobbyReferences(roomId: string): string[] {
+  return Array.from(ROOM_STATES.get(roomId)?.purgedReferences ?? []) as string[];
+}
+
+/**
+ * The shared reference behind a report, or null once the room has forgotten it.
+ * Same contract as `snapshotLobbyContext`: evidence exists only while the room
+ * does, so it is captured when the report is filed or not at all.
+ */
+export function getLobbyReference(roomId: string, referenceId: string) {
+  const entry = ROOM_STATES.get(roomId)?.sharedReferences?.get(referenceId);
+  return entry ? { ...entry } : null;
 }
 
 /**

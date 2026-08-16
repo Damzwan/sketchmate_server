@@ -26,6 +26,7 @@ import { CONTAINER } from '../../s3';
 import {
   ChangeUserNameParams, ENDPOINTS,
   FeedPost, OnLoginEventParams,
+  PresenceStatus,
   RegisterNotificationParams,
   UnRegisterNotificationParams,
   UpdateUserParams,
@@ -41,6 +42,7 @@ import {
 import { fetchRemixCredits, shapeFeedPost } from '../services/post.service';
 import { subscribeV2, unsubscribeV2 } from '../services/user.service';
 import { getPublicLobbiesSnapshot } from '../socket/drawSyncing';
+import { broadcastFriendPresence, userSocketMap } from '../socket/socket';
 import { router } from './router';
 import { buildItemId, FREE_ITEMS, isPaidTier } from '../../config/catalog.config';
 import {
@@ -406,6 +408,7 @@ userRouter.get('/online-friends', requireAuth, async (ctx) => {
 
   const sockets = await io.in(partnerIds).fetchSockets();
   const onlineSet = new Set<string>(sockets
+    .filter((socket: any) => socket.data.user?.presence_invisible !== true)
     .map((socket: any) => socket.data.user?._id?.toString())
     .filter((id: string | undefined): id is string => !!id));
   const onlineIds = partnerIds.filter(id => onlineSet.has(id));
@@ -416,6 +419,70 @@ userRouter.get('/online-friends', requireAuth, async (ctx) => {
   }
 
   ctx.body = onlineIds;
+});
+
+userRouter.put('/presence', requireAuth, async (ctx) => {
+  const requestedStatus = ctx.request.body?.status;
+  const legacyInvisible = ctx.request.body?.presence_invisible;
+  const validStatuses: PresenceStatus[] = ['online', 'busy', 'invisible'];
+  const presenceStatus: PresenceStatus | undefined =
+    validStatuses.includes(requestedStatus)
+      ? requestedStatus
+      : typeof legacyInvisible === 'boolean'
+        ? legacyInvisible ? 'invisible' : 'online'
+        : undefined;
+
+  if (!presenceStatus) {
+    ctx.status = 400;
+    ctx.body = { error: 'status must be online, busy, or invisible' };
+    return;
+  }
+
+  const presenceInvisible = presenceStatus === 'invisible';
+
+  const userId = ctx.state.user._id.toString();
+  await user_model.updateOne(
+    { _id: userId },
+    {
+      $set: {
+        presence_invisible: presenceInvisible,
+        presence_status: presenceStatus
+      }
+    }
+  );
+
+  // Keep every signed-in device consistent and update the state used by the
+  // initial online-friends query without disconnecting any sockets.
+  const activeSockets = userSocketMap[userId] ?? [];
+  activeSockets.forEach((activeSocket) => {
+    if (activeSocket.data.user) {
+      activeSocket.data.user.presence_invisible = presenceInvisible;
+      activeSocket.data.user.presence_status = presenceStatus;
+    }
+    activeSocket.emit('presence:updated', {
+      presence_invisible: presenceInvisible,
+      presence_status: presenceStatus
+    });
+  });
+
+  // Going invisible should clear stale green dots even if this request raced a
+  // disconnect. Going visible is announced only while at least one device is
+  // actually connected.
+  if (presenceInvisible || activeSockets.length > 0) {
+    await broadcastFriendPresence(
+      ctx.app.context.io,
+      userId,
+      !presenceInvisible,
+      activeSockets.find((activeSocket) => activeSocket.data.user?.version)
+        ?.data.user?.version,
+      presenceStatus
+    );
+  }
+
+  ctx.body = {
+    presence_invisible: presenceInvisible,
+    presence_status: presenceStatus
+  };
 });
 
 userRouter.get('/public_users', requireAuth, async (ctx) => {

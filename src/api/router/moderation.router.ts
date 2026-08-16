@@ -12,7 +12,12 @@ import {
   competition_entry_model
 } from '../../models/competition.model';
 import { CONTAINER } from '../../s3';
-import { snapshotLobbyContext } from '../socket/drawSyncing';
+import {
+  getLobbyReference,
+  purgeLobbyReference,
+  snapshotLobbyContext
+} from '../socket/drawSyncing';
+import { createHash } from 'crypto';
 
 const MAX_REPORT_RATIO = 0.01;
 
@@ -79,7 +84,19 @@ moderationRouter.post('/', async (ctx) => {
     return;
   }
 
-  const targetAuthorId = await resolveTargetAuthor(target_type, target_id);
+  const contextRoomId =
+    typeof context_room_id === 'string' && context_room_id.length <= 100
+      ? context_room_id
+      : undefined;
+
+  // A shared reference lives in the room, not the database, so the room is the
+  // only place its author can be established — without it there is nothing to
+  // report against.
+  if (target_type === 'lobby_reference' && !contextRoomId) {
+    return ctx.throw(400, 'context_room_id is required for a reference report');
+  }
+
+  const targetAuthorId = await resolveTargetAuthor(target_type, target_id, contextRoomId);
   if (!targetAuthorId) return ctx.throw(404, 'Content not found');
 
   if (targetAuthorId.toString() === reporter_id) {
@@ -88,19 +105,15 @@ moderationRouter.post('/', async (ctx) => {
 
   // Snapshot — for ephemeral OR deletable content. Images cloned to a
   // dedicated bucket so they survive the original being removed.
-  const snapshot = await snapshotContent(
-    target_type,
-    target_id,
-    typeof context_room_id === 'string' && context_room_id.length <= 100
-      ? context_room_id
-      : undefined
-  );
+  const snapshot = await snapshotContent(target_type, target_id, contextRoomId);
+
+  const storedTargetId = storableTargetId(target_type, target_id);
 
   let report;
   try {
     report = await report_model.create({
       reporter_id,
-      target_id,
+      target_id: storedTargetId,
       target_type,
       target_author_id: targetAuthorId,
       reason,
@@ -115,9 +128,16 @@ moderationRouter.post('/', async (ctx) => {
     throw e;
   }
 
+  // Straight down, on the first report, before any weighting: an unreviewed
+  // photo pushed onto other people's canvases is not left up pending review.
+  // The evidence is already on the report above, so pulling it costs nothing.
+  if (target_type === 'lobby_reference' && contextRoomId) {
+    purgeLobbyReference(contextRoomId, target_id);
+  }
+
   await evaluateAutoModeration({
     type: target_type,
-    targetId: target_id,
+    targetId: storedTargetId.toString(),
     targetAuthorId: targetAuthorId.toString(),
     reason,
     reporterId: reporter_id
@@ -200,10 +220,34 @@ moderationRouter.post('/:report_id/restore', requireAdminAuth, async (ctx) => {
 // HELPERS
 // =============================================================================
 
+/**
+ * What goes in `target_id`, which the schema types as an ObjectId.
+ *
+ * A lobby reference is identified by the uuid its owner's client generated, so
+ * it is folded into a STABLE synthetic ObjectId: two reporters flagging the same
+ * image still collide on the `reporter_id + target_id + target_type` unique
+ * index, still group into one queue entry, and the real id rides along on the
+ * snapshot for anyone who needs to trace it back.
+ */
+function storableTargetId(type: string, id: string): Types.ObjectId | string {
+  if (type !== 'lobby_reference') return id;
+  return new Types.ObjectId(
+    createHash('md5').update(String(id)).digest('hex').slice(0, 24)
+  );
+}
+
 async function resolveTargetAuthor(
   type: string,
-  id: string
+  id: string,
+  contextRoomId?: string
 ): Promise<Types.ObjectId | null> {
+  // Before the ObjectId cast below: this id is a uuid, and casting it throws.
+  if (type === 'lobby_reference') {
+    const reference = contextRoomId ? getLobbyReference(contextRoomId, id) : null;
+    if (!reference?.ownerId) return null;
+    return new Types.ObjectId(reference.ownerId);
+  }
+
   const oid = new Types.ObjectId(id);
   switch (type) {
     case 'post':
@@ -231,6 +275,42 @@ async function resolveTargetAuthor(
   }
 }
 
+const MAX_REFERENCE_SNAPSHOT_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Put the reported reference image in the snapshot bucket.
+ *
+ * Every other visual surface clones an object that already exists in S3; this
+ * one only ever existed as a data url passed between clients, so it is decoded
+ * and uploaded here or the moderator gets a report with no picture.
+ *
+ * Date-prefixed like the cloned snapshots, so the bucket sorts by report day.
+ * The bucket itself is created by `pnpm moderation:bucket`.
+ */
+async function uploadReferenceSnapshot(dataUrl: string): Promise<string | null> {
+  try {
+    const match = /^data:(image\/(?:png|jpeg|webp));base64,([\s\S]+)$/.exec(dataUrl || '');
+    if (!match) return null;
+
+    const buffer = Buffer.from(match[2], 'base64');
+    if (!buffer.length || buffer.length > MAX_REFERENCE_SNAPSHOT_BYTES) return null;
+
+    const extension = match[1].split('/')[1];
+    const key = `${new Date().toISOString().slice(0, 10)}/${new Types.ObjectId().toString()}.${extension}`;
+
+    return await s3Creator.upload(
+      buffer,
+      { Bucket: CONTAINER.moderation_snapshots, Key: key, ContentType: match[1] } as any,
+      CONTAINER.moderation_snapshots
+    );
+  } catch (e) {
+    // Same contract as every other snapshot path: partial evidence beats a
+    // failed report.
+    console.error('Reference snapshot upload failed:', e);
+    return null;
+  }
+}
+
 /**
  * Snapshot the reported content so the moderator can review it even after
  * the original is gone. For visual content we clone the thumbnail (cheap)
@@ -250,6 +330,20 @@ async function snapshotContent(
   id: string,
   contextRoomId?: string
 ): Promise<any> {
+  // Handled before the cast: a reference id is a uuid, not an ObjectId.
+  if (type === 'lobby_reference') {
+    const reference = contextRoomId ? getLobbyReference(contextRoomId, id) : null;
+    if (!reference) return null;
+    return {
+      source: 'lobby',
+      room_id: contextRoomId,
+      reference_id: id,
+      description: reference.name,
+      shared_at: reference.at,
+      snapshot_url: await uploadReferenceSnapshot(reference.dataUrl)
+    };
+  }
+
   const oid = new Types.ObjectId(id);
 
   switch (type) {
