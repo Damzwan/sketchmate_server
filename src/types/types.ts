@@ -451,6 +451,12 @@ export type FeedPost = Omit<
   collaborators?: PostCreditUser[];
   /** Hydrated twin of `BasePost['mentions']`. Omitted when empty. */
   mentions?: PostCreditUser[];
+  /**
+   * Whether the VIEWER of this response has bookmarked the post. Per-viewer,
+   * like `user_reaction` — it is not a property of the post and carries no
+   * count, since saves are private to whoever made them.
+   */
+  is_saved: boolean;
 };
 
 export interface InboxItem {

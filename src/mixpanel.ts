@@ -38,6 +38,8 @@ export enum mixpanelEvents {
   post_v2_comment = 'post_v2_comment',
   post_v2_comment_deleted = 'post_v2_comment_deleted',
   post_v2_delete = 'post_v2_delete',
+  post_v2_save = 'post_v2_save',
+  post_v2_unsave = 'post_v2_unsave',
   competition_entry_submit = 'competition_entry_submit',
   competition_vote_cast = 'competition_vote_cast',
 

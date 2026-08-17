@@ -200,6 +200,15 @@ export interface SavedDrawingDocument extends Document, Omit<BaseSavedDrawing, '
   updatedAt: Date;
 }
 
+/** One viewer's bookmark on one post. See `models/saved-post.model`. */
+export interface SavedPostDocument extends Document {
+  _id: Types.ObjectId;
+  user_id: Types.ObjectId;
+  post_id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface CloudDraftDocument extends Document {
   _id: Types.ObjectId;
   user_id: Types.ObjectId;

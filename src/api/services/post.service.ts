@@ -4,6 +4,7 @@ import { user_model } from '../../models/user.model';
 import { post_comment_model, post_reaction_model } from '../../models/post.model';
 import { Types } from 'mongoose';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
+import { fetchSavedPostIds } from './saved-post.service';
 
 export interface HydrationOverrides {
   /** Skip the author lookup — caller already has it (e.g. publish route, profile route). */
@@ -14,6 +15,8 @@ export interface HydrationOverrides {
   comments?: HydratedPostComment[];
   /** Credited users, when the caller already looked them up. */
   credits?: PostCredits;
+  /** Skip the bookmark lookup — caller already knows (the saved list does). */
+  is_saved?: boolean;
 }
 
 /**
@@ -69,7 +72,8 @@ export function shapeFeedPost(
   author: { _id: string; name: string; img: string },
   user_reaction: string | null,
   comments: HydratedPostComment[],
-  credits: PostCredits = {}
+  credits: PostCredits = {},
+  is_saved = false
 ): FeedPost {
   return {
     _id: post._id.toString(),
@@ -88,6 +92,7 @@ export function shapeFeedPost(
     total_reactions: post.total_reactions || 0,
     author,
     user_reaction,
+    is_saved,
     reaction_counts:
       post.reaction_counts instanceof Map
         ? Object.fromEntries(post.reaction_counts)
@@ -193,7 +198,7 @@ export async function hydrateFeedPosts(
   const postIds = posts.map(p => new Types.ObjectId(p._id));
   const viewerObjectId = new Types.ObjectId(viewerId);
 
-  const [latestCommentsNested, userReactions] = await Promise.all([
+  const [latestCommentsNested, userReactions, savedIds] = await Promise.all([
     Promise.all(
       postIds.map(id =>
         post_comment_model
@@ -203,7 +208,8 @@ export async function hydrateFeedPosts(
           .lean()
       )
     ),
-    post_reaction_model.find({ user_id: viewerObjectId, post_id: { $in: postIds } }).lean()
+    post_reaction_model.find({ user_id: viewerObjectId, post_id: { $in: postIds } }).lean(),
+    fetchSavedPostIds(viewerId, postIds)
   ]);
 
   const validComments = latestCommentsNested.flat().filter(Boolean) as any[];
@@ -290,7 +296,88 @@ export async function hydrateFeedPosts(
         ...(creditList(post, 'mentions').length && {
           mentions: creditList(post, 'mentions').map(id => toCredit(id.toString()))
         })
-      }
+      },
+      savedIds.has(postIdStr)
+    );
+  });
+}
+
+/**
+ * Hydrate a page of posts for a GRID — the profile gallery, the saved list.
+ *
+ * The cheap sibling of `hydrateFeedPosts`. A grid renders a thumbnail and
+ * nothing else, so the expensive half of feed hydration is pure waste here:
+ * `hydrateFeedPosts` fires one comment query PER POST (20 round trips for a
+ * page of 20) and ships two hydrated comments per card that no grid tile draws
+ * and every low-end device still has to parse and hold.
+ *
+ * Tapping a tile opens the photoswiper, which fetches the real comment thread
+ * itself (`prefetchComments`) — so the previews were never the source of what
+ * the user ends up reading either.
+ *
+ * Fixed query count: authors + viewer reactions + credits, plus whatever the
+ * caller already resolved.
+ */
+export async function hydrateGridPosts(
+  posts: LeanPost[],
+  viewerId: string,
+  options: { savedIds?: Set<string>; allSaved?: boolean } = {}
+): Promise<FeedPost[]> {
+  if (posts.length === 0) return [];
+
+  const postIds = posts.map(p => new Types.ObjectId(p._id));
+
+  const [userReactions, credits] = await Promise.all([
+    post_reaction_model
+      .find({ user_id: new Types.ObjectId(viewerId), post_id: { $in: postIds } })
+      .lean(),
+    fetchRemixCredits(posts)
+  ]);
+
+  // Credited users ride the same lookup as the authors rather than adding a
+  // query — same trick as the feed path.
+  const userIds = [
+    ...new Set([
+      ...posts.map(p => p.author_id.toString()),
+      ...posts.flatMap(creditedUserIds)
+    ])
+  ].map(id => new Types.ObjectId(id));
+
+  const users = (await user_model
+    .find({ _id: { $in: userIds } })
+    .select('_id name img customization')
+    .lean()) as unknown as UserDocument[];
+
+  const userMap = users.reduce((acc, user) => {
+    acc[user._id.toString()] = user;
+    return acc;
+  }, {} as Record<string, UserDocument>);
+
+  const userReactionMap = userReactions.reduce((acc, rx: any) => {
+    acc[rx.post_id.toString()] = rx.reaction_type;
+    return acc;
+  }, {} as Record<string, string>);
+
+  return posts.map(post => {
+    const postIdStr = post._id.toString();
+    const authorDoc = userMap[post.author_id.toString()];
+    const author = authorDoc
+      ? {
+          _id: authorDoc._id.toString(),
+          name: authorDoc.name,
+          img: authorDoc.img,
+          customization: authorDoc.customization
+        }
+      : unknownCredit(post.author_id.toString());
+
+    return shapeFeedPost(
+      post,
+      author,
+      userReactionMap[postIdStr] || null,
+      // Deliberately empty — see the note above.
+      [],
+      credits[postIdStr],
+      options.allSaved ?? options.savedIds?.has(postIdStr) ?? false
     );
   });
 }
@@ -342,7 +429,14 @@ export async function hydratePost(
     user_reaction = reaction?.reaction_type ?? null;
   }
 
+  // Bookmark. Same override shape as the reaction above — the saved-posts list
+  // already knows the answer for every row it returns.
+  let is_saved = overrides.is_saved;
+  if (is_saved === undefined) {
+    is_saved = (await fetchSavedPostIds(viewerId, [post._id])).has(postIdStr);
+  }
+
   const comments = overrides.comments ?? [];
 
-  return shapeFeedPost(post, author, user_reaction, comments, credits);
+  return shapeFeedPost(post, author, user_reaction, comments, credits, is_saved);
 }

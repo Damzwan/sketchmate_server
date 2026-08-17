@@ -40,6 +40,7 @@ import {
   syncAndFinalizeMigrationStats
 } from '../../helper';
 import { fetchRemixCredits, shapeFeedPost } from '../services/post.service';
+import { fetchSavedPostIds } from '../services/saved-post.service';
 import { subscribeV2, unsubscribeV2 } from '../services/user.service';
 import { getPublicLobbiesSnapshot } from '../socket/drawSyncing';
 import { broadcastFriendPresence, userSocketMap } from '../socket/socket';
@@ -76,12 +77,13 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
 
     const postIds = posts.map((p) => p._id);
 
-    const [userReactions, authorInfo] = await Promise.all([
+    const [userReactions, authorInfo, savedIds] = await Promise.all([
       post_reaction_model.find({
         user_id: viewer_id,
         post_id: { $in: postIds }
       }).lean(),
-      user_model.findById(targetUserId).select(PUBLIC_USER_FIELDS).lean() as Promise<UserDocument | null>
+      user_model.findById(targetUserId).select(PUBLIC_USER_FIELDS).lean() as Promise<UserDocument | null>,
+      fetchSavedPostIds(viewer_id, postIds)
     ]);
 
     const userReactionMap = userReactions.reduce((acc, rx) => {
@@ -105,7 +107,8 @@ userRouter.get('/:user_id/posts', requireAuth, async (ctx) => {
         author,
         userReactionMap[postIdStr] || null,
         [],
-        remixCredits[postIdStr]
+        remixCredits[postIdStr],
+        savedIds.has(postIdStr)
       );
     });
     ctx.body = { posts: hydratedPosts };
@@ -351,7 +354,10 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
       return acc;
     }, {} as Record<string, string>);
 
-    const remixCredits = await fetchRemixCredits(posts);
+    const [remixCredits, savedIds] = await Promise.all([
+      fetchRemixCredits(posts),
+      fetchSavedPostIds(viewer_id, postIds)
+    ]);
     const profileAuthor = { _id: user._id.toString(), name: user.name, img: user.img };
 
     const hydratedPosts: FeedPost[] = posts.map(post => {
@@ -361,7 +367,8 @@ userRouter.get('/:user_id/profile', requireAuth, async (ctx) => {
         profileAuthor,
         userReactionMap[postIdStr] || null,
         [],
-        remixCredits[postIdStr]
+        remixCredits[postIdStr],
+        savedIds.has(postIdStr)
       );
     });
 

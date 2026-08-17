@@ -18,7 +18,20 @@ import { requireAdultAccount } from '../services/parental.service';
 import { requireCapability } from '../../middleware/moderation.middleware';
 import { Capability } from '../../types/moderation.policy';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
-import { fetchRemixCredits, hydrateFeedPosts, shapeFeedPost, shapePostCredits } from '../services/post.service';
+import {
+  fetchRemixCredits,
+  hydrateFeedPosts,
+  hydrateGridPosts,
+  shapeFeedPost,
+  shapePostCredits
+} from '../services/post.service';
+import {
+  fetchSavedPostIds,
+  listSavedPosts,
+  purgeSavesForPost,
+  savePost,
+  unsavePost
+} from '../services/saved-post.service';
 import { isChildDob } from '../services/parental.service';
 import { quota_usage_model } from '../../models/quota_usage.model';
 import { startOfUtcDay } from '../../config/quota.config';
@@ -735,6 +748,110 @@ postRouter.get('/feed', requireAuth, async (ctx) => {
   }
 });
 
+// ============================================================================
+// SAVED POSTS
+//
+// A private bookmark list. Registered ahead of `GET /:id` — `/saved` would
+// otherwise be swallowed by that wildcard and looked up as a post id.
+// ============================================================================
+
+postRouter.get('/saved', requireAuth, async (ctx) => {
+  const limit = Math.min(parseInt(ctx.query.limit as string) || 20, 50);
+  const user_id = ctx.state.user._id.toString();
+
+  // Cursor is the previous page's last bookmark date. A malformed one is
+  // treated as "start from the top" rather than 400ing — the worst case is a
+  // repeated first page, and the client dedupes.
+  const rawCursor = ctx.query.before as string | undefined;
+  const parsedCursor = rawCursor ? new Date(rawCursor) : undefined;
+  const before =
+    parsedCursor && !Number.isNaN(parsedCursor.getTime()) ? parsedCursor : undefined;
+
+  try {
+    const { posts, nextCursor, hasMore } = await listSavedPosts(user_id, limit, before);
+
+    if (posts.length === 0) {
+      ctx.body = { posts: [], nextCursor, hasMore };
+      return;
+    }
+
+    // Grid hydration, not feed hydration: this list renders as thumbnails, so
+    // the per-post comment previews would be 20 extra queries and a payload
+    // nothing draws. `allSaved` skips the bookmark lookup too — every row here
+    // is saved by definition.
+    const hydrated = await hydrateGridPosts(posts, user_id, { allSaved: true });
+
+    ctx.body = { posts: hydrated, nextCursor, hasMore };
+  } catch (error) {
+    console.error('Fetch saved posts error:', error);
+    ctx.status = 500;
+    ctx.body = { error: 'Failed to fetch saved posts' };
+  }
+});
+
+postRouter.post('/:post_id/save', requireAuth, async (ctx) => {
+  const { post_id } = ctx.params;
+  const user_id = ctx.state.user._id.toString();
+
+  if (!Types.ObjectId.isValid(post_id)) {
+    ctx.status = 404;
+    ctx.body = { error: 'Post not found' };
+    return;
+  }
+
+  try {
+    // Checked before the write so the list can't accumulate bookmarks pointing
+    // at posts that were removed or never existed.
+    const post = await post_model
+      .findOne({ _id: new Types.ObjectId(post_id), status: 'active' })
+      .select('_id')
+      .lean();
+
+    if (!post) {
+      ctx.status = 404;
+      ctx.body = { error: 'Post not found' };
+      return;
+    }
+
+    const result = await savePost(user_id, post_id);
+
+    if (result.created) {
+      trackEvent(user_id, mixpanelEvents.post_v2_save, { post_id });
+    }
+
+    ctx.body = result;
+  } catch (error) {
+    console.error('Save post error:', error);
+    ctx.status = 500;
+    ctx.body = { error: 'Failed to save post' };
+  }
+});
+
+postRouter.delete('/:post_id/save', requireAuth, async (ctx) => {
+  const { post_id } = ctx.params;
+  const user_id = ctx.state.user._id.toString();
+
+  if (!Types.ObjectId.isValid(post_id)) {
+    ctx.status = 404;
+    ctx.body = { error: 'Post not found' };
+    return;
+  }
+
+  try {
+    const result = await unsavePost(user_id, post_id);
+
+    if (result.removed) {
+      trackEvent(user_id, mixpanelEvents.post_v2_unsave, { post_id });
+    }
+
+    ctx.body = result;
+  } catch (error) {
+    console.error('Unsave post error:', error);
+    ctx.status = 500;
+    ctx.body = { error: 'Failed to unsave post' };
+  }
+});
+
 postRouter.post('/:post_id/comment', requireAuth, requireCapability(Capability.COMMENT_ON_POST), requireAdultAccount(PUBLIC_FEED_AGE_MESSAGE), async (ctx) => {
   const { post_id } = ctx.params;
   const { message } = ctx.request.body;
@@ -1024,9 +1141,12 @@ postRouter.delete('/:post_id', requireAuth, async (ctx) => {
       return;
     }
 
-    const [, , , postQuota] = await Promise.all([
+    const [, , , , postQuota] = await Promise.all([
       post_comment_model.deleteMany({ post_id: post._id }),
       post_reaction_model.deleteMany({ post_id: post._id }),
+      // Otherwise every viewer who bookmarked it keeps a row pointing at
+      // nothing, which the saved list would silently skip forever.
+      purgeSavesForPost(post._id),
       user_model.updateOne(
         { _id: post.author_id },
         { $inc: { 'stats.posts': -1 } }
@@ -1182,6 +1302,13 @@ postRouter.get('/:id', async (ctx) => {
   const leanPost = post as unknown as LeanPost;
   const credits = (await fetchRemixCredits([leanPost]))[post._id.toString()];
 
+  // This route is deliberately unauthenticated (shared links open it), so the
+  // per-viewer bookmark only resolves when someone is actually signed in.
+  const viewerId = ctx.state.user?._id?.toString();
+  const is_saved = viewerId
+    ? (await fetchSavedPostIds(viewerId, [post._id])).has(post._id.toString())
+    : false;
+
   // Match the FeedPost shape your frontend expects
   const { author_id, remix_of, collaborators, mentions, ...rest } = post as any;
   ctx.body = {
@@ -1190,6 +1317,7 @@ postRouter.get('/:id', async (ctx) => {
       author: author_id,
       ...shapePostCredits(leanPost, credits),
       user_reaction: null, // or compute from a reactions lookup if you have one
+      is_saved,
       comments
     }
   };
