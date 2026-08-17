@@ -1,7 +1,7 @@
 import { FeedPost, HydratedPostComment, PostCreditUser } from '../../types/types';
 import { LeanPost, UserDocument } from '../../types/mongoose.types';
 import { user_model } from '../../models/user.model';
-import { post_comment_model, post_reaction_model } from '../../models/post.model';
+import { post_comment_model, post_model, post_reaction_model } from '../../models/post.model';
 import { Types } from 'mongoose';
 import { PUBLIC_USER_FIELDS } from '../../types/projections';
 import { fetchSavedPostIds } from './saved-post.service';
@@ -181,6 +181,47 @@ export async function fetchRemixCredits(
 const FEED_COMMENT_PREVIEW = 2;
 
 /**
+ * The latest few comments for each of a page of posts, in ONE round trip.
+ *
+ * This used to be `Promise.all(postIds.map(id => find().sort().limit(2)))` —
+ * one query per post, so 20 sequential-ish round trips for a 20-post feed. The
+ * queries themselves were cheap and correctly indexed; the cost was 20 lots of
+ * network latency on every feed load, which is exactly the part a phone on a
+ * bad connection feels.
+ *
+ * A plain `$in` + group-in-memory would have been the wrong fix: it reads EVERY
+ * comment on every post in the page just to keep two of them, so one popular
+ * post with a few thousand comments would cost more than the N+1 did. The
+ * correlated `$lookup` keeps the per-post `sort + limit` — so at most
+ * `FEED_COMMENT_PREVIEW` documents per post come back, and it still rides the
+ * `{ post_id: 1, createdAt: -1 }` index on post_comments.
+ */
+async function fetchCommentPreviews(
+  postIds: Types.ObjectId[]
+): Promise<{ comments: any[] }[]> {
+  return await post_model.aggregate([
+    { $match: { _id: { $in: postIds } } },
+    // Nothing off the post itself is wanted here — this is a join, and dragging
+    // the whole document (including the artwork urls) through it is waste.
+    { $project: { _id: 1 } },
+    {
+      $lookup: {
+        from: post_comment_model.collection.name,
+        localField: '_id',
+        foreignField: 'post_id',
+        pipeline: [
+          { $match: { status: { $nin: ['under_review', 'removed'] } } },
+          { $sort: { createdAt: -1 } },
+          { $limit: FEED_COMMENT_PREVIEW }
+        ],
+        as: 'comments'
+      }
+    },
+    { $project: { _id: 0, comments: 1 } }
+  ]);
+}
+
+/**
  * Batch-hydrate a page of posts for the feed: authors, the viewer's own
  * reactions, and the latest few comments per post — in a fixed number of
  * queries regardless of page size.
@@ -198,21 +239,13 @@ export async function hydrateFeedPosts(
   const postIds = posts.map(p => new Types.ObjectId(p._id));
   const viewerObjectId = new Types.ObjectId(viewerId);
 
-  const [latestCommentsNested, userReactions, savedIds] = await Promise.all([
-    Promise.all(
-      postIds.map(id =>
-        post_comment_model
-          .find({ post_id: id, status: { $nin: ['under_review', 'removed'] } })
-          .sort({ createdAt: -1 })
-          .limit(FEED_COMMENT_PREVIEW)
-          .lean()
-      )
-    ),
+  const [commentRows, userReactions, savedIds] = await Promise.all([
+    fetchCommentPreviews(postIds),
     post_reaction_model.find({ user_id: viewerObjectId, post_id: { $in: postIds } }).lean(),
     fetchSavedPostIds(viewerId, postIds)
   ]);
 
-  const validComments = latestCommentsNested.flat().filter(Boolean) as any[];
+  const validComments = commentRows.flatMap(row => row.comments).filter(Boolean) as any[];
 
   const authorIds = [
     ...new Set([
