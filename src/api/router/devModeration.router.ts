@@ -1,9 +1,10 @@
 import Router from 'koa-router';
 import { Types } from 'mongoose';
 import { user_model } from '../../models/user.model';
-import { ReportReason, STRIKE_LADDER } from '../../types/moderation.policy';
+import { REPORT_REASONS, ReportReason, STRIKE_LADDER } from '../../types/moderation.policy';
 import { moderation_action_model, report_model } from '../../models/moderation.model';
 import {
+  applyManualBan,
   applyStrike,
   getStanding,
   liftRestriction
@@ -16,6 +17,9 @@ import {
   resolveReport,
   restoreReport
 } from '../services/moderationQueue.service';
+import { buildUserEvidence } from '../services/moderationEvidence.service';
+import { risk_flag_model } from '../../models/risk-flag.model';
+import { runRiskSweep } from '../services/riskSweep.service';
 import { requireAdminAuth } from '../../middleware/adminAuth.middleware';
 import { post_model } from '../../models/post.model';
 
@@ -120,6 +124,210 @@ devModerationRouter.get('/user/:user_id/overview', async (ctx) => {
 // =============================================================================
 // PRODUCTION-PARITY ENDPOINTS
 // =============================================================================
+
+// GET /user/:user_id/evidence — the investigation dossier.
+//
+// Separate from /overview because it is a heavier read and it reaches into
+// private DMs. /overview is what you look at for every user; this is what you
+// pull when you are deciding whether to ban one.
+devModerationRouter.get('/user/:user_id/evidence', async (ctx) => {
+  const userId = ctx.params.user_id;
+  if (!Types.ObjectId.isValid(userId)) return ctx.throw(400, 'Invalid user id');
+
+  const evidence = await buildUserEvidence(userId);
+  if (!evidence) return ctx.throw(404, 'User not found');
+
+  ctx.body = evidence;
+});
+
+// =============================================================================
+// MANUAL MODERATION ACTIONS
+//
+// These are the production levers, distinct from /set-level and /clear below
+// them. Those two exist to put a test account into a given state and they
+// DELETE the user's moderation_actions history to do it — which is exactly
+// what you must not do to a real person, because that collection is the audit
+// trail an appeal is answered from.
+//
+// Everything here is additive: it writes history, never erases it, and every
+// action records which admin took it.
+// =============================================================================
+
+const ALLOWED_REASONS = Object.keys(REPORT_REASONS) as ReportReason[];
+
+// POST /user/:user_id/strike — one strike, ladder advances by one rung.
+// The proportionate response: use this when the account has done something
+// actionable but is not obviously beyond saving.
+devModerationRouter.post('/user/:user_id/strike', async (ctx) => {
+  const userId = ctx.params.user_id;
+  if (!Types.ObjectId.isValid(userId)) return ctx.throw(400, 'Invalid user id');
+
+  const { reason, notes } = ctx.request.body as { reason?: string; notes?: string };
+  if (!reason || !ALLOWED_REASONS.includes(reason as ReportReason)) {
+    return ctx.throw(400, `reason must be one of: ${ALLOWED_REASONS.join(', ')}`);
+  }
+
+  const target = await user_model.findById(userId).select('_id is_admin').lean() as any;
+  if (!target) return ctx.throw(404, 'User not found');
+  if (target.is_admin) return ctx.throw(403, 'Refusing to action an administrator account');
+
+  const result = await applyStrike({
+    userId,
+    reason: reason as ReportReason,
+    adminId: ctx.state.user._id.toString()
+  });
+
+  // applyStrike has no notes parameter — it is normally driven by a report that
+  // carries its own context. A hand-applied strike has none, so the reasoning
+  // is recorded as its own audit entry rather than being lost.
+  if (notes?.trim()) {
+    await moderation_action_model.create({
+      user_id: new Types.ObjectId(userId),
+      // 'admin_note', never 'strike_applied' — recomputeStrikeSummary counts
+      // strike_applied rows, so a note logged under that type silently becomes
+      // a second strike and pushes the user an extra rung up the ladder.
+      action_type: 'admin_note',
+      level: result.level,
+      reason,
+      admin_id: new Types.ObjectId(ctx.state.user._id.toString()),
+      notes: `ADMIN NOTE: ${notes.trim().slice(0, 900)}`
+    });
+  }
+
+  ctx.body = await getStanding(userId);
+});
+
+// POST /user/:user_id/ban — straight to the top rung, no ladder climb.
+// Notes are REQUIRED: this is the action with no expiry, and six months from
+// now the only record of why it happened will be what is typed here.
+devModerationRouter.post('/user/:user_id/ban', async (ctx) => {
+  const userId = ctx.params.user_id;
+  if (!Types.ObjectId.isValid(userId)) return ctx.throw(400, 'Invalid user id');
+
+  const { reason, notes } = ctx.request.body as { reason?: string; notes?: string };
+  if (!reason || !ALLOWED_REASONS.includes(reason as ReportReason)) {
+    return ctx.throw(400, `reason must be one of: ${ALLOWED_REASONS.join(', ')}`);
+  }
+  if (!notes?.trim()) return ctx.throw(400, 'notes are required when banning an account');
+
+  const target = await user_model.findById(userId).select('_id is_admin').lean() as any;
+  if (!target) return ctx.throw(404, 'User not found');
+  if (target.is_admin) return ctx.throw(403, 'Refusing to ban an administrator account');
+
+  await applyManualBan({
+    userId,
+    adminId: ctx.state.user._id.toString(),
+    reason,
+    notes: notes.trim().slice(0, 900)
+  });
+
+  ctx.body = await getStanding(userId);
+});
+
+// POST /user/:user_id/lift — undo a restriction WITHOUT erasing the history
+// that produced it. This is the appeal path; /clear is the test-reset path.
+devModerationRouter.post('/user/:user_id/lift', async (ctx) => {
+  const userId = ctx.params.user_id;
+  if (!Types.ObjectId.isValid(userId)) return ctx.throw(400, 'Invalid user id');
+
+  const { notes, appeal, clear_strikes } = ctx.request.body as {
+    notes?: string;
+    appeal?: boolean;
+    clear_strikes?: boolean;
+  };
+
+  await liftRestriction({
+    userId,
+    adminId: ctx.state.user._id.toString(),
+    reason: appeal ? 'appeal_granted' : 'manual_override',
+    notes: notes?.trim().slice(0, 900) || 'Lifted from the admin panel',
+    clearStrikes: clear_strikes === true
+  });
+
+  ctx.body = await getStanding(userId);
+});
+
+// =============================================================================
+// RISK FLAGS — nightly sweep output
+// =============================================================================
+
+// GET /risk — the flag queue, newest and most severe first.
+devModerationRouter.get('/risk', async (ctx) => {
+  const status = String(ctx.query.status ?? 'open');
+  const rule = ctx.query.rule ? String(ctx.query.rule) : null;
+  const limit = Math.min(Number(ctx.query.limit) || 50, 200);
+
+  const query: Record<string, any> = { status };
+  if (rule) query.rule = rule;
+
+  const [flags, counts] = await Promise.all([
+    risk_flag_model
+      .find(query)
+      .sort({ severity: 1, createdAt: -1 })
+      .limit(limit)
+      .lean(),
+    risk_flag_model.aggregate([
+      { $match: { status: 'open' } },
+      { $group: { _id: '$rule', count: { $sum: 1 } } }
+    ])
+  ]);
+
+  // Hydrate the subject inline: a queue of bare ObjectIds is unusable, and one
+  // extra query beats N round-trips from the browser.
+  const userIds = flags.map((f: any) => f.user_id);
+  const users = userIds.length
+    ? await user_model
+        .find({ _id: { $in: userIds } })
+        .select('name img restriction strike_summary createdAt')
+        .lean()
+    : [];
+  const userById = new Map(users.map((u: any) => [String(u._id), u]));
+
+  ctx.body = {
+    flags: flags.map((flag: any) => ({
+      ...flag,
+      _id: String(flag._id),
+      user: userById.get(String(flag.user_id)) ?? null
+    })),
+    open_by_rule: counts.reduce(
+      (acc: Record<string, number>, row: any) => ({ ...acc, [row._id]: row.count }),
+      {}
+    )
+  };
+});
+
+// POST /risk/:flag_id/resolve — 'reviewed' (looked, acted elsewhere) or
+// 'dismissed' (false positive). Neither changes the user's standing: acting on
+// an account is still a separate, deliberate strike/ban.
+devModerationRouter.post('/risk/:flag_id/resolve', async (ctx) => {
+  const flagId = ctx.params.flag_id;
+  if (!Types.ObjectId.isValid(flagId)) return ctx.throw(400, 'Invalid flag id');
+
+  const { status } = ctx.request.body as { status?: string };
+  if (status !== 'reviewed' && status !== 'dismissed') {
+    return ctx.throw(400, "status must be 'reviewed' or 'dismissed'");
+  }
+
+  const updated = await risk_flag_model.findByIdAndUpdate(
+    flagId,
+    {
+      $set: {
+        status,
+        resolved_by: new Types.ObjectId(ctx.state.user._id.toString()),
+        resolved_at: new Date()
+      }
+    },
+    { new: true }
+  ).lean();
+
+  if (!updated) return ctx.throw(404, 'Flag not found');
+  ctx.body = { success: true, flag: { ...updated, _id: String(updated._id) } };
+});
+
+// POST /risk/run — trigger the sweep by hand instead of waiting for 03:00.
+devModerationRouter.post('/risk/run', async (ctx) => {
+  ctx.body = await runRiskSweep();
+});
 
 devModerationRouter.get('/standing/:user_id', async (ctx) => {
   const targetUserId = ctx.params.user_id;

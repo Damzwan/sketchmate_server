@@ -56,7 +56,13 @@ const restrictionSchema = new Schema({
   level: { type: Number, default: 0 },
   reason: { type: String },
   applied_at: { type: Date },
-  expires_at: { type: Date }
+  expires_at: { type: Date },
+  // Set when a human (or device recall) applied this restriction directly
+  // rather than it being derived from the strike count. applyStrike recomputes
+  // `level` from active strikes, so without this flag a manual ban would be
+  // silently DOWNGRADED the next time any unrelated report against the same
+  // user was upheld — the recomputed level (1) would overwrite the ban (3).
+  manual: { type: Boolean, default: false }
 }, { _id: false });
 
 const strikeSummarySchema = new Schema({
@@ -163,6 +169,12 @@ const user_schema = new Schema<UserDocument>({
     enum: ['online', 'busy', 'invisible'],
     default: 'online'
   },
+  // Device recall. SHA-256 hashes only — see services/deviceRecall.service.ts
+  // for why nothing raw is stored. `select: false` keeps them off every routine
+  // user read: only the recall service ever needs them, and a ban-evasion
+  // signal has no business travelling in a profile payload to the client.
+  device_ids: { type: [String], default: [], select: false },
+
   migration_version: { type: Number, default: 0 },
   is_admin: { type: Boolean, required: false },
   inventory: { type: [String], default: [] }
@@ -177,6 +189,9 @@ user_schema.index({ 'balloon.sent': 1 });
 user_schema.index({ 'balloon.received': 1 });
 user_schema.index({ name: 'text' });
 user_schema.index({ migration_version: 1 });
+// Device recall reads this the other way round (hash -> users) when an admin
+// asks which accounts share a banned device.
+user_schema.index({ device_ids: 1 }, { sparse: true });
 user_schema.index({ timezone: 1 }, { sparse: true });
 user_schema.index({ 'restriction.level': 1, 'restriction.expires_at': 1 });
 user_schema.index({ 'strike_summary.active_strikes': -1 });

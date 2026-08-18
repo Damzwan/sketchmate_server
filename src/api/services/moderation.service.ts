@@ -23,6 +23,7 @@ import { message_model } from '../../models/message.model';
 import { deletion_queue_model } from '../../models/deletion.model';
 import { setInboxCommentStatus } from './inbox.service';
 import { dispatchNotification } from './notification.service';
+import { banDevicesForUser, BANNED_LEVEL } from './deviceRecall.service';
 import {
   moderationContentPushNotification,
   moderationLiftedPushNotification,
@@ -111,17 +112,43 @@ export async function applyStrike(params: {
     ? dayjs().add(config.duration_days, 'day').toDate()
     : null;
 
+  // A manual ban (or a device recall match) is not derived from the strike
+  // count, so recomputing the level from strikes would UNDO it. Someone banned
+  // by hand who then has one unrelated report upheld would drop from level 3 to
+  // level 1 and be back in the app. Keep the stronger restriction; the strike
+  // itself is still recorded in the audit log and in strike_summary.
+  const existing = await user_model
+    .findById(userId)
+    .select('restriction')
+    .lean() as any;
+  const keepManual =
+    existing?.restriction?.manual === true &&
+    (existing.restriction.level ?? 0) > newLevel;
+
   const restriction = {
     level: newLevel,
     reason,
     applied_at: new Date(),
-    expires_at: expiresAt
+    expires_at: expiresAt,
+    manual: false
   };
 
   await user_model.updateOne(
     { _id: userId },
-    { $set: { restriction, strike_summary: summary } }
+    keepManual
+      ? { $set: { strike_summary: summary } }
+      : { $set: { restriction, strike_summary: summary } }
   );
+
+  // Reaching the banned rung is the moment the account stops being the unit of
+  // enforcement. Remember the hardware, so the next anonymous sign-up from this
+  // phone is recognised instead of starting clean. Non-fatal: failing to record
+  // a device must never roll back a ban that was correctly applied.
+  if (newLevel >= BANNED_LEVEL) {
+    banDevicesForUser(userId, `ban_level_${newLevel}`).catch((err) =>
+      console.error('banDevicesForUser failed:', err)
+    );
+  }
 
   if (newLevel > 0) {
     await moderation_action_model.create({
@@ -160,16 +187,94 @@ export async function applyStrike(params: {
   return { level: newLevel, restriction };
 }
 
+/**
+ * MANUAL BAN — a human decided, directly, without a report to point at.
+ *
+ * Not applyStrike(): that derives the level from the count of upheld reports,
+ * so it can only ever move someone one rung at a time and it cannot express
+ * "I have read this account and it is done". This writes the top rung directly.
+ *
+ * Deliberately NOT the /set-level dev endpoint either. That one deletes the
+ * user's entire moderation_actions history before fabricating synthetic strikes
+ * to reach the requested level — fine for testing a UI, destructive in
+ * production, where that collection is the source of truth for appeals.
+ *
+ * `manual: true` on the restriction is what stops a later applyStrike() from
+ * recomputing the level and quietly undoing this.
+ */
+export async function applyManualBan(params: {
+  userId: string;
+  adminId: string;
+  reason: string;
+  notes: string;
+}) {
+  const { userId, adminId, reason, notes } = params;
+  const level = STRIKE_LADDER.length - 1;
+  const config = getLevelConfig(level);
+
+  const restriction = {
+    level,
+    reason,
+    applied_at: new Date(),
+    expires_at: null,
+    manual: true
+  };
+
+  await user_model.updateOne({ _id: userId }, { $set: { restriction } });
+
+  await moderation_action_model.create({
+    user_id: new Types.ObjectId(userId),
+    action_type: 'manual_suspension',
+    level,
+    reason,
+    admin_id: new Types.ObjectId(adminId),
+    blocked_capabilities: [...config.blocks],
+    notes
+  });
+
+  // A hand-placed ban is exactly the case device recall exists for — this is
+  // someone a human looked at and decided about, so remember the hardware.
+  banDevicesForUser(userId, `manual_ban:${reason}`).catch((err) =>
+    console.error('banDevicesForUser failed:', err)
+  );
+
+  const payload = {
+    level,
+    name: config.name,
+    description: config.description,
+    reason,
+    expires_at: null,
+    blocked_capabilities: [...config.blocks]
+  };
+
+  dispatchNotification({
+    recipient_id: userId,
+    type: 'moderation_strike',
+    target_type: 'system',
+    channels: {
+      in_app: true,
+      socket: { event: 'moderation:strike', data: payload },
+      push: moderationStrikePushNotification(config.name, config.description)
+    },
+    payload
+  }).catch((err) => console.error('Manual ban dispatch failed:', err));
+
+  return { level, restriction };
+}
+
 export async function recomputeStrikeSummary(userId: string) {
   const decayCutoff = dayjs()
     .subtract(POLICY_CONSTANTS.STRIKE_DECAY_DAYS, 'day')
     .toDate();
 
   const [activeCount, totalCount, lastStrike] = await Promise.all([
+    // Active = not decayed AND not forgiven. Forgiveness is an admin
+    // shortcutting the decay window, so it belongs in the same clause.
     moderation_action_model.countDocuments({
       user_id: new Types.ObjectId(userId),
       action_type: 'strike_applied',
-      createdAt: { $gte: decayCutoff }
+      createdAt: { $gte: decayCutoff },
+      forgiven_at: { $exists: false }
     }),
     moderation_action_model.countDocuments({
       user_id: new Types.ObjectId(userId),
@@ -191,11 +296,27 @@ export async function recomputeStrikeSummary(userId: string) {
   };
 }
 
+/**
+ * Lift an active restriction.
+ *
+ * Two strengths, because "you can come back" and "we forgot" are different
+ * mercies and conflating them was surprising in practice:
+ *
+ *   clearStrikes: false (default) — lifts the restriction, leaves the strike
+ *     record alone. Strikes keep decaying on the normal 90-day schedule, so a
+ *     user lifted today can still be one strike from the next rung tomorrow.
+ *
+ *   clearStrikes: true — also forgives every currently-active strike, giving a
+ *     genuine clean slate. Rows are marked `forgiven_at`, never deleted: unlike
+ *     the /clear dev endpoint, this does not destroy the audit trail, and
+ *     lifetime total_strikes still counts them.
+ */
 export async function liftRestriction(params: {
   userId: string;
   adminId: string;
   notes?: string;
   reason: 'appeal_granted' | 'manual_override';
+  clearStrikes?: boolean;
 }) {
   await Promise.all([
     user_model.updateOne(
@@ -204,7 +325,10 @@ export async function liftRestriction(params: {
         $set: {
           'restriction.level': 0,
           'restriction.expires_at': null,
-          'restriction.reason': 'clear'
+          'restriction.reason': 'clear',
+          // Clear the manual flag too, or the next applyStrike would compare
+          // against a stale "this was hand-placed" marker.
+          'restriction.manual': false
         }
       }
     ),
@@ -215,6 +339,40 @@ export async function liftRestriction(params: {
       notes: params.notes
     })
   ]);
+
+  if (params.clearStrikes) {
+    const decayCutoff = dayjs()
+      .subtract(POLICY_CONSTANTS.STRIKE_DECAY_DAYS, 'day')
+      .toDate();
+
+    // Only strikes that were still counting. Re-forgiving an already-forgiven
+    // or already-decayed row would rewrite history for no behavioural change.
+    const result = await moderation_action_model.updateMany(
+      {
+        user_id: new Types.ObjectId(params.userId),
+        action_type: 'strike_applied',
+        createdAt: { $gte: decayCutoff },
+        forgiven_at: { $exists: false }
+      },
+      { $set: { forgiven_at: new Date() } }
+    );
+
+    await moderation_action_model.create({
+      user_id: new Types.ObjectId(params.userId),
+      action_type: 'strike_decayed',
+      admin_id: new Types.ObjectId(params.adminId),
+      notes: `ADMIN: forgave ${result.modifiedCount} active strike(s) alongside the lift.`
+    });
+
+    // strike_summary is a projection of the audit log — recompute it or the
+    // user keeps a stale active_strikes count and the very next strike jumps
+    // them back to the rung we just forgave.
+    const summary = await recomputeStrikeSummary(params.userId);
+    await user_model.updateOne(
+      { _id: params.userId },
+      { $set: { strike_summary: summary } }
+    );
+  }
 
   dispatchNotification({
     recipient_id: params.userId,

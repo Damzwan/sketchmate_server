@@ -94,7 +94,7 @@ export async function createUser(auth_id: string): Promise<Res<User>> {
 
 export async function getUser(params: GetUserParams): Promise<Res<GetUserRes>> {
   try {
-    if (!params._id && !params.auth_id) return undefined;
+    if (!params.auth_id) return undefined;
     let user: UserDocument | null = null;
 
     user = await user_model.findOne({ auth_id: params.auth_id }).lean() as UserDocument | null;
@@ -110,19 +110,13 @@ export async function getUser(params: GetUserParams): Promise<Res<GetUserRes>> {
     }
 
 
-    if (params._id) {
-      user = await user_model.findById(params._id).lean() as UserDocument | null;
-      if (user) {
-        await user_model.updateOne({ _id: user._id }, { $set: { auth_id: params.auth_id } });
-        return {
-          user: { ...user, _id: user._id.toString(), auth_id: params.auth_id } as unknown as User,
-          new_account: false,
-          minimum_supported_version,
-          minimum_online_version
-        };
-      }
-    }
-
+    // NO _id FALLBACK. This used to look the account up by a caller-supplied
+    // _id and rebind its auth_id to whoever was asking — an unauthenticated
+    // account takeover, since _id is public (it comes back from /partial_users,
+    // posts and mates). Recovering a guest account onto a new Firebase uid is
+    // guest-recovery.router's job, and it does it by minting a custom token for
+    // the ORIGINAL uid, so the auth_id lookup above already succeeds. Nothing
+    // legitimate needs to rewrite auth_id here.
 
     const newUser = await createUser(params.auth_id);
     return { user: newUser!, new_account: true, minimum_supported_version, minimum_online_version };

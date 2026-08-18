@@ -19,6 +19,7 @@ import cron from 'node-cron';
 import { pairBalloons, removeExpiredBalloons, unPairBalloons } from './api/balloon';
 import { advancePhases } from './api/services/competition.service';
 import { runCompetitionNotifications } from './api/services/competitionNotifications.service';
+import { runRiskSweep } from './api/services/riskSweep.service';
 import { isCompetitionEnabled } from './config/competition.config';
 import * as admin from 'firebase-admin';
 import { loadServiceAccount } from './firebase-credential';
@@ -146,6 +147,30 @@ cron.schedule('0 */1 * * *', async () => {
     await runCompetitionNotifications().catch((e) =>
       console.error('[competition] notifications failed:', e)
     );
+  }
+});
+
+/**
+ * Nightly behavioural risk sweep, 03:00 UTC.
+ *
+ * Off-peak because it aggregates over every conversation opened in the last 30
+ * days by anyone active in the last 24h. Nightly rather than hourly because the
+ * signals it looks for (unanswered-conversation ratios, contact age mix) are
+ * shapes that build over days — running it more often costs more and finds the
+ * same accounts.
+ *
+ * Never throws into the scheduler: a failed sweep must not take the dyno with
+ * it, and the next run is 24 hours away regardless.
+ */
+cron.schedule('0 3 * * *', async () => {
+  try {
+    const result = await runRiskSweep();
+    console.log(
+      `[risk-sweep] ${result.candidates} candidates, ${result.flagged} flags`,
+      result.byRule
+    );
+  } catch (e) {
+    console.error('[risk-sweep] failed:', e);
   }
 });
 

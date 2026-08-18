@@ -11,7 +11,6 @@ import {
   DeleteStickerParams,
   ENDPOINTS,
   GetInboxItemsParams,
-  GetUserParams,
   OnLoginEventParams,
   RegisterNotificationParams,
   RemoveFromInboxParams,
@@ -43,6 +42,7 @@ import {
   uploadProfileImg,
 } from '../../mongodb';
 import { parseParams } from '../../helper';
+import { requireAuth } from '../../middleware/auth';
 import { routeBalloonToOnlineUser } from '../balloon';
 import { userSocketMap } from '../socket/socket';
 import { mixpanelEvents, trackEvent } from '../../mixpanel';
@@ -106,8 +106,14 @@ router.use(
   adminArtistHighlightRouter.allowedMethods()
 );
 
-router.get(ENDPOINTS.user, async (ctx) => {
-  const res = await getUser(parseParams<GetUserParams>(ctx.query));
+// Legacy pre-/v2 client route. The identity comes from the verified Firebase
+// token, NEVER from the query string: this handler used to pass ctx.query
+// straight into getUser(), so anyone could send a fresh anonymous uid plus a
+// victim's public _id and have the account rebound to them. The _id rebind is
+// gone from getUser entirely (guest-recovery.router owns account recovery now),
+// and auth_id is read from ctx.state.
+router.get(ENDPOINTS.user, requireAuth, async (ctx) => {
+  const res = await getUser({ auth_id: ctx.state.auth_id });
   if (!res?.user) return ctx.throw(404, 'User not found');
 
   const user = res.user as any;

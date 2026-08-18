@@ -41,6 +41,7 @@ import {
 } from '../../helper';
 import { fetchRemixCredits, shapeFeedPost } from '../services/post.service';
 import { fetchSavedPostIds } from '../services/saved-post.service';
+import { registerDevice } from '../services/deviceRecall.service';
 import { subscribeV2, unsubscribeV2 } from '../services/user.service';
 import { getPublicLobbiesSnapshot } from '../socket/drawSyncing';
 import { broadcastFriendPresence, userSocketMap } from '../socket/socket';
@@ -521,9 +522,8 @@ userRouter.get('/public_users', requireAuth, async (ctx) => {
 
 userRouter.get('/', requireAuth, async (ctx) => {
   const auth_id = ctx.state.auth_id;
-  const _id = ctx.state.user?._id?.toString();
 
-  const res = await getUser({ auth_id, _id });
+  const res = await getUser({ auth_id });
 
   if (!res?.user) return ctx.throw(404, 'User not found');
 
@@ -716,4 +716,48 @@ userRouter.put('/engagement/opt-out', requireAuth, async (ctx) => {
   );
 
   ctx.status = 204;
+});
+
+// POST /user/device — device recall check-in.
+//
+// The client sends this once per login, right after the native layer can tell
+// it what device it is on. Two things happen: the device is recorded against
+// this account (so a future ban knows what hardware to remember), and it is
+// checked against the ban list (so an account created on already-banned
+// hardware is restricted now rather than after it does harm again).
+//
+// Deliberately NOT gated on requireCapability: an already-restricted user must
+// still be able to check in, or the very accounts this exists to catch would be
+// the ones that stop reporting their device.
+userRouter.post('/device', requireAuth, async (ctx) => {
+  const { device_id, platform } = ctx.request.body as {
+    device_id?: string;
+    platform?: string;
+  };
+
+  if (!ctx.state.user?._id) return ctx.throw(403, 'Account required');
+
+  // The client omits the id entirely on platforms with no durable device
+  // identity (web/PWA). That is a normal no-op, not an error — an install-
+  // scoped UUID would churn on every reinstall and poison the ban list with
+  // ids that identify nothing.
+  if (typeof device_id !== 'string' || !device_id.trim()) {
+    ctx.body = { recorded: false };
+    return;
+  }
+  if (device_id.length > 256) return ctx.throw(400, 'device_id too long');
+  if (platform !== 'android' && platform !== 'ios') {
+    return ctx.throw(400, 'platform must be android or ios');
+  }
+
+  const { recalled } = await registerDevice({
+    userId: ctx.state.user._id.toString(),
+    rawDeviceId: device_id.trim(),
+    platform
+  });
+
+  // `recalled` is returned so the client can stop retrying, not so it can react
+  // — the restriction itself arrives over the normal moderation:strike socket
+  // event and renders through the existing restriction sheet.
+  ctx.body = { recorded: true, recalled };
 });

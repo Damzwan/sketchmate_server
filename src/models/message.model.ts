@@ -70,6 +70,11 @@ const MessageSchema = new Schema<MessageDocument>({
 });
 
 MessageSchema.index({ conversation_id: 1, createdAt: -1 });
+// sender_id was unindexed, so every "what did this user write" query — the
+// moderation evidence dossier and the nightly risk sweep both do this — was a
+// full collection scan. The sweep touches thousands of senders per run, which
+// makes the index the difference between a nightly job and an outage.
+MessageSchema.index({ sender_id: 1, createdAt: -1 });
 
 export const message_model = mongoose.model<MessageDocument>(
   'messages',

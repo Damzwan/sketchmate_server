@@ -55,7 +55,11 @@ const moderation_action_schema = new Schema({
       'restriction_lifted',   // duration expired or appeal granted
       'manual_suspension',    // admin pulled the lever directly
       'appeal_granted',
-      'appeal_denied'
+      'appeal_denied',
+      // Free-text context an admin attached to an action. MUST NOT be
+      // 'strike_applied': recomputeStrikeSummary counts that type, so a note
+      // logged under it silently becomes an extra strike.
+      'admin_note'
     ],
     required: true
   },
@@ -71,7 +75,15 @@ const moderation_action_schema = new Schema({
 
   // For manual_suspension / appeal_*
   admin_id: { type: Types.ObjectId, ref: 'users' },
-  notes: { type: String, maxlength: 1000 }
+  notes: { type: String, maxlength: 1000 },
+
+  // Set on a strike_applied row when an admin forgives it ahead of the normal
+  // 90-day decay. The row is NOT deleted and NOT retyped: the history must keep
+  // reading "a strike was applied on this date, for this reason, and was later
+  // forgiven". recomputeStrikeSummary excludes forgiven rows from the ACTIVE
+  // count only — lifetime total_strikes still counts them, so a repeat offender
+  // who has been forgiven twice is still visibly a repeat offender.
+  forgiven_at: { type: Date }
 }, { timestamps: true });
 
 moderation_action_schema.index({ user_id: 1, createdAt: -1 });

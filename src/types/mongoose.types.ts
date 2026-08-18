@@ -63,6 +63,8 @@ export interface UserDocument extends Omit<User, '_id' | 'date_of_birth' | 'last
     last_received_at?: Date;
     disabled?: boolean;
   };
+  /** Hashed device ids for ban evasion detection. `select: false` on the schema. */
+  device_ids?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
