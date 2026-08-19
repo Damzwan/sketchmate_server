@@ -13,7 +13,6 @@ import {
 import { mixpanelEvents, trackEvent } from '../mixpanel';
 import { sendSocketNotificationToUser, userSocketMap } from './socket/socket';
 import { s3Creator } from '../mongodb';
-import { ObjectId } from 'mongodb';
 import { inbox_model } from '../models/inbox.model';
 import { CONTAINER } from '../s3';
 import { compareVersions } from '../helper';
@@ -390,7 +389,7 @@ export async function removeExpiredBalloons() {
 export async function acceptBalloonCleanUp(params: { balloon: Balloon, otherBalloon: Balloon }): Promise<void> {
   try {
     const inboxItem1: InboxItem = {
-      _id: new ObjectId().toString(),
+      _id: new mongoose.Types.ObjectId().toString(),
       drawing: params.balloon.drawingJsonUrl,
       image: params.balloon.img,
       thumbnail: params.balloon.thumbnail,
@@ -408,7 +407,7 @@ export async function acceptBalloonCleanUp(params: { balloon: Balloon, otherBall
     };
 
     const inboxItem2: InboxItem = {
-      _id: new ObjectId().toString(),
+      _id: new mongoose.Types.ObjectId().toString(),
       drawing: params.otherBalloon.drawingJsonUrl,
       image: params.otherBalloon.img,
       thumbnail: params.otherBalloon.thumbnail,
@@ -603,7 +602,7 @@ export async function rejectBalloonCleanUp(params: { balloon: Balloon; otherBall
 export async function v2AcceptBalloonCleanUp(balloon: any, acceptorId: string): Promise<InboxItem> {
   try {
     const inboxItem: InboxItem = {
-      _id: new ObjectId().toString(),
+      _id: new mongoose.Types.ObjectId().toString(),
       drawing: balloon.drawingJsonUrl,
       image: balloon.img,
       thumbnail: balloon.thumbnail,

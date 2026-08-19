@@ -9,7 +9,17 @@ import {
   BaseRelationship, BaseSavedDrawing, Comment, InboxComment, InboxItem,
   User
 } from './types';
-import { Document } from 'mongodb';
+import type { mongo } from 'mongoose';
+
+// The driver's own permissive document shape — `{ [key: string]: any }`.
+// Taken from mongoose rather than a direct `mongodb` dependency: that dep
+// was pinned at v5 while mongoose 8 bundles v6, so every interface below
+// was being described by the types of a driver this app never loaded.
+//
+// NOTE: because of that index signature, `extends Document` makes every
+// interface here accept arbitrary extra keys. Removing it is a real type
+// tightening and belongs to the refactor phase, not here.
+type Document = mongo.Document;
 
 export interface PostDocument extends Document, Omit<BasePost, '_id' | 'author_id' | 'reaction_counts' | 'createdAt' | 'updatedAt' | 'remix_of' | 'collaborators' | 'mentions'> {
   _id: Types.ObjectId;
