@@ -461,19 +461,79 @@ export async function changeUserName(params: ChangeUserNameParams): Promise<Res<
   }
 }
 
+/**
+ * Fields a user is allowed to change about themselves.
+ *
+ * This is an allowlist, not a deny-list, and that is deliberate. `UpdateUserParams`
+ * is `Partial<User>`, and this function used to `$set` whatever arrived — so every
+ * field on the schema was writable by anyone who could reach the route, and
+ * `PUT /user/update` has no auth (the legacy root router serves clients that
+ * predate it). The reachable damage included:
+ *
+ *   auth_id           → rebind an account to the caller's Firebase uid. This is
+ *                       the same account-takeover that was removed from getUser();
+ *                       it simply had a second door.
+ *   restriction       → clear your own suspension. Ban evasion.
+ *   subscription_tier → grant yourself Pro.
+ *   inventory         → grant yourself paid cosmetics. Owned by the RevenueCat
+ *                       webhook and the admin routes, nowhere else.
+ *   is_admin          → did NOT grant admin (requireAdminAuth checks the Firebase
+ *                       `sketchmate_admin` claim first, which is not settable here),
+ *                       but it has no business being client-writable either.
+ *   stats             → forge social counters that computeSocialStats derives.
+ *
+ * A new schema field is therefore un-writable until someone adds it here on
+ * purpose. Anything rejected is logged rather than silently dropped, so a
+ * legitimate field left off this list shows up in the logs instead of as a
+ * silently broken setting.
+ */
+const SELF_SERVICE_FIELDS = new Set([
+  'name',
+  'description',
+  'customization',
+  'chat_customization',
+  'date_of_birth',
+  'timezone',
+  'last_seen_version',
+  'feed_level',
+  'profanity_filter',
+  'artist_highlights',
+  'presence_invisible',
+  'presence_status'
+]);
+
+/**
+ * `balloon` holds two ObjectId refs (`sent`, `received`) that drive pairing, and
+ * one genuine preference. The client sends the whole object back — it spreads
+ * the values it already has — so keeping only the preference costs nothing and
+ * stops a caller from rewriting another user's live balloon state.
+ */
+function sanitizeBalloon(raw: unknown): { disabled: boolean } | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const disabled = (raw as any).disabled;
+  return typeof disabled === 'boolean' ? { disabled } : undefined;
+}
+
 export async function updateUser(params: UpdateUserParams): Promise<Res<void>> {
   try {
     const { _id, ...updates } = params;
     if (!_id) throw new Error('User _id is required');
 
+    const $set: Record<string, any> = {};
+    const rejected: string[] = [];
+
+    for (const [key, value] of Object.entries(updates)) {
+      if (SELF_SERVICE_FIELDS.has(key)) {
+        $set[key] = value;
+      } else if (key !== 'parental' && key !== 'balloon') {
+        rejected.push(key);
+      }
+    }
+
     // Parental switches arrive as a whole object from the controls sheet.
     // Rebuild it field by field and write with dotted paths, so a payload can
     // neither smuggle unknown keys in nor blank out flags it didn't mention.
     const raw = (updates as any).parental;
-    delete (updates as any).parental;
-
-    const $set: Record<string, any> = { ...updates };
-
     if (raw !== undefined) {
       const clean = sanitizeParental(raw);
       if (clean) {
@@ -481,6 +541,15 @@ export async function updateUser(params: UpdateUserParams): Promise<Res<void>> {
           $set[`parental.${key}`] = value;
         });
       }
+    }
+
+    const balloon = sanitizeBalloon((updates as any).balloon);
+    if (balloon) $set['balloon.disabled'] = balloon.disabled;
+
+    if (rejected.length) {
+      console.warn(
+        `[updateUser] rejected non-self-service fields for ${String(_id)}: ${rejected.join(', ')}`
+      );
     }
 
     if (Object.keys($set).length === 0) return;
