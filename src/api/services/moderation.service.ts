@@ -1,4 +1,5 @@
 import dayjs from 'dayjs';
+import { moderationThresholds } from '../../config/moderation.thresholds';
 import { Types } from 'mongoose';
 import {
   getLevelConfig,
@@ -542,7 +543,13 @@ export async function restoreContent(type: string, id: string): Promise<boolean>
   return modified > 0;
 }
 
-const SYSTEM_FLAG_THRESHOLD = 3;
+/**
+ * How many distinct pieces of a user's content must be auto-actioned inside 24h
+ * before the user themselves is raised to the human queue. Read from
+ * config/moderation.thresholds.ts rather than written here, so the number this
+ * deployment runs is not published — see that file for why.
+ */
+const systemFlagThreshold = () => moderationThresholds().auto_quarantine.system_flag_threshold;
 
 export async function evaluateUserStanding(authorId: string, triggeringReporterId: string) {
   const recentCutoff = dayjs().subtract(24, 'hour').toDate();
@@ -553,7 +560,7 @@ export async function evaluateUserStanding(authorId: string, triggeringReporterI
     createdAt: { $gte: recentCutoff }
   });
 
-  if (recentQuarantinedContent.length >= SYSTEM_FLAG_THRESHOLD) {
+  if (recentQuarantinedContent.length >= systemFlagThreshold()) {
     const existingSystemFlag = await report_model.findOne({
       target_id: new Types.ObjectId(authorId),
       target_type: 'user',

@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { moderationThresholds } from '../../config/moderation.thresholds';
 import { conversation_model } from '../../models/conversation.model';
 import { message_model } from '../../models/message.model';
 import { risk_flag_model } from '../../models/risk-flag.model';
@@ -26,15 +27,6 @@ import { user_model } from '../../models/user.model';
  * downstream of this is automatic.
  */
 
-/** Hard ceiling on accounts examined per run, so cost stays predictable. */
-const MAX_CANDIDATES = 5000;
-
-/** Conversations older than this are established relationships, not outreach. */
-const OUTREACH_WINDOW_DAYS = 30;
-
-/** Sent this many into silence before a conversation counts as one-sided. */
-const ONE_SIDED_MIN_SENT = 3;
-
 const DAY_MS = 86_400_000;
 
 type Rule = {
@@ -57,46 +49,66 @@ interface Metrics {
 }
 
 /**
- * Thresholds are deliberately conservative. This queue is read by one person;
- * a rule that fires on 5% of a healthy userbase is a rule that gets ignored,
- * and an ignored queue is worse than no queue.
+ * The rule shapes stay here in the open; the numbers they compare against come
+ * from config/moderation.thresholds.ts, which reads them from the environment.
+ *
+ * That split is the whole point. Someone reading this repository — including a
+ * user who wants to know why they were flagged — can see exactly what patterns
+ * are looked for. Someone trying to stay under the line cannot read off where
+ * the line is.
+ *
+ * Thresholds are deliberately conservative wherever they end up set. This queue
+ * is read by one person; a rule that fires on 5% of a healthy userbase is a
+ * rule that gets ignored, and an ignored queue is worse than no queue.
  */
-const RULES: Rule[] = [
-  {
-    id: 'mass_unsolicited_contact',
-    severity: 'high',
-    test: (m) =>
-      m.conversations_engaged >= 5 && m.one_sided_ratio >= 0.6
-        ? `Opened ${m.conversations_engaged} conversations, ${m.one_sided_conversations} got no reply at all (${Math.round(m.one_sided_ratio * 100)}%).`
-        : null
-  },
-  {
-    // The pattern behind the reports from the community: an adult account whose
-    // contacts are overwhelmingly children. Invisible in any single thread.
-    id: 'adult_contacting_minors',
-    severity: 'high',
-    test: (m) =>
-      m.is_adult && m.distinct_contacts >= 3 && m.minor_contact_ratio >= 0.7
-        ? `Adult account: ${m.minor_contacts} of ${m.distinct_contacts} recent contacts are under 16.`
-        : null
-  },
-  {
-    id: 'new_account_spraying',
-    severity: 'medium',
-    test: (m) =>
-      m.account_age_days <= 7 && m.one_sided_conversations >= 3
-        ? `Account is ${m.account_age_days} day(s) old and already has ${m.one_sided_conversations} unanswered conversations.`
-        : null
-  },
-  {
-    id: 'hostile_outreach',
-    severity: 'medium',
-    test: (m) =>
-      m.profanity_hits_24h >= 5 && m.one_sided_ratio >= 0.5
-        ? `${m.profanity_hits_24h} filter-matched messages in 24h, mostly into conversations that get no reply.`
-        : null
-  }
-];
+function buildRules(): Rule[] {
+  const t = moderationThresholds().risk_sweep;
+  const r = t.rules;
+
+  const all: Rule[] = [
+    {
+      id: 'mass_unsolicited_contact',
+      severity: 'high',
+      test: (m) =>
+        m.conversations_engaged >= r.mass_unsolicited_contact.min_conversations &&
+        m.one_sided_ratio >= r.mass_unsolicited_contact.min_one_sided_ratio
+          ? `Opened ${m.conversations_engaged} conversations, ${m.one_sided_conversations} got no reply at all (${Math.round(m.one_sided_ratio * 100)}%).`
+          : null
+    },
+    {
+      // The pattern behind the reports from the community: an adult account whose
+      // contacts are overwhelmingly children. Invisible in any single thread.
+      id: 'adult_contacting_minors',
+      severity: 'high',
+      test: (m) =>
+        m.is_adult &&
+        m.distinct_contacts >= r.adult_contacting_minors.min_contacts &&
+        m.minor_contact_ratio >= r.adult_contacting_minors.min_minor_ratio
+          ? `Adult account: ${m.minor_contacts} of ${m.distinct_contacts} recent contacts are under ${t.minor_age}.`
+          : null
+    },
+    {
+      id: 'new_account_spraying',
+      severity: 'medium',
+      test: (m) =>
+        m.account_age_days <= r.new_account_spraying.max_account_age_days &&
+        m.one_sided_conversations >= r.new_account_spraying.min_one_sided_conversations
+          ? `Account is ${m.account_age_days} day(s) old and already has ${m.one_sided_conversations} unanswered conversations.`
+          : null
+    },
+    {
+      id: 'hostile_outreach',
+      severity: 'medium',
+      test: (m) =>
+        m.profanity_hits_24h >= r.hostile_outreach.min_profanity_hits &&
+        m.one_sided_ratio >= r.hostile_outreach.min_one_sided_ratio
+          ? `${m.profanity_hits_24h} filter-matched messages in 24h, mostly into conversations that get no reply.`
+          : null
+    }
+  ];
+
+  return all.filter((rule) => !t.disabled_rules.includes(rule.id));
+}
 
 const ageOf = (dob?: Date | null): number | null => {
   if (!dob) return null;
@@ -108,13 +120,16 @@ export async function runRiskSweep(): Promise<{
   flagged: number;
   byRule: Record<string, number>;
 }> {
+  const thresholds = moderationThresholds().risk_sweep;
+  const RULES = buildRules();
+
   const since24h = new Date(Date.now() - DAY_MS);
-  const outreachCutoff = new Date(Date.now() - OUTREACH_WINDOW_DAYS * DAY_MS);
+  const outreachCutoff = new Date(Date.now() - thresholds.outreach_window_days * DAY_MS);
 
   // 1. Who was active. Uses the sender_id index added to message.model.ts.
   const activeSenders = (await message_model
     .distinct('sender_id', { createdAt: { $gte: since24h }, type: { $ne: 'system' } })
-    .then((ids) => ids.slice(0, MAX_CANDIDATES))) as Types.ObjectId[];
+    .then((ids) => ids.slice(0, thresholds.max_candidates))) as Types.ObjectId[];
 
   if (!activeSenders.length) return { candidates: 0, flagged: 0, byRule: {} };
 
@@ -221,7 +236,7 @@ export async function runRiskSweep(): Promise<{
           // isUnderAge in the client and parental.service on the server:
           // guessing "adult" here would aim the minor-contact rule at exactly
           // the accounts whose age we failed to record.
-          is_adult: subjectAge !== null && subjectAge >= 18,
+          is_adult: subjectAge !== null && subjectAge >= thresholds.adult_age,
           conversations_engaged: 0,
           one_sided_conversations: 0,
           one_sided_ratio: 0,
@@ -234,12 +249,12 @@ export async function runRiskSweep(): Promise<{
       }
 
       metrics.conversations_engaged += 1;
-      if (received === 0 && sent >= ONE_SIDED_MIN_SENT) metrics.one_sided_conversations += 1;
+      if (received === 0 && sent >= thresholds.one_sided_min_sent) metrics.one_sided_conversations += 1;
 
       for (const other of others) {
         metrics.distinct_contacts += 1;
         const otherAge = ageById.get(other);
-        if (otherAge !== null && otherAge !== undefined && otherAge < 16) metrics.minor_contacts += 1;
+        if (otherAge !== null && otherAge !== undefined && otherAge < thresholds.minor_age) metrics.minor_contacts += 1;
       }
     }
   }
