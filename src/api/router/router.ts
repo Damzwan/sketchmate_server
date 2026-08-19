@@ -73,8 +73,16 @@ import artistHighlightRouter from './artist-highlight.router';
 import adminArtistHighlightRouter from './admin.artist-highlight.router';
 import adminSessionRouter from './admin.session.router';
 import { guestRecoveryRouter } from './guest-recovery.router';
+import { legacyRouteTelemetry } from '../../middleware/legacyTelemetry.middleware';
+import adminLegacyUsageRouter from './admin.legacy-usage.router';
 
 export const router = new Router();
+
+// Census of the pre-/v2 routes at the bottom of this file, so they can be
+// removed or authenticated on evidence rather than on recollection. Mounted
+// before everything: it filters to the legacy set itself, and only acts after
+// the downstream handler has already produced its response.
+router.use(legacyRouteTelemetry);
 
 router.use('/v2/post', postRouter.routes(), postRouter.allowedMethods());
 router.use('/v2/user', userRouter.routes(), userRouter.allowedMethods());
@@ -98,6 +106,7 @@ router.use('/dev/competition', devCompetitionRouter.routes(), devCompetitionRout
 router.use('/webhooks', revenuecatWebhookRouter.routes());
 router.use('/admin/inventory', adminInventoryRouter.routes(), adminInventoryRouter.allowedMethods());
 router.use('/admin/session', adminSessionRouter.routes(), adminSessionRouter.allowedMethods());
+router.use('/admin/legacy-usage', adminLegacyUsageRouter.routes(), adminLegacyUsageRouter.allowedMethods());
 router.use('/admin/moderation', devModerationRouter.routes(), devModerationRouter.allowedMethods());
 router.use('/admin/competition', adminCompetitionRouter.routes(), adminCompetitionRouter.allowedMethods());
 router.use(

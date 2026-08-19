@@ -87,7 +87,7 @@ app
     },
     credentials: true,
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE'],
-    allowHeaders: ['Content-Type', 'Authorization', 'Accept']
+    allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-App-Version']
   }))
   .use(
     koaBody({
