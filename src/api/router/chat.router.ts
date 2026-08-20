@@ -36,6 +36,68 @@ chatRouter.get('/shell', async (ctx) => {
     .map(rel => rel.conversation_id)
     .filter((id): id is Types.ObjectId => !!id);
 
+  const partnerOf = (rel: any): string | undefined =>
+    rel.users.find((id: Types.ObjectId) => id.toString() !== userId)?.toString();
+
+  // Relationships whose link to their conversation was never written.
+  //
+  // This endpoint walks relationship -> conversation_id -> conversation, so a
+  // relationship missing that one field has no thread as far as the overview is
+  // concerned, however many messages the thread actually holds. Two ways it
+  // happens: relationships created in bulk from the legacy `user.mates` array,
+  // which never set the field at all, and saveMessageLogic, which only writes
+  // the relationship when the status itself changes — so an established `mate`
+  // could message for months without the link ever being repaired.
+  //
+  // The chat then vanishes from the overview, the client falls back to a chat
+  // head keyed by the PARTNER's user id, and history requests go out for an id
+  // that is not a conversation and come back empty. Sending fixes it for the
+  // session, because the send response carries the real conversation, and it is
+  // broken again at the next startup.
+  //
+  // So resolve those by their participant pair and write the link back. The
+  // repair is not awaited: a self-heal must not add latency to the request that
+  // triggered it, and if it fails the next /shell simply tries again.
+  const recovered = new Map<string, Types.ObjectId>();
+  const unlinked = relationships.filter(rel => !rel.conversation_id);
+
+  if (unlinked.length) {
+    const partnerIds = unlinked
+      .map(partnerOf)
+      .filter((id): id is string => !!id)
+      .map(id => new Types.ObjectId(id));
+
+    const found = await conversation_model.find({
+      $and: [{ participants: userOid }, { participants: { $in: partnerIds } }]
+    })
+      .select('participants')
+      .lean();
+
+    const byPartner = new Map<string, Types.ObjectId>();
+    for (const conversation of found) {
+      const other = conversation.participants.find((p: any) => p.toString() !== userId);
+      if (other) byPartner.set(other.toString(), conversation._id);
+    }
+
+    for (const rel of unlinked) {
+      const partner = partnerOf(rel);
+      const conversationId = partner ? byPartner.get(partner) : undefined;
+      // No conversation for the pair is not a fault: mates who have never
+      // messaged each other genuinely have no thread yet.
+      if (!conversationId) continue;
+
+      recovered.set(rel._id.toString(), conversationId);
+      conversationIds.push(conversationId);
+
+      relationship_model
+        .updateOne(
+          { _id: rel._id, conversation_id: null },
+          { $set: { conversation_id: conversationId } }
+        )
+        .catch(err => console.error('[chat/shell] conversation_id backfill failed:', err));
+    }
+  }
+
   const onlineCandidates = new Set<string>();
   const blockedUserIds: string[] = [];
   for (const rel of relationships) {
@@ -76,10 +138,23 @@ chatRouter.get('/shell', async (ctx) => {
   const activeChats: any[] = [];
   const pendingRequests: any[] = [];
 
+  // A relationship pointing at a conversation that no longer exists. Both
+  // schemas TTL on `deleted_at`, and until reviveConversation existed only the
+  // relationship half was ever un-stamped, so a reconciled pair could have its
+  // conversation reaped 30 days later and keep a relationship referencing a dead
+  // _id. This loop's `continue` then dropped the chat from the overview with no
+  // trace anywhere — the chat simply was not in the list. Counted and logged so
+  // the next occurrence is visible instead of silent; scripts/repair-orphaned-
+  // conversations.ts is what cleans the existing ones up.
+  const dangling: string[] = [];
+
   for (const rel of relationships) {
-    const conversationId = rel.conversation_id?.toString();
+    const conversationId = (rel.conversation_id ?? recovered.get(rel._id.toString()))?.toString();
     const conversation = conversationId ? conversationById.get(conversationId) : undefined;
-    if (!conversation) continue;
+    if (!conversation) {
+      if (conversationId) dangling.push(`${rel._id.toString()}->${conversationId}`);
+      continue;
+    }
 
     const hydrated = {
       ...conversation,
@@ -96,6 +171,13 @@ chatRouter.get('/shell', async (ctx) => {
     } else {
       activeChats.push(hydrated);
     }
+  }
+
+  if (dangling.length) {
+    console.warn(
+      `[chat/shell] ${dangling.length} relationship(s) of user ${userId} point at a ` +
+      `missing conversation, chats hidden: ${dangling.join(', ')}`
+    );
   }
 
   activeChats.sort((a, b) => conversationActivityAt(b) - conversationActivityAt(a));
@@ -232,6 +314,36 @@ chatRouter.get('/:id/messages', async (ctx) => {
   const { before, limit } = ctx.query;
 
   const parsedLimit = Math.min(parseInt(limit as string, 10) || 20, 100);
+
+  // History is readable by the two people in the conversation and nobody else.
+  // This used to query messages on the path id alone, so any authenticated user
+  // could page through any conversation in the database by id.
+  //
+  // A conversation that does not exist returns an empty page rather than a 404:
+  // the client opens a chat head for a user it has never messaged before, and
+  // the tab id is that user's _id until the first message creates the thread.
+  // That case is a legitimately empty history, not an authorisation failure.
+  if (!Types.ObjectId.isValid(id)) {
+    ctx.body = { data: [], hasMore: false };
+    return;
+  }
+
+  console.log(id);
+
+  const conversation = await conversation_model
+    .findById(id)
+    .select('participants')
+    .lean();
+
+  if (!conversation) {
+    ctx.body = { data: [], hasMore: false };
+    return;
+  }
+
+  const userId = ctx.state.user._id.toString();
+  if (!conversation.participants.some((p: any) => p.toString() === userId)) {
+    return ctx.throw(403, 'Not a participant in this conversation');
+  }
   // Moderated-away messages don't come back in history. The removal write only
   // started taking effect once `moderation_status` was declared on the schema
   // (mongoose strict mode had been dropping it), so without this filter
@@ -247,6 +359,7 @@ chatRouter.get('/:id/messages', async (ctx) => {
     .sort({ createdAt: -1 })
     .limit(parsedLimit)
     .lean();
+
 
   ctx.body = {
     data: messages.reverse(),

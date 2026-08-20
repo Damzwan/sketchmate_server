@@ -34,6 +34,34 @@ import {
 export const relationshipRouter = new Router();
 relationshipRouter.use(requireAuth);
 
+/**
+ * Clears the /unfriend tombstone from a conversation when the relationship it
+ * belongs to comes back to life.
+ *
+ * `deleted_at` is not a soft-delete flag on these two collections, it is a
+ * scheduled deletion: both schemas carry a TTL index on it (expireAfterSeconds
+ * 0). /unfriend stamps the relationship AND the conversation, and every path
+ * that revived the pair afterwards cleared `relationship.deleted_at` and left
+ * the conversation's stamp in place. Two people who fell out and made up kept a
+ * working chat for the rest of the 30 day window, and then mongo deleted the
+ * conversation document out from under them: the relationship survived pointing
+ * at a dead _id, /chats/shell silently skipped it (no conversation, no row), the
+ * next message upserted a brand new conversation, and everything said before the
+ * fallout was stranded under the old id. Reviving one half without the other is
+ * the whole bug — they must always move together.
+ */
+async function reviveConversation(
+  conversationId?: Types.ObjectId | null,
+  populated?: any
+): Promise<void> {
+  if (!conversationId) return;
+  await conversation_model.updateOne(
+    { _id: conversationId },
+    { $unset: { deleted_at: '' } }
+  );
+  if (populated) delete populated.deleted_at;
+}
+
 relationshipRouter.post('/:id/respond', async (ctx) => {
   const { id } = ctx.params;
   const user_id = ctx.state.user._id.toString();
@@ -77,6 +105,7 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       rel.expires_at = expiresAt;
       rel.deleted_at = undefined;
       await rel.save();
+      await reviveConversation(rel.conversation_id, populatedConvo);
 
       populatedConvo.status = 'temporary';
       populatedConvo.trial_expires_at = expiresAt;
@@ -123,6 +152,7 @@ relationshipRouter.post('/:id/respond', async (ctx) => {
       rel.expires_at = undefined;
       rel.cooldown_until = undefined;
       rel.deleted_at = undefined;
+      await reviveConversation(rel.conversation_id);
 
       if (transitioned.modifiedCount > 0) {
         await user_model.updateMany(
