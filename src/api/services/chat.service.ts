@@ -57,32 +57,48 @@ async function findOrCreateConversation(
 ) {
   const pairFilter = { participants: { $all: sortedParticipants, $size: 2 } };
 
+  // Find-then-create, NOT an upsert.
+  //
+  // The upsert this replaces could never insert. Mongo builds an upserted
+  // document from the equality fields of the query, and `$all`/`$size` are not
+  // equality constraints; combined with a `$setOnInsert` that also writes
+  // `participants`, the server rejects the whole operation with "cannot infer
+  // query fields to set, path 'participants' is matched twice". It threw on
+  // exactly one case — the one where no conversation existed yet — so every
+  // FIRST message between two people failed while every subsequent one worked.
+  // The 11000 guard below did not catch it either: a plan-executor error is not
+  // a duplicate-key error, so it propagated out of the send.
+  //
+  // Splitting the two halves keeps what the order-insensitive lookup was for
+  // (an exact array match on `participants` is order sensitive, and the unique
+  // index on participants.0/participants.1 does not save you, because reversed
+  // order is a different key) without asking Mongo to infer anything.
+  const existing = await conversation_model.findOneAndUpdate(
+    pairFilter,
+    // A message is proof the thread is live, so any scheduled deletion is
+    // cancelled on the way through.
+    { $unset: { deleted_at: '' } },
+    { new: true }
+  );
+  if (existing) return existing;
+
   try {
-    const upserted = await conversation_model.findOneAndUpdate(
-      pairFilter,
-      {
-        $setOnInsert: {
-          participants: sortedParticipants,
-          unread_counts: new Map([
-            [receiver_id, 0],
-            [sender_id, 0]
-          ])
-        },
-        $unset: { deleted_at: '' }
-      },
-      { upsert: true, new: true }
-    );
-    if (upserted) return upserted;
+    return await conversation_model.create({
+      participants: sortedParticipants,
+      unread_counts: new Map([
+        [receiver_id, 0],
+        [sender_id, 0]
+      ])
+    });
   } catch (err: any) {
-    // Two first messages racing: both upserts miss, both try to insert, and the
+    // Two first messages racing: both miss the read, both insert, and the
     // unique index rejects the loser. The winner's document is the one both
     // sides should be writing into, so read it back instead of failing a send.
     if (err?.code !== 11000) throw err;
+    const winner = await conversation_model.findOne(pairFilter);
+    if (!winner) throw new Error('Could not resolve a conversation for these participants');
+    return winner;
   }
-
-  const existing = await conversation_model.findOne(pairFilter);
-  if (!existing) throw new Error('Could not resolve a conversation for these participants');
-  return existing;
 }
 
 export const saveMessageLogic = async (
