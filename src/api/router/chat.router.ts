@@ -328,8 +328,6 @@ chatRouter.get('/:id/messages', async (ctx) => {
     return;
   }
 
-  console.log(id);
-
   const conversation = await conversation_model
     .findById(id)
     .select('participants')

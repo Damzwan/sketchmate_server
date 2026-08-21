@@ -56,6 +56,38 @@ frontend bug:
   history appears
 - nothing wrote the link, so the next startup repeats it
 
+### Why it only surfaced on 2026-08-14
+
+The data gap is old. The bug is six days old, and the trigger was an endpoint
+swap:
+
+```
+ce45326  2026-08-14  made chat request faster     server: adds GET /chats/shell
+13b960e  2026-08-14  ...chat optimizations        client: chatShellHydration
+```
+
+Before that, startup called `loadActiveChats()` -> `/chats/active`, which is
+**conversation-first**: it queries `conversations` by participant and then finds
+the relationship by partner as a fallback. A missing `conversation_id` was
+irrelevant — the chat appeared regardless.
+
+`/chats/shell` is **relationship-first**. The moment it became the startup path,
+every relationship without a link went invisible, and only for the accounts that
+had unlinked relationships — which is why it looked account-specific.
+
+Nothing about the data changed on 2026-08-14. A query that tolerated the gap was
+replaced by one that could not, over a dataset that had never satisfied the
+stricter query's assumption. Worth holding onto for the monorepo work: swapping
+the direction of a join is a data migration, not a refactor, and needs the same
+"does the data actually support this" check.
+
+For the record: on the reporting account the relationship batch (`6a555079...`)
+predates its conversation (`6a5550c0...`) by 71 seconds — the backfill created a
+`mate` relationship, the conversation was created afterwards by the first
+message, and `saveMessageLogic` skipped the link write because the status was
+already `mate`. The TTL fault (Fault 2) was **not** involved in this particular
+chat: that conversation never had `deleted_at` set.
+
 **Fixed:**
 
 - `api/router/chat.router.ts` — `/shell` resolves unlinked relationships by
